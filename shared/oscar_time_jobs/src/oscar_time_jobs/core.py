@@ -218,7 +218,7 @@ async def fire(
         message = _format_fire_message(row)
 
         if row["rrule"]:
-            next_fire = next_after(parse_rrule(row["rrule"]), now)
+            next_fire = next_after(parse_rrule(row["rrule"]), now, inclusive=False)
             await conn.execute(
                 "UPDATE time_jobs SET state = 'armed', fires_at = $1 WHERE id = $2::uuid",
                 next_fire,

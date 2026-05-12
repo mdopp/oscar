@@ -22,9 +22,14 @@ def parse_rrule(text: str) -> rrule.rrule:
     return rrule.rrulestr(body, dtstart=dtstart, forceset=False)
 
 
-def next_after(rule: rrule.rrule, now: datetime) -> datetime:
-    """First occurrence strictly after `now` (or at `now` if it's a match)."""
-    occurrence = rule.after(now, inc=True)
+def next_after(rule: rrule.rrule, now: datetime, *, inclusive: bool = True) -> datetime:
+    """Next occurrence at or after `now` (inclusive=True) or strictly after (False).
+
+    `add()` uses inclusive=True so creating a daily-06:30 alarm exactly at 06:30
+    fires today. `fire()` uses inclusive=False when re-arming an rrule job so the
+    re-arm picks the *next* day's 06:30 rather than today's again.
+    """
+    occurrence = rule.after(now, inc=inclusive)
     if occurrence is None:
         raise ValueError("rrule has no future occurrences")
     if occurrence.tzinfo is None:
