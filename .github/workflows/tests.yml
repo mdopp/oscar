@@ -1,0 +1,64 @@
+name: tests
+
+# Run pytest for every OSCAR-owned Python package. Each matrix entry is
+# a package directory; the step skips with a notice if the path has no
+# tests/ directory yet, so the workflow stays green as long as the
+# packages that DO have tests pass.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: oscar_logging
+            path: shared/oscar_logging
+            install: shared/oscar_logging[test]
+          - name: gatekeeper
+            path: gatekeeper
+            install: ./shared/oscar_logging gatekeeper
+          - name: connector-weather
+            path: connectors/weather
+            install: ./shared/oscar_logging connectors/weather[test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tests directory exists
+        id: check
+        run: |
+          if [ -d "${{ matrix.path }}/tests" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${{ matrix.path }}/tests not present yet; skipping ${{ matrix.name }} pytest run."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + deps
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          # `install` may list multiple specs separated by spaces.
+          # shellcheck disable=SC2086
+          pip install -e ${{ matrix.install }}
+
+      - name: Run pytest
+        if: steps.check.outputs.exists == 'true'
+        working-directory: ${{ matrix.path }}
+        run: pytest -v --tb=short
