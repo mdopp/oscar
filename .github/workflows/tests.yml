@@ -27,6 +27,9 @@ jobs:
           - name: oscar_time_jobs
             path: shared/oscar_time_jobs
             install: ./shared/oscar_logging shared/oscar_time_jobs[test]
+          - name: oscar_audit
+            path: shared/oscar_audit
+            install: ./shared/oscar_logging shared/oscar_audit[test]
           - name: gatekeeper
             path: gatekeeper
             install: ./shared/oscar_logging gatekeeper
