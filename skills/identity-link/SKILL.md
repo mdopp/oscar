@@ -1,5 +1,5 @@
 ---
-name: identity-link
+name: oscar-identity-link
 description: Use when the user (an admin) explicitly asks to link a phone number, chat ID, email, or Discord ID to a known LLDAP uid — e.g. "Verknüpfe die Signal-Nummer +49 151 1234 5678 mit dem User anna" or "Add this Telegram chat id to the household for kind". Writes a row to the `gateway_identities` table in `oscar-brain.postgres`. Admin-only — never invoke from a guest harness, never invoke without an explicit user instruction.
 version: 0.1.0
 author: OSCAR
