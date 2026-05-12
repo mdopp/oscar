@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-connector-cloud-llm"
+version = "0.1.0"
+description = "OSCAR cloud-LLM connector — opt-in, audited per-request escalation from the local stack to Anthropic Claude or Google Gemini. Every call lands in `cloud_audit`."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "fastmcp>=2.0",
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "asyncpg>=0.29",
+  "oscar-logging",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+  "pytest-httpx>=0.30",
+]
+
+[project.scripts]
+"oscar-connector-cloud-llm" = "cloud_llm.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cloud_llm*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
