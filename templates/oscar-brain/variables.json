@@ -1,4 +1,16 @@
 {
+  "OLLAMA_ENABLED": {
+    "type": "select",
+    "description": "Deployment mode: 'yes' deploys the local Ollama container (gpu-local or cpu-local mode), empty switches to cloud mode where HERMES uses an external provider (set HERMES_MODEL to something like 'anthropic/claude-sonnet-4' + provide HERMES_API_KEY). Privacy: cloud mode sends prompts to a third party — opposite of OSCAR's default stance. Use only when local hardware isn't available.",
+    "options": ["yes", ""],
+    "default": "yes"
+  },
+  "GPU_PASSTHROUGH": {
+    "type": "select",
+    "description": "Whether to request 'nvidia.com/gpu=1' on the Ollama container. Set to 'yes' for the gpu-local profile, empty for cpu-local (Ollama auto-falls back to CPU). Ignored when OLLAMA_ENABLED is empty (cloud mode).",
+    "options": ["yes", ""],
+    "default": "yes"
+  },
   "POSTGRES_PASSWORD": {
     "type": "secret",
     "description": "Password for the internal Postgres database. Auto-generated on first deploy."
@@ -20,14 +32,24 @@
   },
   "HERMES_MODEL": {
     "type": "select",
-    "description": "Local model HERMES runs by default. Pick the largest one that fits comfortably in VRAM with router headroom. Gemma 4 options assume the family is released on Ollama; fall back to Gemma 3 if not.",
+    "description": "Model HERMES runs by default. Ollama identifiers for gpu-local / cpu-local modes; HERMES provider strings (e.g. 'anthropic/claude-sonnet-4') for cloud mode. Match the size to your hardware — Gemma 12B needs a GPU; the 1b/4b variants run on CPU; cloud models offload entirely.",
     "options": [
       "gemma4:12b-instruct-q4_K_M",
       "gemma4:4b-instruct-q4_K_M",
+      "gemma4:1b",
       "gemma3:12b-instruct-q4_K_M",
-      "gemma3:4b-instruct-q4_K_M"
+      "gemma3:4b-instruct-q4_K_M",
+      "gemma3:1b",
+      "anthropic/claude-sonnet-4",
+      "anthropic/claude-haiku-4-5",
+      "google/gemini-2.5-flash",
+      "google/gemini-2.5-pro"
     ],
     "default": "gemma4:12b-instruct-q4_K_M"
+  },
+  "HERMES_API_KEY": {
+    "type": "secret",
+    "description": "API key for the cloud HERMES_MODEL provider. Required when HERMES_MODEL is a cloud model (anthropic/*, google/*, openai/*). Leave empty for local Ollama-backed models. Use a 'Schleusen' connector instead of this for *per-request* cloud escalations from an otherwise-local stack — this variable is for deployment-wide cloud mode."
   },
   "ROUTER_MODEL": {
     "type": "select",

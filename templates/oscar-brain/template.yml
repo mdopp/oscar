@@ -35,6 +35,12 @@ spec:
       value: "{{SERVICEBAY_MCP_URL}}"
     - name: SERVICEBAY_MCP_TOKEN
       value: "{{SERVICEBAY_MCP_TOKEN}}"
+    # Cloud-LLM credentials. Only populated in the `cloud` deployment mode
+    # (OLLAMA_ENABLED=""). With a cloud HERMES_MODEL like
+    # `anthropic/claude-sonnet-4` HERMES routes everything through the
+    # provider; with a local model these are ignored.
+    - name: HERMES_API_KEY
+      value: "{{HERMES_API_KEY}}"
     # Signal gateway (Phase 1). HERMES talks to a signal-cli daemon
     # running as a sidecar in this pod; the daemon manages the linked-
     # device session state in /home/.local/share/signal-cli.
@@ -86,9 +92,12 @@ spec:
     - mountPath: /home/.local/share/signal-cli
       name: signal-cli-data
 
-  # 2. Ollama — local LLM runtime with GPU passthrough.
-  #    Pulls `{{HERMES_MODEL}}` and `{{ROUTER_MODEL}}` on first start.
-  #    Requires host with nvidia-container-toolkit + CDI configured.
+  {{#OLLAMA_ENABLED}}
+  # 2. Ollama — local LLM runtime. GPU passthrough is a separate toggle
+  #    (`GPU_PASSTHROUGH`) so this same container can also run CPU-only
+  #    when no GPU is present. Pulls `{{HERMES_MODEL}}` and
+  #    `{{ROUTER_MODEL}}` on first start.
+  #    Omitted entirely in the `cloud` deployment mode (OLLAMA_ENABLED="").
   - name: ollama
     image: docker.io/ollama/ollama:latest
     env:
@@ -106,9 +115,12 @@ spec:
     volumeMounts:
     - mountPath: /root/.ollama
       name: ollama-models
+    {{#GPU_PASSTHROUGH}}
     resources:
       limits:
         nvidia.com/gpu: "1"
+    {{/GPU_PASSTHROUGH}}
+  {{/OLLAMA_ENABLED}}
 
   # 3. Qdrant — vector store for OSCAR domain memory (semantic index over
   #    domain collections in Phase 3a+; empty in Phase 0).
@@ -252,10 +264,12 @@ spec:
     hostPath:
       path: {{DATA_DIR}}/oscar-brain/hermes
       type: DirectoryOrCreate
+  {{#OLLAMA_ENABLED}}
   - name: ollama-models
     hostPath:
       path: {{DATA_DIR}}/oscar-brain/ollama
       type: DirectoryOrCreate
+  {{/OLLAMA_ENABLED}}
   - name: qdrant-data
     hostPath:
       path: {{DATA_DIR}}/oscar-brain/qdrant

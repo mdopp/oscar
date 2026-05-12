@@ -24,12 +24,36 @@ Created on first deploy (empty data dir) by the inline init script. Updates on r
 - `gateway_identities` — phone-number / chat-id → LLDAP-uid mapping for Phase 1 Signal/Telegram. Full schema: [`docs/gateway-identities.md`](../../docs/gateway-identities.md).
 - `cloud_audit` — structured record of every Cloud-LLM-connector call (Phase 1+). Metadata-only by default; `prompt_fulltext`/`response_fulltext` filled only when `debug_mode.active=true`.
 
+## Deployment modes
+
+`oscar-brain` supports three modes via two variables:
+
+| Mode | `OLLAMA_ENABLED` | `GPU_PASSTHROUGH` | `HERMES_MODEL` (suggested) | `HERMES_API_KEY` | Use when |
+|---|---|---|---|---|---|
+| **gpu-local** (default, target) | `yes` | `yes` | `gemma4:12b-instruct-q4_K_M` | empty | RTX 4070+, full OSCAR vision. Voice <500 ms. |
+| **cpu-local** | `yes` | empty | `gemma4:1b` | empty | No GPU. Privacy preserved, latency 3–10 s. Honest "test the wiring" mode. |
+| **cloud** | empty | (ignored) | `anthropic/claude-sonnet-4` or `google/gemini-2.5-flash` | required | No GPU + don't want CPU latency. **Prompts leave the house** — opposite of OSCAR's default stance; declare consciously. |
+
+Trade-offs:
+
+|  | gpu-local | cpu-local | cloud |
+|---|---|---|---|
+| Voice round-trip | <500 ms | 3–10 s | 1–3 s |
+| Hardware cost | GPU ≥12 GB VRAM | any 4-core CPU + 8 GB RAM | any host |
+| Recurring cost | electricity | electricity | per-token cloud bill |
+| Privacy | full | full | **prompts to a third party**, full audit in `cloud_audit` |
+| Offline ok? | yes | yes | no |
+
+`oscar-voice` has the matching axis (`STT_GPU_PASSTHROUGH` + `WHISPER_MODEL`). Set both pods consistently; mixed states work but are usually a mistake.
+
 ## Host prerequisites
 
-- **Fedora CoreOS with nvidia-container-toolkit + CDI configured**, so the Ollama container can use `resources.limits.nvidia.com/gpu: "1"`. If `nvidia-smi` works on the host but the container sees no GPU, the CDI spec is missing (`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`).
-- ServiceBay v3.16+ on the same host.
-- HA-MCP integration (`mcp_server`) enabled in your HA pod and a long-lived access token minted for HERMES.
-- ServiceBay-MCP bearer token with scope `read+lifecycle`.
+- **gpu-local:** Fedora CoreOS with `nvidia-container-toolkit` + CDI configured (`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`). Without CDI the Ollama container fails to start when GPU passthrough is requested.
+- **cpu-local:** any host with ≥8 GB RAM. No special setup; Ollama auto-uses CPU when no GPU device is passed through.
+- **cloud:** any host with reachable internet. The Ollama container is skipped entirely; HERMES talks straight to the provider with `HERMES_API_KEY`.
+- ServiceBay v3.16+ on the same host (all modes).
+- HA-MCP integration (`mcp_server`) enabled in your HA pod and a long-lived access token minted for HERMES (all modes).
+- ServiceBay-MCP bearer token with scope `read+lifecycle` (all modes).
 
 ## Deploy steps
 
@@ -90,6 +114,6 @@ stdout-JSON from every container goes to journald; read it via ServiceBay-MCP `g
 
 ## Open follow-ups
 
-- **GPU passthrough validation:** the `resources.limits.nvidia.com/gpu: "1"` declaration relies on ServiceBay's Pod-to-Quadlet translation honouring it. If the resulting Quadlet unit doesn't pass through the GPU, a small ServiceBay change may be required; track upstream once deployed.
+- **GPU passthrough validation:** the `resources.limits.nvidia.com/gpu: "1"` declaration (only emitted when `GPU_PASSTHROUGH=yes`) relies on ServiceBay's Pod-to-Quadlet translation honouring it. If the resulting Quadlet unit doesn't pass through the GPU in gpu-local mode, a small ServiceBay change may be required; track upstream once deployed.
 - **Schema migrations:** the inline init script handles Phase 0 only. Phase 1 schema changes (e.g. adding `gatekeeper_voice_embeddings` in Phase 2) need a real migration tool — alembic or sqitch, decision deferred (architecture doc open point #4).
 - **Custom HERMES image:** mounting `shared/oscar_logging` via hostPath works but is fragile against ServiceBay registry-path changes. A derived `ghcr.io/mdopp/oscar-hermes` image with `oscar-logging` pre-installed is the long-term answer.

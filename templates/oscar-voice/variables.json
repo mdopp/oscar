@@ -4,9 +4,15 @@
     "description": "Host port the gatekeeper listens on for incoming Wyoming-satellite connections (HA Voice PE devices or Wyoming clients).",
     "default": "10700"
   },
+  "STT_GPU_PASSTHROUGH": {
+    "type": "select",
+    "description": "Whether to request 'nvidia.com/gpu=1' on faster-whisper. Set to 'yes' if the host has a CDI-registered NVIDIA GPU; leave empty for CPU-only (then pick a smaller WHISPER_MODEL too — large-v3 is unusable on CPU for live voice).",
+    "options": ["yes", ""],
+    "default": "yes"
+  },
   "WHISPER_MODEL": {
     "type": "select",
-    "description": "Whisper model. large-v3 needs GPU; small/medium fall back to CPU. The default targets sub-300ms latency on a recent consumer GPU.",
+    "description": "Whisper model. large-v3 needs GPU for natural latency (~50 ms / 3 s audio); medium and small run on CPU at degraded speed (~1-5 s / 3 s audio). Pair with STT_GPU_PASSTHROUGH.",
     "options": [
       "large-v3",
       "medium",
