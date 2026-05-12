@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-voice
+  labels:
+    app: oscar-voice
+  annotations:
+    servicebay.label: "OSCAR Voice (Wyoming + Gatekeeper)"
+    servicebay.schema-version: "1"
+    # Gatekeeper listens for incoming satellite connections on
+    # GATEKEEPER_PORT; whisper/piper/openwakeword are pod-internal only.
+    servicebay.ports: "{{GATEKEEPER_PORT}}/tcp"
+spec:
+  # hostNetwork so HA Voice PE devices on the LAN can reach the gatekeeper
+  # at <host-ip>:<GATEKEEPER_PORT>. The Wyoming services are bound to
+  # 127.0.0.1 by the gatekeeper's connection URIs, so they're not exposed.
+  hostNetwork: true
+  containers:
+  # 1. faster-whisper — speech-to-text via Wyoming protocol.
+  #    GPU passthrough so large-v3 hits ~50ms for 3s audio (CPU is too slow
+  #    for the target voice latency).
+  - name: faster-whisper
+    image: docker.io/rhasspy/wyoming-whisper:latest
+    args:
+    - --model
+    - "{{WHISPER_MODEL}}"
+    - --language
+    - "{{WHISPER_LANGUAGE}}"
+    - --beam-size
+    - "1"
+    - --data-dir
+    - /data
+    - --download-dir
+    - /data
+    - --uri
+    - tcp://127.0.0.1:10300
+    env:
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /data
+      name: whisper-data
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+
+  # 2. piper — text-to-speech via Wyoming protocol. CPU is fine here;
+  #    Piper streams audio and a single voice runs comfortably without GPU.
+  - name: piper
+    image: docker.io/rhasspy/wyoming-piper:latest
+    args:
+    - --voice
+    - "{{PIPER_VOICE}}"
+    - --data-dir
+    - /data
+    - --download-dir
+    - /data
+    - --uri
+    - tcp://127.0.0.1:10200
+    env:
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /data
+      name: piper-data
+
+  # 3. openwakeword — wake-word detection via Wyoming protocol.
+  #    Bundled "hey_jarvis" model in Phase 0; custom "Oscar" model later.
+  - name: openwakeword
+    image: docker.io/rhasspy/wyoming-openwakeword:latest
+    args:
+    - --uri
+    - tcp://127.0.0.1:10400
+    - --preload-model
+    - "{{WAKEWORD_MODEL}}"
+    env:
+    - name: TZ
+      value: "{{TZ}}"
+
+  # 4. gatekeeper — OSCAR pipeline orchestrator. Listens on GATEKEEPER_PORT
+  #    for satellite connections (HA Voice PE or any Wyoming-satellite-
+  #    speaking client), drives whisper/piper/openwakeword, calls HERMES at
+  #    the conversation step. Phase 0: pass-through — uid hardcoded to
+  #    "michael", endpoint set to "voice-pe:<wyoming-session-name>". Phase 2
+  #    adds speaker ID via SpeechBrain.
+  - name: gatekeeper
+    image: ghcr.io/mdopp/oscar-gatekeeper:latest
+    env:
+    - name: OSCAR_COMPONENT
+      value: "gatekeeper"
+    - name: OSCAR_DEBUG_MODE
+      value: "true"
+    - name: GATEKEEPER_URI
+      value: "tcp://0.0.0.0:10700"
+    - name: WHISPER_URI
+      value: "tcp://127.0.0.1:10300"
+    - name: PIPER_URI
+      value: "tcp://127.0.0.1:10200"
+    - name: OPENWAKEWORD_URI
+      value: "tcp://127.0.0.1:10400"
+    - name: HERMES_URL
+      value: "{{HERMES_URL}}"
+    - name: HERMES_TOKEN
+      value: "{{HERMES_TOKEN}}"
+    - name: DEFAULT_UID
+      value: "michael"
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 10700
+      hostPort: {{GATEKEEPER_PORT}}
+
+  volumes:
+  - name: whisper-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-voice/whisper
+      type: DirectoryOrCreate
+  - name: piper-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-voice/piper
+      type: DirectoryOrCreate

@@ -1,0 +1,64 @@
+{
+  "GATEKEEPER_PORT": {
+    "type": "text",
+    "description": "Host port the gatekeeper listens on for incoming Wyoming-satellite connections (HA Voice PE devices or Wyoming clients).",
+    "default": "10700"
+  },
+  "WHISPER_MODEL": {
+    "type": "select",
+    "description": "Whisper model. large-v3 needs GPU; small/medium fall back to CPU. The default targets sub-300ms latency on a recent consumer GPU.",
+    "options": [
+      "large-v3",
+      "medium",
+      "small",
+      "base"
+    ],
+    "default": "large-v3"
+  },
+  "WHISPER_LANGUAGE": {
+    "type": "select",
+    "description": "Forced language for transcription. Auto-detect costs a few hundred ms; pin to the household language to skip it.",
+    "options": [
+      "de",
+      "en",
+      "auto"
+    ],
+    "default": "de"
+  },
+  "PIPER_VOICE": {
+    "type": "select",
+    "description": "Piper voice model. Defaults to a German medium-quality voice; switch per harness later (Phase 4: per-family-member voice).",
+    "options": [
+      "de_DE-thorsten-medium",
+      "de_DE-thorsten-high",
+      "de_DE-eva_k-x_low",
+      "en_US-amy-medium"
+    ],
+    "default": "de_DE-thorsten-medium"
+  },
+  "WAKEWORD_MODEL": {
+    "type": "select",
+    "description": "openWakeWord model to preload. Phase 0 sticks with the bundled 'hey_jarvis'; a custom 'Oscar' model arrives in Phase 4.",
+    "options": [
+      "hey_jarvis",
+      "alexa",
+      "hey_mycroft",
+      "ok_nabu"
+    ],
+    "default": "hey_jarvis"
+  },
+  "HERMES_URL": {
+    "type": "text",
+    "description": "Base URL of the HERMES HTTP API in the oscar-brain pod. Localhost on the same host since both pods use hostNetwork.",
+    "default": "http://127.0.0.1:8000"
+  },
+  "HERMES_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token the gatekeeper presents when calling HERMES. Mint this once oscar-brain is up; HERMES's own auth config decides what's required."
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps.",
+    "default": "Europe/Berlin"
+  }
+}
