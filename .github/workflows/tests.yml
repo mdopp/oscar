@@ -33,6 +33,9 @@ jobs:
           - name: oscar_health
             path: shared/oscar_health
             install: ./shared/oscar_logging shared/oscar_health[test]
+          - name: oscar_db
+            path: shared/oscar_db
+            install: ./shared/oscar_logging shared/oscar_db[test]
           - name: gatekeeper
             path: gatekeeper
             install: ./shared/oscar_logging gatekeeper
