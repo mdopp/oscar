@@ -14,7 +14,7 @@ import re
 from typing import Iterable
 
 
-_FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_FRONTMATTER = re.compile(r"\A\s*---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 @dataclasses.dataclass(frozen=True)
