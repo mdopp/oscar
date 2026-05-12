@@ -11,6 +11,17 @@ name: release-please
 #   feat!:    -> breaking change, major bump (until v1.0.0: minor bump)
 # Other types (chore, docs, refactor, ci, build, perf, test) are recorded
 # in the changelog but don't bump the version.
+#
+# After release-please opens or updates the release PR, we enable
+# GitHub's native auto-merge on it. The PR sits idle until the required
+# CI checks (tests, build-images, pre-commit) all pass, then GitHub
+# squashes it in without human intervention. The resulting tag fires
+# build-images.yml on the v* trigger and the cycle closes.
+#
+# Pre-requisite: Settings → General → Pull Requests → "Allow auto-merge"
+# is enabled at the repo level (set once via
+#   gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true
+# ).
 
 on:
   push:
@@ -24,8 +35,25 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Enable auto-merge on the release PR
+        if: steps.release.outputs.pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `outputs.pr` is the JSON of the opened/updated release PR (or empty
+          # when there's nothing to release this push).
+          PR_NUMBER=$(jq -r '.number' <<< '${{ steps.release.outputs.pr }}')
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "::notice::release-please produced no PR number; nothing to auto-merge"
+            exit 0
+          fi
+          echo "Enabling auto-merge (squash) on PR #${PR_NUMBER}"
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash --delete-branch
