@@ -13,6 +13,7 @@ Phase 0 target. Phase 1 adds a `signal-cli-daemon` sidecar for the HERMES Signal
 | `qdrant` | `docker.io/qdrant/qdrant:latest` | Vector store for OSCAR domain memory. Empty in Phase 0; populated from Phase 3a. |
 | `postgres` | `docker.io/postgres:16-alpine` | Initial schema is dropped into `/docker-entrypoint-initdb.d/` by a wrapper command; the standard postgres entrypoint picks it up on first start. |
 | `pg-backup` | `docker.io/postgres:16-alpine` | Sidecar that runs `pg_dump` weekly and prunes dumps older than 28 days. |
+| `signal-cli-daemon` | `docker.io/bbernhard/signal-cli-rest-api:latest` | Phase-1 sidecar: HTTP front-end to signal-cli that the HERMES Signal gateway calls. Linked-device session state persists under `signal-cli/`. |
 
 ## Initial Postgres schema
 
@@ -56,12 +57,30 @@ All under `{{DATA_DIR}}/oscar-brain/` on the host:
 | `qdrant/` | Vector index | no in Phase 0; review when Phase 3a populates it |
 | `postgres/` | OSCAR domain tables, audit, settings | **yes** — `pg_dump` weekly into `postgres-backups/` |
 | `postgres-backups/` | `oscar-YYYYMMDD-HHMMSS.sql.gz`, 4-week retention | this *is* the backup |
+| `signal-cli/` | Linked-device keys + session DB. **Critical** — losing this means re-pairing every family member's number. | not yet in `pg-backup`; covered by ServiceBay's own backup pipeline |
 
 ## Shared library
 
 `shared/oscar_logging/` is mounted read-only at `/opt/oscar/shared/oscar_logging` and prepended to `PYTHONPATH` so OSCAR skills can `from oscar_logging import log` without an image rebuild. The mount points at `OSCAR_REGISTRY_DIR/shared/oscar_logging/src/oscar_logging`, which is the package directory inside the src-layout project at `shared/oscar_logging/`.
 
 To switch to a real pip install later (e.g. in a derived `ghcr.io/mdopp/oscar-hermes` image): `pip install /path/to/shared/oscar_logging` works thanks to the `pyproject.toml`.
+
+## Signal pairing (Phase 1)
+
+Run once at deploy. The signal-cli daemon needs to be paired as a linked device of an existing family Signal account before HERMES can send / receive messages.
+
+1. Pick the family Signal account that will host the link (typically the maintainer's own number) — Signal allows multiple linked devices per account.
+2. Set `SIGNAL_ACCOUNT` in the ServiceBay variables (E.164 format, e.g. `+4915112345678`) and deploy.
+3. After the pod is up, ask the signal-cli daemon for a link URI:
+   ```bash
+   curl -X POST 'http://<oscar-host>:8080/v1/qrcodelink?device_name=oscar-brain' \
+     --output link.png
+   ```
+4. Open the PNG on a screen and scan the QR code with the **paired** Signal phone (Signal app → Settings → Linked Devices → Link New Device).
+5. After a successful scan, the daemon registers the linked device. Subsequent restarts pick the session up from the persistent volume — no re-pairing needed.
+6. Verify the gateway works: send any Signal message to the paired account from another contact. HERMES should pick it up; check via ServiceBay-MCP `get_container_logs(id="oscar-brain-hermes")`.
+
+**Roll-out reminder (per issue #5):** Michael first, family later. Don't populate `gateway_identities` for other family members until the daemon has run two weeks without re-pairing.
 
 ## Logging
 
