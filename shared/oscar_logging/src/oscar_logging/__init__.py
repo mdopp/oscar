@@ -6,9 +6,10 @@ Every OSCAR container imports this — direct `print` / `logging.info` is verbot
 
 Spec: docs/logging.md
 Component name read from `OSCAR_COMPONENT` env var (set in pod-yaml).
-Debug-level emission gated by `OSCAR_DEBUG_MODE` (phase-0 env-var stub).
-Will be replaced by a Postgres lookup against `system_settings` once
-oscar-brain is up; the public surface stays the same.
+Debug-level emission gated by `OSCAR_DEBUG_MODE` (env-var default) and
+optionally overridden by a runtime watcher (`oscar_logging.runtime`)
+that polls `system_settings.debug_mode` in Postgres. Set via the
+`debug.set` HERMES skill / `python -m oscar_logging.admin debug-set …`.
 """
 
 from __future__ import annotations
@@ -22,8 +23,21 @@ from typing import Any
 
 COMPONENT = os.environ.get("OSCAR_COMPONENT", "unknown")
 
+# Runtime override: set by oscar_logging.runtime.watch_debug_mode when a
+# component opts into Postgres-driven toggling. None means "fall back to
+# the env var" — the default behaviour for containers that don't watch.
+_debug_override: bool | None = None
+
+
+def set_debug_override(active: bool | None) -> None:
+    """Set or clear the runtime debug-mode override. `None` re-enables env-var fallback."""
+    global _debug_override
+    _debug_override = active
+
 
 def _debug_active() -> bool:
+    if _debug_override is not None:
+        return _debug_override
     return os.environ.get("OSCAR_DEBUG_MODE", "false").lower() in ("true", "1", "yes")
 
 
@@ -60,4 +74,4 @@ class _Log:
 
 log = _Log()
 
-__all__ = ["log", "COMPONENT"]
+__all__ = ["log", "COMPONENT", "set_debug_override"]
