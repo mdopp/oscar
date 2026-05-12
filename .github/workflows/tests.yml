@@ -41,7 +41,7 @@ jobs:
             install: ./shared/oscar_logging shared/oscar_help[test]
           - name: gatekeeper
             path: gatekeeper
-            install: ./shared/oscar_logging gatekeeper[test]
+            install: ./shared/oscar_logging ./gatekeeper[test]
           - name: connector-weather
             path: connectors/weather
             install: ./shared/oscar_logging connectors/weather[test]
