@@ -136,82 +136,10 @@ spec:
       name: qdrant-data
 
   # 4. Postgres — OSCAR domain tables + system_settings + cloud_audit.
-  #    Initial schema is dropped into /docker-entrypoint-initdb.d/ by the
-  #    wrapper command below so the standard postgres entrypoint picks it
-  #    up on first start (empty data dir).
+  #    Schema is owned by the oscar-db-migrate container (alembic, runs at
+  #    pod start). This container just runs the stock postgres entrypoint.
   - name: postgres
     image: docker.io/postgres:16-alpine
-    command: ["/bin/sh", "-c"]
-    args:
-      - |
-        mkdir -p /docker-entrypoint-initdb.d
-        cat > /docker-entrypoint-initdb.d/01-oscar-init.sql <<'EOSQL'
-        -- system_settings: key/value, holds debug_mode + future global flags
-        CREATE TABLE IF NOT EXISTS system_settings (
-          key   TEXT PRIMARY KEY,
-          value JSONB NOT NULL,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        INSERT INTO system_settings (key, value) VALUES
-          ('debug_mode', '{"active": true, "verbose_until": null, "latency_annotations": false}'::jsonb)
-        ON CONFLICT (key) DO NOTHING;
-
-        -- time_jobs: backing store for the timer + alarm skills
-        --   spec: docs/timer-and-alarm.md
-        CREATE TABLE IF NOT EXISTS time_jobs (
-          id              UUID PRIMARY KEY,
-          kind            TEXT NOT NULL CHECK (kind IN ('timer','alarm')),
-          owner_uid       TEXT NOT NULL,
-          label           TEXT,
-          fires_at        TIMESTAMPTZ NOT NULL,
-          rrule           TEXT,
-          duration_set    INTERVAL,
-          target_endpoint TEXT NOT NULL,
-          hermes_cron_id  TEXT,
-          state           TEXT NOT NULL CHECK (state IN ('armed','firing','snoozed','done','cancelled')),
-          created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        CREATE INDEX IF NOT EXISTS time_jobs_fires_idx ON time_jobs (state, fires_at)
-          WHERE state IN ('armed','snoozed');
-        CREATE INDEX IF NOT EXISTS time_jobs_owner_idx ON time_jobs (owner_uid, state);
-
-        -- gateway_identities: phone-number / chat-id -> LLDAP uid (Phase 1)
-        --   spec: docs/gateway-identities.md
-        CREATE TABLE IF NOT EXISTS gateway_identities (
-          gateway      TEXT NOT NULL,
-          external_id  TEXT NOT NULL,
-          uid          TEXT NOT NULL,
-          display_name TEXT,
-          verified_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-          created_by   TEXT NOT NULL,
-          PRIMARY KEY (gateway, external_id)
-        );
-        CREATE INDEX IF NOT EXISTS gateway_identities_uid_idx ON gateway_identities (uid);
-
-        -- cloud_audit: structured record of every escalation to the Cloud-LLM
-        --   connector (Phase 1). Metadata-only by default; full text only when
-        --   debug_mode.active is true (see docs/logging.md).
-        CREATE TABLE IF NOT EXISTS cloud_audit (
-          id                 UUID PRIMARY KEY,
-          ts                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-          trace_id           UUID NOT NULL,
-          uid                TEXT NOT NULL,
-          vendor             TEXT NOT NULL,
-          prompt_hash        TEXT NOT NULL,
-          prompt_length      INTEGER NOT NULL,
-          response_length    INTEGER NOT NULL,
-          latency_ms         INTEGER NOT NULL,
-          cost_usd_micro     INTEGER,
-          router_score       REAL,
-          escalation_reason  TEXT,
-          prompt_fulltext    TEXT,
-          response_fulltext  TEXT
-        );
-        CREATE INDEX IF NOT EXISTS cloud_audit_ts_idx ON cloud_audit (ts DESC);
-        CREATE INDEX IF NOT EXISTS cloud_audit_uid_idx ON cloud_audit (uid, ts DESC);
-        CREATE INDEX IF NOT EXISTS cloud_audit_trace_idx ON cloud_audit (trace_id);
-        EOSQL
-        exec /usr/local/bin/docker-entrypoint.sh postgres
     env:
     - name: POSTGRES_USER
       value: "oscar"
@@ -224,6 +152,22 @@ spec:
     volumeMounts:
     - mountPath: /var/lib/postgresql/data
       name: postgres-data
+
+  # 4b. oscar-db-migrate — runs `alembic upgrade head` on every pod start.
+  #     Waits for postgres in the same pod to accept connections (psycopg
+  #     retry loop), then applies any pending migrations and stays alive
+  #     so the pod stays healthy. Schema additions go into the image's
+  #     /app/migrations/versions/ via a new revision file; redeploying the
+  #     pod is enough to roll them out.
+  - name: oscar-db-migrate
+    image: ghcr.io/mdopp/oscar-db-migrate:latest
+    env:
+    - name: POSTGRES_DSN
+      value: "postgresql://oscar:{{POSTGRES_PASSWORD}}@localhost:5432/oscar"
+    - name: OSCAR_COMPONENT
+      value: "oscar-db-migrate"
+    - name: TZ
+      value: "{{TZ}}"
 
   # 5. pg-backup — weekly pg_dump sidecar, 4-week retention.
   #    Simple loop: dump, prune, sleep a week. No external scheduler needed.

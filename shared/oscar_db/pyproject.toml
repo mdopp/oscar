@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-db"
+version = "0.1.0"
+description = "OSCAR Postgres schema as alembic migrations. Ships an image (ghcr.io/mdopp/oscar-db-migrate) that runs `alembic upgrade head` in the oscar-brain pod."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "alembic>=1.13",
+  "asyncpg>=0.29",
+  "psycopg[binary]>=3.1",
+  "sqlalchemy>=2.0",
+  "oscar-logging",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+"oscar-db-migrate" = "oscar_db.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["oscar_db*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
