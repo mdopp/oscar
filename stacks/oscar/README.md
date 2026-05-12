@@ -1,7 +1,7 @@
 # Stack `oscar`
 
-Bündel-Template: voice + brain + schleusen + ingestion in einem ServiceBay-Wizard-Schritt.
+Bundle template: voice + brain + connectors + ingestion in a single ServiceBay wizard step.
 
-Wird konsumiert, wenn alle vier OSCAR-Pods gleichzeitig deployed werden sollen (z.B. Initial-Install nach ServiceBay-Vollstack). Einzelne Phasen (z.B. nur Phase 0 = voice + brain) gehen über die jeweiligen Templates direkt, nicht über diesen Stack.
+Used when all four OSCAR pods are deployed at once (e.g. initial install after a ServiceBay full-stack rollout). Individual phases (e.g. Phase 0 = voice + brain only) deploy the templates directly, not through this stack.
 
-Architektur: [`../../oscar-architecture.md`](../../oscar-architecture.md).
+Architecture: [`../../oscar-architecture.md`](../../oscar-architecture.md).

@@ -1,9 +1,9 @@
 # oscar-brain
 
-ServiceBay Pod-YAML-Template: HERMES (GPU-fähig) + Ollama (Gemma 4-12B Q4 + Gemma 4-1B Router) + Qdrant + Postgres.
+ServiceBay Pod-YAML template: HERMES (GPU-capable) + Ollama (Gemma 4-12B Q4 + Gemma 4-1B router) + Qdrant + Postgres.
 
-Postgres hostet alle OSCAR-Domain-Tabellen: `zeit_jobs`, `gateway_identities`, `cloud_audit`, perspektivisch `tuersteher_voice_embeddings`, `ingestion_classifications`. Nightly `pg_dump`-CronJob als zusätzlicher Container, eigener Volume-Mount für Dumps (4 Wochen Retention).
+Postgres hosts all OSCAR domain tables: `time_jobs`, `gateway_identities`, `cloud_audit`, eventually `gatekeeper_voice_embeddings`, `ingestion_classifications`. A nightly `pg_dump` CronJob runs as an additional container with its own volume mount for dumps (4 weeks retention).
 
-Phase 1: zusätzlicher `signal-cli-daemon`-Sidecar für das HERMES-Signal-Gateway.
+Phase 1: adds a `signal-cli-daemon` sidecar for the HERMES Signal gateway.
 
-Architektur: [`oscar-architecture.md`](../../oscar-architecture.md). Logging-Konvention: [`docs/logging.md`](../../docs/logging.md).
+Architecture: [`oscar-architecture.md`](../../oscar-architecture.md). Logging convention: [`docs/logging.md`](../../docs/logging.md).

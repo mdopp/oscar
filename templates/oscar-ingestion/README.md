@@ -1,9 +1,9 @@
 # oscar-ingestion
 
-ServiceBay Pod-YAML-Template: Ingestion-Pipeline-Container + Syncthing-Watcher.
+ServiceBay Pod-YAML template: ingestion pipeline container + Syncthing watcher.
 
-Trigger: Signal-/Telegram-Foto-Anhang (über HERMES-Gateway) oder Datei im `/material-inbox/{uid}/`-Ordner. Klassifikation per Gemma 4 multimodal (über HERMES), Domain-Routing in Postgres-Collections in `oscar-brain`.
+Triggers: Signal/Telegram photo attachment (via HERMES gateway) or a file in `/material-inbox/{uid}/`. Classification via Gemma 4 multimodal (through HERMES), domain routing into Postgres collections in `oscar-brain`.
 
-Material-Store: separater encrypted Mount, **nicht** im `file-share`-Stack. 24h-TTL für unbestätigtes Material.
+Material store: separate encrypted mount, **not** in the `file-share` stack. 24 h TTL for unconfirmed material.
 
-Zielphase: 3a. Architektur: [`oscar-architecture.md`](../../oscar-architecture.md) → „8. Inbound Knowledge Pipeline".
+Target phase: 3a. Architecture: [`oscar-architecture.md`](../../oscar-architecture.md) → "8. Inbound knowledge pipeline".

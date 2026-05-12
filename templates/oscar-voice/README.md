@@ -1,7 +1,7 @@
 # oscar-voice
 
-ServiceBay Pod-YAML-Template: Rhasspy 3 + faster-whisper-large-v3 + Piper + openWakeWord + Türsteher.
+ServiceBay Pod-YAML template: Rhasspy 3 + faster-whisper-large-v3 + Piper + openWakeWord + gatekeeper.
 
-Wyoming-Endpoints (10300/10200/10400) für HA Voice PE Devices. Türsteher (Code in `tuersteher/`) macht Pipeline-Orchestrierung + Conversation-Handoff an HERMES.
+Wyoming endpoints (10300/10200/10400) for HA Voice PE devices. The gatekeeper (code in `gatekeeper/`) handles pipeline orchestration + conversation handoff to HERMES.
 
-Phase 0: Pass-through (kein Speaker-ID). Phase 2: Speaker-ID + Embedding-Tabelle. Architektur: [`oscar-architecture.md`](../../oscar-architecture.md).
+Phase 0: pass-through (no speaker ID). Phase 2: speaker ID + embedding table. Architecture: [`oscar-architecture.md`](../../oscar-architecture.md).

@@ -1,9 +1,9 @@
 # Harnesses
 
-YAML-Dateien pro LLDAP-`uid` + System-Harness + Gast-Harness. Dateiname == `uid`.
+YAML files per LLDAP `uid` + system harness + guest harness. Filename == `uid`.
 
-Zur Laufzeit komponiert: `system.yaml` ∪ (`{uid}.yaml` | `gast.yaml`) → effektive Harness pro Conversation-Turn.
+Composed at runtime: `system.yaml` ∪ (`{uid}.yaml` | `guest.yaml`) → effective harness per conversation turn.
 
-Felder: `context`, `tools`, `guides`, `sensors`, `permissions` — Schema-Spec kommt in [`../docs/harness-spec.md`](../docs/harness-spec.md) (Phase 2).
+Fields: `context`, `tools`, `guides`, `sensors`, `permissions` — schema spec coming in [`../docs/harness-spec.md`](../docs/harness-spec.md) (Phase 2).
 
-`system.yaml` enthält ab Phase 1 den globalen `debug_mode`-Schalter (siehe [`../oscar-architecture.md`](../oscar-architecture.md) → „Querschnitt: Debug-Modus").
+`system.yaml` carries the global `debug_mode` switch from Phase 1 onward (see [`../oscar-architecture.md`](../oscar-architecture.md) → "Cross-cutting: debug mode").

@@ -1,65 +1,65 @@
-# O.S.C.A.R. — Architektur-Kontext
+# O.S.C.A.R. — Architecture Context
 
-> Lebendes Dokument. Stand: Mai 2026 (Update nach ServiceBay v3.16+ und Architektur-Umkehr: OSCAR ownt Voice, HA ist MCP-Tool). Erarbeitet im Konzept-Dialog, übergeben an Claude Code zur Umsetzung.
+> Living document. As of May 2026 (updated after ServiceBay v3.16+ and the architecture inversion: OSCAR owns voice, HA is an MCP tool). Drafted through concept dialogue, handed to Claude Code for implementation.
 
 ## Vision
 
-O.S.C.A.R. ist ein privates Betriebssystem für Familie und Zuhause: ein lokal laufender, allwissender Assistent, der digitales und physisches Leben orchestriert, als unendliches Gedächtnis dient und absolute Privatsphäre garantiert.
+O.S.C.A.R. is a private operating system for family and home: a fully local, omniscient assistant that orchestrates digital and physical life, serves as infinite memory, and guarantees absolute privacy.
 
-### Fünf Kernziele
+### Five core goals
 
-1. **Digitale Souveränität (Tresor)** — moderne KI nutzen, ohne Datenpreisgabe. Das Gehirn verlässt das Haus nicht.
-2. **Kontextbezogenes Langzeitgedächtnis** — vernetztes Verständnis für Vorlieben, Werte, Erlebnisse, Beziehungen.
-3. **Proaktive Orchestrierung** — physische Welt (Haus) verknüpft mit digitaler Welt (Dokumente, Termine, Gewohnheiten).
-4. **Eiserne Privatsphäre im Raum** — wahrt Individualität jedes Bewohners, erkennt Gäste, gibt nur frei, was freigegeben ist.
-5. **Reibungslose, natürliche Interaktion** — Sprache zuhause, Chat unterwegs, ein zusammenhängendes Erlebnis.
+1. **Digital sovereignty (vault)** — use modern AI without exposing data. The brain doesn't leave the house.
+2. **Contextual long-term memory** — networked understanding of preferences, values, experiences, relationships.
+3. **Proactive orchestration** — physical world (home) linked to digital world (documents, appointments, habits).
+4. **Ironclad privacy in the room** — preserves each resident's individuality, recognises guests, releases only what is released.
+5. **Frictionless, natural interaction** — voice at home, chat on the go, one coherent experience.
 
-## Architektonische Grundentscheidung: Voice belongs to OSCAR
+## Architectural foundation: voice belongs to OSCAR
 
-Im Gegensatz zur HA-zentrierten Voice-Architektur (HA macht STT/TTS, HERMES ist HA-Conversation-Agent) **ownt OSCAR die komplette Voice-Pipeline**:
+Unlike the HA-centric voice architecture (HA does STT/TTS, HERMES is the HA conversation agent), **OSCAR owns the entire voice pipeline**:
 
-- HA Voice Preview Edition spricht Wyoming **direkt** mit `oscar-voice` (nicht mehr mit HA)
-- Wakeword + STT + Pipeline-Orchestrierung + TTS + Multi-Room-Routing leben im `oscar-voice`-Pod
-- HA bleibt der Smart-Home-Hub für Geräte (Z-Wave, Matter, Sensoren, Automations) und exponiert dies via **HA's nativem MCP-Server** als Tool
-- HERMES bindet HA-MCP ein wie jeden anderen Tool-Anbieter
+- HA Voice Preview Edition speaks Wyoming **directly** to `oscar-voice` (no longer to HA)
+- Wakeword + STT + pipeline orchestration + TTS + multi-room routing live in the `oscar-voice` pod
+- HA remains the smart-home hub for devices (Z-Wave, Matter, sensors, automations) and exposes that via **HA's native MCP server** as a tool
+- HERMES consumes HA-MCP like any other tool provider
 
-**Gewinne**: Identity ohne Header-Marshalling, Voice-Tone/Emotion-Analyse machbar, freie Konversation statt Intent-Grammatik, multimodale Eingaben kombinierbar (Audio + Foto in einem Gemma-Call).
+**Wins:** identity without header marshalling, voice-tone/emotion analysis feasible, free conversation instead of intent grammar, multimodal inputs combinable (audio + photo in a single Gemma call).
 
-**Voraussetzung**: GPU-Server (kein Mac mini), damit Whisper-large + Gemma 4-12B+ Q4 + Piper-Streaming Latenz < 500ms erreichen.
+**Prerequisite:** GPU server (no Mac mini), so Whisper-large + Gemma 4-12B+ Q4 + Piper streaming achieve latency < 500 ms.
 
-## Familie & Identitäten
+## Family & identities
 
-- Drei Personen: Vater (Michael), Mutter, Kind — jedes mit eigenem LLDAP-Account (`uid`)
-- Familienmitglieder in LLDAP-Gruppe `family`, Michael zusätzlich in `admins`
-- Gäste werden als Gruppe behandelt — Gast-Mode aktiviert sich für jede nicht-erkannte Stimme; kein individueller Gast-LLDAP-Account
-- Jede Person hat einen Personal-Harness in `harnesses/{uid}.yaml`
-- System soll auch in anderen Haushalten installierbar sein (Multi-Tenant durch eigenen LLDAP + Harness-Repo pro Haushalt)
+- Three people: father (Michael), mother, child — each with their own LLDAP account (`uid`)
+- Family members in LLDAP group `family`, Michael additionally in `admins`
+- Guests are treated as a group — guest mode activates for any unrecognised voice; no individual guest LLDAP account
+- Each person has a personal harness in `harnesses/{uid}.yaml`
+- The system should be installable in other households too (multi-tenant via its own LLDAP + harness repo per household)
 
-## Zentrales Konzept: Harness
+## Central concept: harness
 
-Begriff im Sinne von Birgitta Böckeler / Martin Fowler:
-> "Agent = Model + Harness" — der Harness umfasst alles in einem Agenten außer dem Modell selbst.
+Term in the sense of Birgitta Böckeler / Martin Fowler:
+> "Agent = Model + Harness" — the harness comprises everything in an agent except the model itself.
 
-### Drei Harness-Typen
+### Three harness types
 
-| Typ | Aktivierung | Zweck |
+| Type | Activation | Purpose |
 |---|---|---|
-| **System-Harness** | immer aktiv | Globale Persona, Welt-/Hauswissen, Standard-Tools, Welt-Schleusen-Regeln |
-| **Personal-Harness** | bei erkannter Bewohner-Stimme (LLDAP-uid-Match) | Persönlicher Memory-Slice, Vorlieben, erweiterte Tools, höhere Rechte |
-| **Gast-Harness** | bei unerkannter Stimme | Nur public Wissen, eingeschränkte Tools, keine Schleusen |
+| **System harness** | always active | Global persona, world/house knowledge, default tools, external-connector rules |
+| **Personal harness** | on recognised resident voice (LLDAP-uid match) | Personal memory slice, preferences, extended tools, elevated permissions |
+| **Guest harness** | on unrecognised voice | Public knowledge only, restricted tools, no connectors |
 
-### Fünf Komponenten pro Harness
+### Five components per harness
 
-- **Kontext** — Memory-Namespaces, Vorlieben, Verlaufshistorie
-- **Tools** — welche MCP-Werkzeuge dürfen aufgerufen werden
-- **Guides** — Antwortstil, Skills, Verhaltens-Anweisungen (Feedforward)
-- **Sensoren** — Feedback-Mechanismen, Validatoren (Feedback)
-- **Rechte** — Welt-Schleusen-Berechtigungen, Cloud-LLM-Erlaubnis, Ingestion-Rechte
+- **Context** — memory namespaces, preferences, history
+- **Tools** — which MCP tools may be invoked
+- **Guides** — response style, skills, behavioural instructions (feedforward)
+- **Sensors** — feedback mechanisms, validators (feedback)
+- **Permissions** — external-connector permissions, cloud-LLM access, ingestion rights
 
-### Beispiel-YAML
+### Example YAML
 
 ```yaml
-harness: michael          # entspricht der LLDAP-uid
+harness: michael          # matches the LLDAP uid
 extends: system
 context:
   memory_namespaces: [michael_private, michael_journal, family_shared]
@@ -68,101 +68,101 @@ tools:
   inherit_from_system: true
   additional: [finance_docs, personal_email, tax_archive, ingestion]
 guides:
-  - "Antworten kurz halten, max. 3 Sätze gesprochen"
-  - "Bei Finanzdokumenten Quelle nennen"
+  - "Keep answers short, max. 3 sentences spoken"
+  - "Cite the source when discussing financial documents"
 sensors:
   - thumbs_feedback_via_signal
   - calendar_writeback_confirmation
 permissions:
-  cloud_llm_schleuse: allowed
+  cloud_llm_connector: allowed
   external_search: allowed
-  enrichment_schleusen: [open_library, musicbrainz, discogs]
+  enrichment_connectors: [open_library, musicbrainz, discogs]
   smart_home: full
 ```
 
-### Steering Loop
+### Steering loop
 
-Harnesses werden iterativ verbessert. Wenn O.S.C.A.R. wiederholt etwas falsch macht, ergänzen wir Guides oder Sensors — nicht den Code. Das ist die Wartungsphilosophie.
+Harnesses are improved iteratively. When O.S.C.A.R. repeatedly does something wrong, we add guides or sensors — not code. That's the maintenance philosophy.
 
-## Architektur-Schichten
+## Architecture layers
 
-### 1. Eingänge
+### 1. Inputs
 
-- **Sprache zuhause**: Home Assistant Voice Preview Edition als Hardware (ESP32 + Mikrofon-Array), aber **Wyoming-Endpoint konfiguriert auf `oscar-voice`** (nicht HA). Zunächst Büro, dann Wohnzimmer, perspektivisch 4–5 Räume.
-- **Mobile Chat**: Signal-Bot via HERMES-Gateway (Telegram als Fallback)
-- **Wakeword**: Single ("Hey Jarvis" anfangs, später eigenes "Oscar"-Modell), kurze Antworten, "Gast:"-Präfix für unerkannte Stimmen, Beep für erkannte Mitglieder
-- **Material-Eingänge**: Foto/Scan/Sprachmemo/Datei in Signal/Telegram **oder** Drop in Syncthing-Inbox-Folder (`/material-inbox/{uid}/`) → Inbound Knowledge Pipeline (siehe Schicht 8)
+- **Voice at home:** Home Assistant Voice Preview Edition as the hardware (ESP32 + microphone array), but **Wyoming endpoint configured to `oscar-voice`** (not HA). Office first, then living room, eventually 4–5 rooms.
+- **Mobile chat:** Signal bot via HERMES gateway (Telegram as fallback)
+- **Wakeword:** single ("Hey Jarvis" initially, later a custom "Oscar" model), short answers, "Guest:" prefix for unrecognised voices, beep for recognised members
+- **Material inputs:** photo/scan/voice memo/file via Signal/Telegram **or** drop into a Syncthing inbox folder (`/material-inbox/{uid}/`) → inbound knowledge pipeline (see Layer 8)
 
-### 2. Türsteher (Voice-Pipeline + Identitäts-Layer)
+### 2. Gatekeeper (voice pipeline + identity layer)
 
-`oscar-voice` ist ein Pod mit **vier Containern**: faster-whisper-large-v3, piper, openWakeWord, Türsteher. Türsteher sitzt auf **Rhasspy 3** als Pipeline-Backbone und ist gleichzeitig Identitäts-Layer + Harness-Composer.
+`oscar-voice` is a pod with **four containers**: faster-whisper-large-v3, piper, openWakeWord, gatekeeper. The gatekeeper sits on top of **Rhasspy 3** as the pipeline backbone and is simultaneously the identity layer + harness composer.
 
-#### Pipeline-Verantwortlichkeiten (Türsteher + Rhasspy 3)
+#### Pipeline responsibilities (gatekeeper + Rhasspy 3)
 
-- **Wyoming-Server**: empfängt Audio-Streams von HA Voice PE Devices (Port 10300/10200/10400, Standard-Wyoming). Multi-Device-fähig — jedes Voice PE Device adressiert seinen eigenen Session-Kontext.
-- **Wakeword-Confirmation-Flow**: openWakeWord triggert, Rhasspy 3 leitet Audio nach Wakeword-Detection an Whisper weiter, Türsteher beobachtet parallel.
-- **STT-Anbindung**: `faster-whisper:11300` intern, Streaming-Chunks via Wyoming
-- **Speaker-Recognition** (in Phase 2 aktiviert): SpeechBrain ECAPA-TDNN oder Resemblyzer extrahiert ein 256-d Voice-Embedding aus dem Audio-Stream
-- **LLDAP-uid-Mapping**: Vergleich des Embeddings mit Türsteher-eigener Postgres-Tabelle (`tuersteher_voice_embeddings` in `oscar-brain.postgres`, FK auf LLDAP `uid`). Voice-Embeddings liegen **nicht** in LLDAP (biometrische PII, binär)
-- **Harness-Komposition**: `system.yaml` ∪ (`{uid}.yaml` | `gast.yaml`) → Effective Harness
-- **Conversation-Handoff**: ruft HERMES **direkt** auf (HTTP/MCP) mit `(text, uid, audio_features)` — kein Umweg über HA Conversation Agent
-- **TTS-Generierung**: bekommt Response-Text von HERMES, ruft `piper:11200` für TTS auf
-- **Audio-Rückleitung**: TTS-Audio geht via Wyoming zurück zum originating Voice PE Device
-- **Mehrere Personen im Raum**: konservative Schnittmenge der Personal-Harnesses (verfeinerbar in Phase 4)
-- **Custom Wakeword "Oscar"**: openWakeWord-Container kann eigene Modelle laden (hostPath-mount) — Phase-4-Feature
+- **Wyoming server:** receives audio streams from HA Voice PE devices (ports 10300/10200/10400, standard Wyoming). Multi-device capable — each Voice PE device addresses its own session context.
+- **Wakeword confirmation flow:** openWakeWord triggers, Rhasspy 3 forwards audio after wakeword detection to Whisper, gatekeeper observes in parallel.
+- **STT integration:** `faster-whisper:11300` internally, streaming chunks via Wyoming
+- **Speaker recognition** (activated in Phase 2): SpeechBrain ECAPA-TDNN or Resemblyzer extracts a 256-d voice embedding from the audio stream
+- **LLDAP-uid mapping:** compares embedding against the gatekeeper's own Postgres table (`gatekeeper_voice_embeddings` in `oscar-brain.postgres`, FK to LLDAP `uid`). Voice embeddings are **not** in LLDAP (biometric PII, binary)
+- **Harness composition:** `system.yaml` ∪ (`{uid}.yaml` | `guest.yaml`) → effective harness
+- **Conversation handoff:** calls HERMES **directly** (HTTP/MCP) with `(text, uid, audio_features)` — no detour through the HA conversation agent
+- **TTS generation:** receives response text from HERMES, calls `piper:11200` for TTS
+- **Audio return path:** TTS audio goes back via Wyoming to the originating Voice PE device
+- **Multiple people in the room:** conservative intersection of personal harnesses (refineable in Phase 4)
+- **Custom wakeword "Oscar":** the openWakeWord container can load custom models (hostPath mount) — Phase 4 feature
 
-#### Was nicht mehr nötig ist
+#### What is no longer needed
 
-- HERMES-Registration als HA-Conversation-Agent → entfällt
-- HA-Pipeline-Konfiguration in `home-assistant/.storage/` → entfällt
-- Identity-Header durch HA-Pipeline marshallen → entfällt (Türsteher und HERMES kommunizieren direkt)
+- HERMES registration as HA conversation agent → gone
+- HA pipeline configuration in `home-assistant/.storage/` → gone
+- Marshalling identity headers through the HA pipeline → gone (gatekeeper and HERMES talk directly)
 
-### 3. HERMES Agent (Kern)
+### 3. HERMES agent (core)
 
 - Repo: <https://github.com/nousresearch/hermes-agent>
-- Provider-agnostisch (Modell-Wechsel via `hermes model`, transparent zwischen lokal und Cloud)
-- Eingebaute Gateways: Signal, Telegram, Discord, Slack, WhatsApp, Email (HA-Conversation-Agent-Modus wird **nicht** genutzt)
-- **HERMES-eigenes Memory** (Honcho User-Modeling, FTS5 Session-Search, agent-curated Skills) bleibt aktiv — für Konversation und Skill-Memory
-- Cron-Scheduler für proaktive Mitteilungen ([`cron/scheduler.py`](https://github.com/NousResearch/hermes-agent/blob/main/cron/scheduler.py), Storage in `~/.hermes/cron/jobs.json`, Skill-Zugriff über `cronjob`-Tool — OSCAR baut keinen eigenen Scheduler, sondern konsumiert diesen)
-- Subagent-Spawning für parallele Workflows
-- **MCP-Clients**:
-  - **ServiceBay-MCP**: Plattform-Operationen (`list_services`, `diagnose`, `get_health_checks`, `start_service`, `restart_service`). Bearer-Token, Scope initial `read+lifecycle`.
-  - **HA-MCP** (Home Assistant nativer MCP-Server, Integration `mcp_server` ab HA 2025.x): Geräte-Control (`HassTurnOn`, `HassTurnOff`, `HassSetPosition`, `HassClimateSetTemperature`, `HassMediaPlayer*`), Entity-Liste mit Areas/Aliases. Auth via HA Long-Lived Access Token oder Authelia-OIDC.
-  - **OSCAR-eigene MCP-Server**: `oscar-schleusen` (eine pro Schleuse), `oscar-ingestion`, plus Wrapper für Stack-Apps (`immich-search`, `radicale-cal`, `audiobookshelf-list`)
+- Provider-agnostic (model swap via `hermes model`, transparent between local and cloud)
+- Built-in gateways: Signal, Telegram, Discord, Slack, WhatsApp, Email (HA-conversation-agent mode is **not** used)
+- **HERMES's own memory** (Honcho user modelling, FTS5 session search, agent-curated skills) stays active — for conversation and skill memory
+- Cron scheduler for proactive messages ([`cron/scheduler.py`](https://github.com/NousResearch/hermes-agent/blob/main/cron/scheduler.py), storage in `~/.hermes/cron/jobs.json`, skill-side access via the `cronjob` tool — OSCAR builds no scheduler of its own, it consumes this one)
+- Subagent spawning for parallel workflows
+- **MCP clients:**
+  - **ServiceBay-MCP:** platform operations (`list_services`, `diagnose`, `get_health_checks`, `start_service`, `restart_service`). Bearer token, initial scope `read+lifecycle`.
+  - **HA-MCP** (Home Assistant's native MCP server, integration `mcp_server` from HA 2025.x): device control (`HassTurnOn`, `HassTurnOff`, `HassSetPosition`, `HassClimateSetTemperature`, `HassMediaPlayer*`), entity listing with areas/aliases. Auth via HA long-lived access token or Authelia OIDC.
+  - **OSCAR's own MCP servers:** `oscar-connectors` (one per connector), `oscar-ingestion`, plus wrappers for stack apps (`immich-search`, `radicale-cal`, `audiobookshelf-list`)
 
-### 4. LLM-Backends
+### 4. LLM backends
 
-- **Hardware**: GPU-Server (RTX 4070 oder vergleichbar, ≥12 GB VRAM). Kein Mac mini geplant.
-- **Standard lokal**: Gemma 4-12B Q4 via Ollama (passt in ~7 GB VRAM, ~30–50 tok/s) — größer als die ursprünglich geplante 4B-Variante, weil GPU es erlaubt
-- **Schneller Router** (optional): Gemma 4-1B oder Gemma 4-4B für triviale Befehle ohne LLM-Aufruf
-- **Vision/Multimodal**: Gemma 4 ist multimodal für Bild + Text — bedient die Ingestion-Pipeline und kann perspektivisch im Voice-Pfad Audio + Bild kombinieren ("Sieh mal — was ist das?" mit gleichzeitig Kameraschnappschuss)
-- **Cloud-Schleuse**: Claude oder Gemini, opt-in pro Anfrage, geht durch die Cloud-LLM-Schleuse mit Audit
-- **STT bleibt Whisper**: trotz Multimodal-Gemma — Whisper-large-v3 (auf GPU ~50ms für 3s Audio) ist für reines Transkribieren überlegen und streaming-fähig via Wyoming. Gemma-Audio-Input kann später als zweiter paralleler Pfad für "Audio-Verständnis" (Emotion, Tone) genutzt werden.
+- **Hardware:** GPU server (RTX 4070 or comparable, ≥12 GB VRAM). No Mac mini planned.
+- **Local default:** Gemma 4-12B Q4 via Ollama (fits in ~7 GB VRAM, ~30–50 tok/s) — larger than the originally planned 4B because the GPU allows it
+- **Fast router** (optional): Gemma 4-1B or Gemma 4-4B for trivial commands that don't need a full LLM call
+- **Vision/multimodal:** Gemma 4 is multimodal for image + text — serves the ingestion pipeline and can later combine audio + image in the voice path ("Look at this — what is it?" with a simultaneous camera snapshot)
+- **Cloud connector:** Claude or Gemini, opt-in per query, routed through the Cloud-LLM connector with audit
+- **STT stays Whisper:** despite multimodal Gemma — Whisper-large-v3 (on GPU ~50 ms for 3 s audio) is superior for plain transcription and streaming-capable via Wyoming. Gemma audio input can later serve as a second parallel path for "audio understanding" (emotion, tone).
 
-### 5. Gedächtnis — zwei Schichten
+### 5. Memory — two layers
 
-OSCAR-Memory liegt physisch in **`oscar-brain`** (Qdrant + Postgres laufen als Container im selben Pod wie HERMES + Ollama). Zwei logische Schichten teilen den Pod:
+OSCAR memory physically lives in **`oscar-brain`** (Qdrant + Postgres run as containers in the same pod as HERMES + Ollama). Two logical layers share the pod:
 
-| Schicht | Storage | Zweck | Owner |
+| Layer | Storage | Purpose | Owner |
 |---|---|---|---|
-| **HERMES-Konversationsmemory** | Honcho + FTS5 (HERMES-intern) | Dialog-Sessions, Skill-Curation, User-Modeling | HERMES |
-| **OSCAR-Domänenmemory** | Qdrant (semantic) + Postgres (strukturiert) | Domain-Collections, Harness-Namespaces | OSCAR-Code |
+| **HERMES conversation memory** | Honcho + FTS5 (HERMES-internal) | Dialogue sessions, skill curation, user modelling | HERMES |
+| **OSCAR domain memory** | Qdrant (semantic) + Postgres (structured) | Domain collections, harness namespaces | OSCAR code |
 
-Harness-uid wird beim Conversation-Call von Türsteher als Request-Parameter mitgegeben; **beide Schichten** respektieren ihn für Memory-Namespace-Filterung.
+The harness uid is passed from the gatekeeper to HERMES as a request parameter on every conversation call; **both layers** respect it for memory-namespace filtering.
 
-#### Domänen-Kollektionen (Postgres in `oscar-brain`)
+#### Domain collections (Postgres in `oscar-brain`)
 
-OSCAR führt eigene Tabellen nur dort, wo es **keine ServiceBay-Quelle** gibt:
+OSCAR keeps its own tables only where there is **no ServiceBay source**:
 
-| Kollektion | Modus | Quelle |
+| Collection | Mode | Source |
 |---|---|---|
-| `books` | volle Tabelle | OSCAR-only (keine Buch-App im full-stack) |
-| `records` | volle Tabelle | OSCAR-only (Schallplatten — keine ServiceBay-App) |
-| `documents` | volle Tabelle | OSCAR-only (bewusst lokal, keine externe Anreicherung) |
-| `audiobooks` | **dünne Spiegelung** | Audiobookshelf (ServiceBay `media`-Stack) — OSCAR-Tabelle hält nur Meta-Notizen (Bewertung, Status) + ABS-ID |
-| `experiences` | **dünne Spiegelung** | Immich (für Foto-Anker) + Radicale (für Termine) — OSCAR speichert Erlebnis-Notiz + Asset-IDs |
+| `books` | full table | OSCAR-only (no book app in the full stack) |
+| `records` | full table | OSCAR-only (vinyl — no ServiceBay app) |
+| `documents` | full table | OSCAR-only (deliberately local, no external enrichment) |
+| `audiobooks` | **thin mirror** | Audiobookshelf (ServiceBay `media` stack) — OSCAR table only holds meta-notes (rating, status) + ABS id |
+| `experiences` | **thin mirror** | Immich (for photo anchors) + Radicale (for events) — OSCAR stores experience note + asset ids |
 
-Schema-Felder pro Kollektion (Vector-Index über generierte Beschreibungen, Rückreferenzen auf Original-Material):
+Schema fields per collection (vector index over generated descriptions, back-references to original material):
 
 - `books` — title, author, isbn, status (`reading|finished|wishlist`), started_at, finished_at, rating, notes, source_image, owner_harness
 - `records` — album, artist, year, format (`vinyl|cd`), source_image, owner_harness
@@ -170,396 +170,396 @@ Schema-Felder pro Kollektion (Vector-Index über generierte Beschreibungen, Rüc
 - `documents` — type, date, parties, amounts, ocr_text, source_images, tags, owner_harness
 - `experiences` — date, type, participants, location, notes, immich_asset_ids, radicale_event_id, owner_harness
 
-Originale (Bilder, Scans) liegen verschlüsselt im **Material-Store** (eigener encrypted Mount), referenziert per UUID.
+Originals (images, scans) live encrypted in the **material store** (its own encrypted mount), referenced by UUID.
 
-### 6. Werkzeuge (MCP-Server)
+### 6. Tools (MCP servers)
 
-HERMES konsumiert MCP-Tools aus **vier Quellen**:
+HERMES consumes MCP tools from **four sources**:
 
-| Quelle | Bereitstellung | Inhalt |
+| Source | Hosted in | Contents |
 |---|---|---|
-| **ServiceBay-MCP** | `<servicebay-url>/mcp` (nativ in ServiceBay) | Plattform-Operationen: Services, Logs, Diagnose, Backups, Proxy-Routen, Health-Checks |
-| **HA-MCP** | HA-Integration `mcp_server` (nativ in Home Assistant) | Geräte-Control, Entity-Liste, Areas, Services, Automations |
-| **OSCAR-Stack-App-Wrapper** | Container im `oscar-schleusen`-Pod | `immich-search`, `radicale-cal`, `audiobookshelf-list`, `vaultwarden-read` (eingeschränkt, Audit) |
-| **Welt-Schleusen** | Container im `oscar-schleusen`-Pod | TuneIn, Wetter, Websuche, News, Cloud-LLM, Open Library, MusicBrainz, Discogs |
+| **ServiceBay-MCP** | `<servicebay-url>/mcp` (native in ServiceBay) | Platform operations: services, logs, diagnostics, backups, proxy routes, health checks |
+| **HA-MCP** | HA integration `mcp_server` (native in Home Assistant) | Device control, entity listing, areas, services, automations |
+| **OSCAR stack-app wrappers** | Container in the `oscar-connectors` pod | `immich-search`, `radicale-cal`, `audiobookshelf-list`, `vaultwarden-read` (limited, audited) |
+| **External connectors** | Container in the `oscar-connectors` pod | TuneIn, weather, web search, news, cloud LLM, Open Library, MusicBrainz, Discogs |
 
-Plus OSCAR-eigene direkte APIs (kein MCP, weil OSCAR-intern):
-- Türsteher-Status (welcher Harness aktiv, welches Voice-Device)
-- `oscar-ingestion` Material-Pipeline-Trigger
-- HERMES Conversation/Memory-API
+Plus OSCAR's own direct APIs (no MCP, because OSCAR-internal):
+- Gatekeeper status (which harness is active, which voice device)
+- `oscar-ingestion` material-pipeline trigger
+- HERMES conversation/memory API
 
-### 7. Welt-Schleusen
+### 7. External connectors
 
-Explizite, regelbasierte Module für jede Außenanbindung. Jede Schleuse: definierter Zweck, was rausgeht, was reinkommt, geloggt.
+Explicit, rule-based modules for every outside connection. Each connector: defined purpose, what goes out, what comes in, logged.
 
-**Wohnort**: ein gemeinsamer Pod `oscar-schleusen`, ein Container pro Schleuse, jede exponiert ihren eigenen MCP-Server. HERMES + OSCAR-Tools konsumieren sie per MCP-Aufruf.
+**Location:** a shared pod `oscar-connectors`, one container per connector, each exposing its own MCP server. HERMES + OSCAR tools consume them via MCP call.
 
-**Konversation & Information**
+**Conversation & information**
 
-- TuneIn / Internet-Radio
-- Wetter-API
-- Web-Suche (anonymisiert)
-- News-Feeds
-- Cloud-LLM (Claude/Gemini) — zusätzliches Logging + Permission-Check
+- TuneIn / internet radio
+- Weather API
+- Web search (anonymised)
+- News feeds
+- Cloud LLM (Claude/Gemini) — additional logging + permission check
 
-**Anreicherungs-Schleusen** (von der Ingestion-Pipeline aufgerufen, opt-in pro Material-Typ)
+**Enrichment connectors** (called by the ingestion pipeline, opt-in per material type)
 
-- Open Library / Google Books — Buchcover, ISBN, Genre, Autor-Bio
-- MusicBrainz — Album-Metadaten, Tracks
-- Discogs — Schallplatten-Details, Pressungen
-- (Dokumente werden bewusst **nicht** angereichert — bleiben strikt lokal)
+- Open Library / Google Books — book covers, ISBN, genre, author bios
+- MusicBrainz — album metadata, tracks
+- Discogs — vinyl details, pressings
+- (Documents are deliberately **not** enriched — they stay strictly local.)
 
-Alle Aussen-Aufrufe gehen über NPM und werden in AdGuard als bekannte Hosts protokolliert — zweite Audit-Spur neben den Schleuse-eigenen Logs.
+All outbound calls go through NPM and are logged in AdGuard as known hosts — a second audit trail next to the connector's own logs.
 
-### 8. Inbound Knowledge Pipeline (Wissens-Ingestion)
+### 8. Inbound knowledge pipeline (ingestion)
 
-Eingehende Materialien (Foto, Scan, Sprachmemo, Dateianhang) durchlaufen eine eigene Pipeline statt des Konversations-Loops.
+Incoming materials (photo, scan, voice memo, file attachment) run through their own pipeline instead of the conversation loop.
 
-#### Trigger
+#### Triggers
 
-- **HERMES-Gateway**: Signal/Telegram-Nachricht mit Datei/Foto-Anhang → HERMES leitet an `oscar-ingestion` weiter
-- **Syncthing-Inbox**: Datei erscheint in `/material-inbox/{lldap-uid}/` (Syncthing-Folder pro Familienmitglied, mit Handy gespiegelt) → `oscar-ingestion`-Watcher detektiert via inotify
+- **HERMES gateway:** Signal/Telegram message with a file/photo attachment → HERMES forwards it to `oscar-ingestion`
+- **Syncthing inbox:** a file appears in `/material-inbox/{lldap-uid}/` (one Syncthing folder per family member, mirrored from their phone) → `oscar-ingestion` watcher detects it via inotify
 
-Beide Trigger landen im selben Pipeline-Eintrittspunkt.
+Both triggers land at the same pipeline entry point.
 
-#### Anwendungsfälle
+#### Use cases
 
-1. **Sammlungs-Erweiterung**
-   - Foto vom Buchcover → Eintrag in `books` mit Status
-   - Foto vom Plattencover → Eintrag in `records`
-   - Foto vom Audible-Screenshot → Eintrag in `audiobooks` (dünne Spiegelung gegen Audiobookshelf-Match)
-   - Optional mit Begleittext oder Sprachnotiz: Bewertung, Quelle, Kontext
+1. **Collection enrichment**
+   - Photo of a book cover → entry in `books` with status
+   - Photo of a record sleeve → entry in `records`
+   - Photo of an Audible screenshot → entry in `audiobooks` (thin mirror against Audiobookshelf match)
+   - Optional with caption or voice note: rating, source, context
 
-2. **Dokumenten-Archivierung**
-   - Foto/Scan von Versicherungspolice, Kassenbon, Behördenpost
-   - OCR + Klassifikation → Eintrag in `documents`
-   - Multi-Page-Scans (mehrere Fotos kurz hintereinander) zu einem Dokument zusammengefasst
+2. **Document archiving**
+   - Photo/scan of an insurance policy, receipt, government letter
+   - OCR + classification → entry in `documents`
+   - Multi-page scans (several photos in quick succession) merged into one document
 
-3. **Erlebnis-Notizen**
-   - Foto vom Konzertticket, Restaurant, Ausflug
-   - Eintrag in `experiences` mit Immich-Foto-Anker, optional ins `family_shared`-Memory
+3. **Experience notes**
+   - Photo of a concert ticket, restaurant, outing
+   - Entry in `experiences` with Immich photo anchor, optionally into `family_shared` memory
 
-#### Vier Pipeline-Stufen
+#### Four pipeline stages
 
 ```
-Material trifft ein (Signal/Telegram ∪ Syncthing-Inbox)
+Material arrives (Signal/Telegram ∪ Syncthing inbox)
     ↓
-[1] Pre-Processing
-    - Original verschlüsselt im Material-Store ablegen
-    - OCR auf Text-Bereiche (Tesseract lokal oder Vision-LLM)
-    - Multi-Bild-Bündelung über Zeitfenster + Inhalts-Ähnlichkeit
+[1] Pre-processing
+    - Store the original encrypted in the material store
+    - OCR on text regions (Tesseract local or vision LLM)
+    - Multi-image bundling by time window + content similarity
     ↓
-[2] Klassifikation
-    - Vision-LLM (Gemma 4 multimodal): Buch | Schallplatte | Hörbuch | Dokument | Bon | Erlebnis | unbekannt
-    - Metadaten-Extraktion: Titel, Autor, Datum, Betrag, Empfänger
-    - Begleittext / Sprachnotiz fließt in Klassifikation ein
+[2] Classification
+    - Vision LLM (Gemma 4 multimodal): book | record | audiobook | document | receipt | experience | unknown
+    - Metadata extraction: title, author, date, amount, recipient
+    - Caption / voice note feeds into classification
     ↓
-[3] Anreicherung
-    - Buch → Open Library / Google Books (externe Schleuse, opt-in)
-    - Musik → MusicBrainz / Discogs (externe Schleuse, opt-in)
-    - Hörbuch → Audiobookshelf-Match (interner MCP-Lookup statt externer Schleuse)
-    - Dokument → keine externe Anreicherung (lokal)
-    - Erlebnis → Immich-Match (interner MCP-Lookup)
+[3] Enrichment
+    - Book → Open Library / Google Books (external connector, opt-in)
+    - Music → MusicBrainz / Discogs (external connector, opt-in)
+    - Audiobook → Audiobookshelf match (internal MCP lookup instead of external connector)
+    - Document → no external enrichment (local)
+    - Experience → Immich match (internal MCP lookup)
     ↓
-[4] Bestätigung & Ablage
-    - Chat-Dialog: "Ich erkenne X. Soll ich es als Y eintragen? [Ja] [Anpassen] [Nein]"
-    - Bei Bestätigung: Eintrag in Domänen-Kollektion (volle Tabelle oder dünne Spiegelung) + Vector-Index + Original-Verweis
-    - Bei Anpassen: kurze Korrektur-Konversation
-    - Bei Nein: Material verworfen, Bild gelöscht
+[4] Confirmation & filing
+    - Chat dialogue: "I recognise X. Should I save it as Y? [Yes] [Adjust] [No]"
+    - On confirm: entry in the domain collection (full table or thin mirror) + vector index + reference to original
+    - On adjust: short correction conversation
+    - On no: material discarded, image deleted
 ```
 
-#### Material-Store
+#### Material store
 
-- **Eigener encrypted Mount**, *nicht* über den `file-share`-Stack (file-share ist familienöffentlich; Material soll harness-scoped sein)
-- RAID-geschützter NAS-Mount
-- Pfad-Schema: `/material/{lldap-uid}/{collection}/{uuid}.{ext}`
-- Lebenszyklus: nicht-bestätigtes Material wird nach 24 h automatisch gelöscht
+- **Its own encrypted mount**, *not* via the `file-share` stack (file-share is family-public; material must be harness-scoped)
+- RAID-protected NAS mount
+- Path scheme: `/material/{lldap-uid}/{collection}/{uuid}.{ext}`
+- Lifecycle: unconfirmed material is auto-deleted after 24 h
 
-## Plattform: ServiceBay v3.16+
+## Platform: ServiceBay v3.16+
 
 - Repo: <https://github.com/mdopp/servicebay>
-- Runtime: **Podman Quadlet** (rootless, systemd-integriert) — nicht Docker
+- Runtime: **Podman Quadlet** (rootless, systemd-integrated) — not Docker
 - OS: **Fedora CoreOS**, immutable, self-updating
-- Template-Format: Kubernetes Pod-Manifeste (`template.yml`) mit Mustache-Variablen, deployed als Quadlet `.kube`-Units
-- Variablen-Typen in `variables.json`: `text`, `secret`, `select`, `device`, `subdomain` (mit `proxyPort`, `proxyConfig`, `oidcClient`-Block)
-- Multi-Node-Management via SSH (für späteren GPU-Server-Aufrüstung etc.)
-- Reactive Digital Twin Architektur (Python-Agent → Backend → UI ohne Polling)
-- Diagnose-Probes (crash_loop, cert_expiry, proxy_route_missing, post-deploy-exit, …): Sensorenstrom für Harness-System gratis via MCP `diagnose`-Tool
-- **MCP-Server** (`/mcp`): HTTP-Endpoint, Bearer-Token mit Scopes `read|lifecycle|mutate|destroy`, Auto-Snapshot vor destruktiven Calls, Audit-Log
+- Template format: Kubernetes Pod manifests (`template.yml`) with Mustache variables, deployed as Quadlet `.kube` units
+- Variable types in `variables.json`: `text`, `secret`, `select`, `device`, `subdomain` (with `proxyPort`, `proxyConfig`, `oidcClient` block)
+- Multi-node management via SSH (for later GPU-server addition etc.)
+- Reactive digital-twin architecture (Python agent → backend → UI without polling)
+- Diagnostic probes (crash_loop, cert_expiry, proxy_route_missing, post-deploy-exit, …): sensor stream for the harness system, free via the MCP `diagnose` tool
+- **MCP server** (`/mcp`): HTTP endpoint, bearer token with scopes `read|lifecycle|mutate|destroy`, auto-snapshot before destructive calls, audit log
 
-### Was OSCAR aus dem ServiceBay full-stack konsumiert
+### What OSCAR consumes from the ServiceBay full stack
 
-| Bedarf | Source | Verhältnis |
+| Need | Source | Relationship |
 |---|---|---|
-| Smart-Home, Z-Wave, Matter | `home-assistant` | konsumiert via HA-MCP-Server (Integration `mcp_server`), **ohne HA's Voice-Pipeline** |
-| Identity, SSO, OIDC | `auth` (LLDAP + Authelia) | direkt |
-| Fotos | `immich` | über `immich-search`-MCP-Wrapper |
-| CalDAV/CardDAV | `radicale` | über `radicale-cal`-MCP-Wrapper |
-| Hörbücher | Audiobookshelf (im `media`-Pod) | über `audiobookshelf-list`-MCP-Wrapper |
-| Musik | Navidrome (im `media`-Pod) | Symfonium-Mobile-Client direkt, OSCAR-MCP-Wrapper für Steuerung optional |
-| Datei-Drop / -Sync | `file-share` (Syncthing + Samba + FileBrowser + WebDAV) | Syncthing als Material-Eingangs-Trigger |
-| Reverse Proxy + LE-Zertifikate | `nginx` (NPM) | für OSCAR-Web-UIs |
-| DNS-Sinkhole | `adguard` | Audit-Spur für Schleusen-Außenaufrufe |
-| Passwort-Manager | `vaultwarden` | über `vaultwarden-read`-MCP-Wrapper (eingeschränkt) |
+| Smart home, Z-Wave, Matter | `home-assistant` | consumed via HA-MCP server (integration `mcp_server`), **without HA's voice pipeline** |
+| Identity, SSO, OIDC | `auth` (LLDAP + Authelia) | direct |
+| Photos | `immich` | via the `immich-search` MCP wrapper |
+| CalDAV/CardDAV | `radicale` | via the `radicale-cal` MCP wrapper |
+| Audiobooks | Audiobookshelf (in the `media` pod) | via the `audiobookshelf-list` MCP wrapper |
+| Music | Navidrome (in the `media` pod) | Symfonium mobile client direct; OSCAR MCP wrapper for control optional |
+| File drop / sync | `file-share` (Syncthing + Samba + FileBrowser + WebDAV) | Syncthing as the material-input trigger |
+| Reverse proxy + LE certs | `nginx` (NPM) | for OSCAR web UIs |
+| DNS sinkhole | `adguard` | audit trail for connector outbound calls |
+| Password manager | `vaultwarden` | via the `vaultwarden-read` MCP wrapper (limited) |
 
-→ **OSCAR baut nichts davon nach.** OSCAR konsumiert sie über MCP-Tools oder per Schreibzugriff auf shared volumes.
+→ **OSCAR doesn't rebuild any of this.** OSCAR consumes them through MCP tools or by writing to shared volumes.
 
-ServiceBays `voice`-Template (nach mdopp/servicebay#348) ist **für Nicht-OSCAR-Setups** — OSCAR deployt es nicht. `oscar-voice` ersetzt es vollständig.
+ServiceBay's `voice` template (after mdopp/servicebay#348) is **for non-OSCAR setups** — OSCAR doesn't deploy it. `oscar-voice` replaces it fully.
 
-### OSCAR als External Registry
+### OSCAR as an external registry
 
-Der Haushaltsbetreiber trägt unter Settings → Registries `github.com/mdopp/oscar.git` als External Registry ein. ServiceBay klont das Repo nach `~/.servicebay/registries/oscar/` und liest `templates/` + `stacks/` daraus. Die vier OSCAR-Templates erscheinen im Wizard neben den built-in.
+The household operator adds `github.com/mdopp/oscar.git` under Settings → Registries as an external registry. ServiceBay clones the repo into `~/.servicebay/registries/oscar/` and reads `templates/` + `stacks/` from there. The four OSCAR templates show up in the wizard next to the built-in ones.
 
-### ServiceBay-Patches die OSCAR voraussetzt
+### ServiceBay patches OSCAR depends on
 
-- **<https://github.com/mdopp/servicebay/issues/348>** — Wyoming-Stack aus `home-assistant`-Template in eigenes `voice`-Template herausziehen + `VOICE_BUILTIN`-Variable im HA-Template. Ohne diesen Patch laufen Whisper/Piper/openWakeWord zwingend im HA-Pod und kollidieren mit `oscar-voice` auf den gleichen Wyoming-Ports. **Blocker für Phase 0.**
-- **HA-MCP-Server-Integration** (`mcp_server`) — gehört zu HA Core ab 2025.x. Im OSCAR-Setup wird er aktiviert und via Authelia-OIDC oder Long-Lived Access Token gegen HERMES authentifiziert.
+- **<https://github.com/mdopp/servicebay/issues/348>** — split the Wyoming stack out of the `home-assistant` template into a dedicated `voice` template + add a `VOICE_BUILTIN` variable to the HA template. Without this patch, Whisper/Piper/openWakeWord run inside the HA pod and collide with `oscar-voice` on the same Wyoming ports. **Phase 0 blocker.**
+- **HA-MCP server integration** (`mcp_server`) — part of HA Core from 2025.x. In the OSCAR setup it is enabled and authenticated against HERMES via Authelia OIDC or a long-lived access token.
 
-## Repo-Struktur O.S.C.A.R.
+## OSCAR repo layout
 
 ```
 github.com/mdopp/oscar/
 ├── README.md
 ├── CLAUDE.md
 ├── docs/
-│   ├── architecture.md            # dieses Dokument
-│   ├── harness-spec.md            # JSON Schema für Harness-YAMLs
-│   ├── ingestion-spec.md          # Schema für Domänen-Kollektionen + Pipeline
+│   ├── architecture.md            # this document
+│   ├── harness-spec.md            # JSON Schema for harness YAMLs
+│   ├── ingestion-spec.md          # schema for domain collections + pipeline
 │   └── phase-plan.md
-├── templates/                     # ServiceBay Pod-YAMLs (Mustache-rendered)
-│   ├── oscar-voice/               # Rhasspy-3-Basis + Whisper + Piper + openWakeWord + Türsteher
+├── templates/                     # ServiceBay Pod YAMLs (Mustache-rendered)
+│   ├── oscar-voice/               # Rhasspy 3 base + Whisper + Piper + openWakeWord + gatekeeper
 │   ├── oscar-brain/               # HERMES + Ollama (GPU) + Qdrant + Postgres
-│   ├── oscar-schleusen/           # 1 Container pro Schleuse, jeweils eigener MCP-Server
-│   └── oscar-ingestion/           # Pipeline + Syncthing-Watcher + Material-Store-Mount
+│   ├── oscar-connectors/          # 1 container per connector, each its own MCP server
+│   └── oscar-ingestion/           # pipeline + Syncthing watcher + material-store mount
 ├── stacks/
-│   └── oscar/                     # Bundle: voice + brain + schleusen + ingestion
-├── tuersteher/                    # Python-Code für Türsteher-Container in oscar-voice
-├── ingestion/                     # Python-Code für oscar-ingestion-Container
-├── schleusen/                     # Code pro Schleuse — wird in oscar-schleusen-Container gebündelt
+│   └── oscar/                     # bundle: voice + brain + connectors + ingestion
+├── gatekeeper/                    # Python code for the gatekeeper container in oscar-voice
+├── ingestion/                     # Python code for the oscar-ingestion container
+├── connectors/                    # code per connector — bundled into oscar-connectors containers
 │   ├── tunein/
-│   ├── wetter/
-│   ├── websuche/
+│   ├── weather/
+│   ├── web-search/
 │   ├── cloud-llm/
 │   ├── open-library/
 │   ├── musicbrainz/
 │   └── discogs/
-├── harnesses/                     # YAML pro LLDAP-uid + system.yaml + gast.yaml
+├── harnesses/                     # YAML per LLDAP uid + system.yaml + guest.yaml
 │   ├── system.yaml
-│   ├── michael.yaml                # Dateiname = LLDAP-uid
+│   ├── michael.yaml               # filename = LLDAP uid
 │   ├── anna.yaml
-│   ├── kind.yaml
-│   └── gast.yaml
-└── skills/                        # HERMES-Skills
-    ├── morgendliche-nachrichten/
-    ├── haus-routinen/
-    ├── familien-kalender/
+│   ├── child.yaml
+│   └── guest.yaml
+└── skills/                        # HERMES skills
+    ├── morning-news/
+    ├── house-routines/
+    ├── family-calendar/
     └── ingest-confirm/
 ```
 
-## Phasen-Roadmap
+## Phase roadmap
 
-### Phase 0 — Voice + Brain Fundament
+### Phase 0 — Voice + Brain foundation
 
-Ziel: Spürbar bessere Sprachsteuerung als Google Home, vollständig lokal, mit echter Konversation statt Intent-Grammatik.
+Goal: voice control noticeably better than Google Home, fully local, with real conversation instead of intent grammar.
 
-**Voraussetzungen**:
-- **GPU-Server**: RTX 4070 (oder vergleichbar, ≥12 GB VRAM) im PC/Server-Setup
-- ServiceBay v3.16+ installiert, full-stack deployed
-- **mdopp/servicebay#348 gemerged** (HA-Template kann ohne Wyoming deployed werden)
-- HA-Pod redeployed mit `VOICE_BUILTIN=disabled` + HA-MCP-Integration (`mcp_server`) aktiviert
+**Prerequisites:**
+- **GPU server**: RTX 4070 (or comparable, ≥12 GB VRAM) in the PC/server setup
+- ServiceBay v3.16+ installed, full stack deployed
+- **mdopp/servicebay#348 merged** (HA template can be deployed without Wyoming)
+- HA pod redeployed with `VOICE_BUILTIN=disabled` + HA-MCP integration (`mcp_server`) enabled
 
-**Lieferungen**:
-- ServiceBay OSCAR-Registry eintragen (`github.com/mdopp/oscar.git`)
-- **`oscar-voice`-Template schreiben**:
-  - Pod-YAML mit faster-whisper-large-v3, piper, openWakeWord, Rhasspy 3, Türsteher
-  - Türsteher initial **als Pass-through** (kein Speaker-ID, kein Embedding) — fokussiert auf Pipeline-Orchestrierung und HERMES-Handoff
-  - Wyoming-Ports 10300/10200/10400 nach außen (HA Voice PE Devices verbinden hierher)
-- **`oscar-brain`-Template schreiben**:
-  - Pod-YAML mit HERMES, Ollama (GPU-Passthrough), Qdrant, Postgres
-  - Gemma 4-12B Q4 als Default-Modell, Gemma 4-1B als Schnell-Router
-  - HERMES erhält Bearer-Token für ServiceBay-MCP (`read+lifecycle`) und HA-MCP (Long-Lived Access Token)
-  - Postgres-Backup: wöchentlicher `pg_dump` als CronJob im Pod, dedizierter Volume-Mount für Dumps, 4 Wochen Retention
-- HA Voice Preview Edition für Büro bestellen + auf `oscar-voice` konfigurieren
-- LLDAP-User für Familie anlegen (Michael, Mutter, Kind), `family`-Gruppe
-- Lokale MP3s an Music-Folder von `media`-Pod binden
-- Symfonium auf Handy gegen Navidrome konfigurieren
-- Erste Skills in HERMES (statt HA Custom Intents): Licht, Heizung, Timer/Wecker (Spec: `docs/skill-zeit.md`), Musik (lokal über Navidrome via HA-Media-Player)
+**Deliverables:**
+- Add the OSCAR registry to ServiceBay (`github.com/mdopp/oscar.git`)
+- **Write the `oscar-voice` template:**
+  - Pod YAML with faster-whisper-large-v3, piper, openWakeWord, Rhasspy 3, gatekeeper
+  - Gatekeeper initially **as pass-through** (no speaker ID, no embedding) — focused on pipeline orchestration and HERMES handoff
+  - Wyoming ports 10300/10200/10400 exposed (HA Voice PE devices connect here)
+- **Write the `oscar-brain` template:**
+  - Pod YAML with HERMES, Ollama (GPU passthrough), Qdrant, Postgres
+  - Gemma 4-12B Q4 as default model, Gemma 4-1B as fast router
+  - HERMES receives bearer tokens for ServiceBay-MCP (`read+lifecycle`) and HA-MCP (long-lived access token)
+  - Postgres backup: weekly `pg_dump` as a CronJob in the pod, dedicated volume mount for dumps, 4 weeks retention
+- Order an HA Voice Preview Edition for the office and configure it against `oscar-voice`
+- Create LLDAP users for the family (Michael, mother, child), `family` group
+- Bind local MP3s to the music folder of the `media` pod
+- Configure Symfonium on the phone against Navidrome
+- First HERMES skills (instead of HA custom intents): light, heating, timer/alarm (spec: `docs/timer-and-alarm.md`), music (local through Navidrome via the HA media player)
 
-Resultat: Vollständig OSCAR-eigene Voice-Pipeline, HA als Geräte-Tool, eine Identität für alle (noch kein Voice-ID).
+Result: OSCAR-owned voice pipeline end to end, HA as a device tool, one identity for everyone (no voice ID yet).
 
-### Phase 1 — Mobile + Schleusen
+### Phase 1 — Mobile + connectors
 
-**Signal-Gateway:**
-- HERMES-eingebautes Signal-Gateway ([`gateway/platforms/signal.py`](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/signal.py)) aktivieren als **Linked Device** einer bestehenden Familien-Nummer, nicht als eigene OSCAR-Nummer
-- `signal-cli-daemon`-Sidecar-Container im `oscar-brain`-Pod (HERMES erwartet HTTP-Endpoint, kein direktes signal-cli-Binary), Env-Vars `SIGNAL_HTTP_URL=http://localhost:8080` + `SIGNAL_ACCOUNT=<Linked-Device-Nummer>`
-- Persistent Volume für signal-cli-Session-State (sonst Re-Pairing nach jedem Restart)
-- Pairing-Flow per QR-Scan einmal beim Initial-Deploy, in README dokumentieren
-- `gateway_identities`-Tabelle in `oscar-brain.postgres` einführen (Spec: `docs/gateway-identities.md`) — Telefonnummer → LLDAP-uid-Mapping
-- Admin-Skill `identitaet.verknuepfe` für Erstbefüllung — dünn: HERMES enforced Admin-Permission über Harness, Skill selbst nur E.164-Regex + LLDAP-uid-Existenzcheck + INSERT. Kein Web-UI in Phase 1.
-- **Roll-out-Reihenfolge**: Michael zuerst allein, Familie en bloc erst nach ~2 Wochen Stabilitäts-Probe (kein Re-Pairing, keine verlorenen Nachrichten)
-- Telegram parallel als zweiter Gateway, gleicher Mechanismus — kein automatischer Failover, symmetrisch zu Signal
-- Routing-Endpoint `signal:<phone>` / `telegram:<chat-id>` durchgereicht an Skills wie `zeit` (Spec: `docs/skill-zeit.md`)
+**Signal gateway:**
+- Enable HERMES's built-in Signal gateway ([`gateway/platforms/signal.py`](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/signal.py)) as a **linked device** of an existing family phone number, not as a separate OSCAR number
+- `signal-cli-daemon` sidecar container in the `oscar-brain` pod (HERMES expects an HTTP endpoint, not a direct signal-cli binary), env vars `SIGNAL_HTTP_URL=http://localhost:8080` + `SIGNAL_ACCOUNT=<linked-device-number>`
+- Persistent volume for signal-cli session state (otherwise re-pairing after every restart)
+- Pairing flow via QR scan once at initial deploy, documented in the README
+- Introduce the `gateway_identities` table in `oscar-brain.postgres` (spec: `docs/gateway-identities.md`) — phone-number → LLDAP-uid mapping
+- Admin skill `identity.link` for initial population — thin: HERMES enforces admin permission via harness, the skill itself does E.164 regex + LLDAP-uid existence check + INSERT. No web UI in Phase 1.
+- **Roll-out order:** Michael alone first, family en bloc only after ~2 weeks of stability (no re-pairing, no lost messages)
+- Telegram in parallel as a second gateway, same mechanism — no automatic failover, symmetric to Signal
+- Routing endpoint `signal:<phone>` / `telegram:<chat-id>` propagated to skills like `timer`/`alarm` (spec: `docs/timer-and-alarm.md`)
 
-**Schleusen:**
-- Erste `oscar-schleusen`: Cloud-LLM, Wetter, Websuche (**TuneIn vertagt** — kommt erst mit Music Assistant in Phase 4)
-- Schleusen-Skeleton (Python + FastMCP) als Vorlage — Repo-Layout, Tool-Pattern, Auth, variables.json-Beispiel: Spec `docs/schleuse-skeleton.md`
-- API-Keys/Secrets über ServiceBay-`variables.json` (`type: secret`), Wizard-Abfrage beim Deploy
-- Permission-Enforcement: HERMES prüft Harness-Erlaubnis **vor** dem MCP-Call; Schleusen-Container trusten HERMES (kein Doppel-Check)
+**Connectors:**
+- First `oscar-connectors`: Cloud-LLM, weather, web search (**TuneIn deferred** — arrives only with Music Assistant in Phase 4)
+- Connector skeleton (Python + FastMCP) as a template — repo layout, tool pattern, auth, variables.json example: spec `docs/connector-skeleton.md`
+- API keys/secrets through the ServiceBay `variables.json` (`type: secret`), wizard-prompted at deploy
+- Permission enforcement: HERMES checks the harness permission **before** the MCP call; connector containers trust HERMES (no double check)
 
-**Cloud-LLM:**
-- **Automatische Eskalation**, kein Sprachschlüsselwort: Gemma-1B-Router schätzt Komplexität (Token-Budget, Schritt-Tiefe, Kontext-Defizit). Über Schwellwert *und* Harness-Permission → Cloud-LLM-Schleuse. Sonst Gemma-12B lokal.
-- Audit-Tabelle `cloud_audit` in `oscar-brain.postgres`: timestamp, uid, trace_id, prompt-hash, prompt-length, response-length, vendor, kosten, **Router-Score + Eskalationsgrund**. Volltext-Mitschreiben hängt am globalen `debug_mode` (siehe Querschnitt-Sektion), nicht an einem eigenen Per-Call-Opt-In.
-- Audit-Abfrage per Sprache/Chat („Was hat die Cloud-Schleuse heute weitergegeben?") — kein Web-UI in Phase 1.
+**Cloud LLM:**
+- **Automatic escalation**, no voice keyword: the Gemma-1B router scores complexity (token budget, step depth, context deficit). Above threshold *and* harness-permitted → Cloud-LLM connector. Otherwise Gemma-12B local.
+- Audit table `cloud_audit` in `oscar-brain.postgres`: timestamp, uid, trace_id, prompt-hash, prompt-length, response-length, vendor, cost, **router score + escalation reason**. Full-text logging hangs off the global `debug_mode` (see the cross-cutting section) rather than a separate per-call opt-in.
+- Audit query via voice/chat ("What did the cloud connector send today?") — no web UI in Phase 1.
 
-Resultat: Konversation unterwegs, Welt-Zugang opt-in pro Harness, automatisches Up-Routing für komplexe Anfragen.
+Result: conversation on the go, world access opt-in per harness, automatic up-routing for complex queries.
 
-### Phase 2 — Türsteher Speaker-ID + Harnesses
+### Phase 2 — Gatekeeper speaker ID + harnesses
 
-- SpeechBrain ECAPA-TDNN in Türsteher aktivieren
-- Voice-Embedding-Tabelle in `oscar-brain.postgres` anlegen, FK auf LLDAP-uid
-- Embeddings pro Familienmitglied einlernen (z.B. 10 Sätze pro Person; Setup-Wizard im Türsteher-Web-UI, Authelia-OIDC-geschützt)
-- Harness-YAML-Schema formalisieren (JSON Schema in `docs/harness-spec.md`)
-- Memory-Namespaces in Qdrant + Postgres einführen
-- System + Michael + Gast als erste Harnesses
-- Verbal-Hinweise für Gast-Mode
+- Activate SpeechBrain ECAPA-TDNN in the gatekeeper
+- Create the voice-embedding table in `oscar-brain.postgres`, FK to LLDAP uid
+- Train embeddings per family member (e.g. 10 sentences each; setup wizard in the gatekeeper web UI, Authelia OIDC protected)
+- Formalise the harness YAML schema (JSON Schema in `docs/harness-spec.md`)
+- Introduce memory namespaces in Qdrant + Postgres
+- System + Michael + guest as the first harnesses
+- Verbal hints for guest mode
 
-Resultat: Privatsphäre gewahrt.
+Result: privacy preserved.
 
-### Phase 3a — Streaming-Ingestion
+### Phase 3a — Streaming ingestion
 
-- `oscar-ingestion`-Template (Pipeline-Container + Syncthing-Watcher)
-- Material-Store als eigener encrypted Mount, 24h-TTL für unbestätigtes Material
-- Syncthing-Inbox-Ordner pro LLDAP-uid einrichten (`/material-inbox/{uid}/`)
-- Vision-Klassifikator über Gemma 4 multimodal
-- Schema-Migrationen für Domain-Collections in Postgres
-- Anreicherungs-Schleusen ins `oscar-schleusen` (Open Library, MusicBrainz, Discogs)
-- Inkrementeller Roll-out pro Material-Typ:
-  1. **Bücher zuerst** — eigene Tabelle, Open Library
-  2. **Schallplatten** — eigene Tabelle, MusicBrainz / Discogs
-  3. **Hörbücher** — dünne Spiegelung auf Audiobookshelf
-  4. **Dokumente** — komplett lokal, OCR-fokus, Steuer-Archiv-Tags
-  5. **Erlebnis-Notizen** — dünne Spiegelung auf Immich + Radicale
+- `oscar-ingestion` template (pipeline container + Syncthing watcher)
+- Material store as its own encrypted mount, 24 h TTL for unconfirmed material
+- Syncthing inbox folder per LLDAP uid (`/material-inbox/{uid}/`)
+- Vision classifier via Gemma 4 multimodal
+- Schema migrations for the domain collections in Postgres
+- Enrichment connectors into `oscar-connectors` (Open Library, MusicBrainz, Discogs)
+- Incremental roll-out per material type:
+  1. **Books first** — own table, Open Library
+  2. **Records** — own table, MusicBrainz / Discogs
+  3. **Audiobooks** — thin mirror onto Audiobookshelf
+  4. **Documents** — fully local, OCR-focused, tax-archive tags
+  5. **Experience notes** — thin mirror onto Immich + Radicale
 
-### Phase 3b — Bulk-Import + MCP-Wrapper
+### Phase 3b — Bulk import + MCP wrappers
 
-- MCP-Wrapper-Tools im `oscar-schleusen`-Pod (oder eigener `oscar-mcp-wrappers`-Pod):
-  - `immich-search` — Foto-Suche (Vision + Metadaten)
-  - `radicale-cal` — Termin-CRUD
-  - `audiobookshelf-list` — Hörbuch-Bibliothek
-- Signal-Verlauf-Import (Familien-Signal-Archive parsen)
-- Google Takeout (Maps-Historie, Fotos via Immich)
-- Audible-Listen (entweder Audiobookshelf direkt oder Screenshot-Ingestion)
-- E-Mail/CalDAV/CardDAV lokal sync (via Radicale)
+- MCP wrapper tools in the `oscar-connectors` pod (or its own `oscar-mcp-wrappers` pod):
+  - `immich-search` — photo search (vision + metadata)
+  - `radicale-cal` — appointment CRUD
+  - `audiobookshelf-list` — audiobook library
+- Signal history import (parse family Signal archives)
+- Google Takeout (Maps history, photos via Immich)
+- Audible lists (either Audiobookshelf direct or screenshot ingestion)
+- Email/CalDAV/CardDAV local sync (via Radicale)
 
-Resultat: tiefes rückwirkendes Langzeitgedächtnis.
+Result: deep retroactive long-term memory.
 
-### Phase 4 — Aktive Erweiterungen (laufend)
+### Phase 4 — Active extensions (ongoing)
 
-- HERMES als Mitschreiber (proaktive Memo-Erstellung aus Konversationen)
-- Voice-Tone-/Emotion-Analyse als zusätzlicher Türsteher-Sensor (Gemma multimodal auf Audio-Stream parallel zu Whisper-STT)
-- Multi-Room-Voice-Routing: mehrere Voice PE Devices, Türsteher route't Antworten zum originating Device
-- `oscar-music-assistant`-Template, sobald ≥2 Räume mit Voice (Music Assistant für synchronisierte Wiedergabe)
-- TuneIn-/Internet-Radio-Schleuse (vorher zurückgestellt, weil ohne Music Assistant nur Einzel-Raum lohnt)
-- Routine „Guten Morgen" als zusammengesetzter HERMES-Skill: HA-MCP-Call (Licht 60%, Heizung +1) + TuneIn-Schleuse (DLF) auf primärem Voice-PE-Lautsprecher
-- Verfeinerte Welt-Schleusen
-- Anwesenheitserkennung per Telefon
-- Multi-Haushalt-Distribution (eigener LLDAP + Harness-Repo pro Haushalt)
-- Eigene Antwortstimmen pro Familienmitglied (Piper-Voice-Modell-Mapping)
-- Custom Wakeword "Oscar" trainieren (eigenes openWakeWord-Modell in `oscar-voice`-Pod)
-- Cross-Modal-Suche: "Zeig mir das Buch, das ich letzten Sommer am See gelesen habe"
+- HERMES as note-taker (proactive memo creation from conversations)
+- Voice-tone / emotion analysis as an additional gatekeeper sensor (Gemma multimodal on the audio stream in parallel to Whisper STT)
+- Multi-room voice routing: multiple Voice PE devices, gatekeeper routes responses to the originating device
+- `oscar-music-assistant` template, once ≥2 rooms have voice (Music Assistant for synchronised playback)
+- TuneIn / internet-radio connector (previously deferred because without Music Assistant it only pays off for a single room)
+- "Good morning" routine as a composite HERMES skill: HA-MCP call (lights 60%, heating +1) + TuneIn connector (DLF) on the primary Voice-PE speaker
+- Refined external connectors
+- Presence detection via phone
+- Multi-household distribution (own LLDAP + harness repo per household)
+- Custom response voices per family member (Piper voice-model mapping)
+- Train a custom wakeword "Oscar" (own openWakeWord model in the `oscar-voice` pod)
+- Cross-modal search: "Show me the book I was reading by the lake last summer"
 
-## Querschnitt: Debug-Modus
+## Cross-cutting: debug mode
 
-Globaler Schalter in `system.yaml`. Während wir OSCAR aufbauen (Phase 0/1, evtl. 2) ist er **per Default an**; mit dem Übergang in den produktiven Familienbetrieb wechselt der Default zu aus.
+Global switch in `system.yaml`. While we're building OSCAR (Phase 0/1, perhaps 2) it is **on by default**; once we transition to productive family use, the default flips to off.
 
 ```yaml
 # system.yaml
 debug_mode:
-  active: true                # Bauphasen-Default
-  verbose_until: null         # NULL = unbegrenzt; sonst Timestamp = TTL
-  latency_annotations: false  # Pfad-/Latenz-Annotation in Voice-Antworten, separat schaltbar
+  active: true                # build-phase default
+  verbose_until: null         # NULL = unbounded; otherwise timestamp = TTL
+  latency_annotations: false  # path/latency annotation on voice responses, separately toggled
 ```
 
-Wenn `active: true`:
-- alle OSCAR-Komponenten loggen Volltexte (Prompts, Responses, Tool-Args, Schleusen-Request-/Response-Bodies) statt nur Metadaten
-- Retention-Policies in Audit-Tabellen (`cloud_audit`, künftig `tuersteher_decisions`, `ingestion_classifications`) ausgesetzt — keine Auto-Löschung
-- mit `latency_annotations: true` zusätzlich „STT 230ms · Router 80ms → 12B local · 1.4s" als Annotation an Voice-Antworten (sinnvoll auf Admin-UIDs gefiltert, nicht für Familienmitglieder)
+When `active: true`:
+- all OSCAR components log full text (prompts, responses, tool args, connector request/response bodies) instead of metadata only
+- retention policies on audit tables (`cloud_audit`, future `gatekeeper_decisions`, `ingestion_classifications`) are suspended — no auto-deletion
+- with `latency_annotations: true`, voice responses additionally carry "STT 230ms · router 80ms → 12B local · 1.4s" as an annotation (useful filtered to admin uids, not for family members)
 
-Komponenten fragen den Mode pro Log-/Audit-Event neu an (kein Caching > 5 s), damit Ausschalten sofort greift. Admin-Skill `debug.set` schreibt die Felder; Aktivierung per Sprache („Debug-Modus für 4 Stunden an" → setzt `active=true, verbose_until=now()+4h`). Auto-Off durch TTL-Prüfung beim Lesen: `verbose = active AND (verbose_until IS NULL OR now() < verbose_until)`.
+Components re-query the mode for every log/audit event (no caching > 5 s), so turning it off takes effect immediately. The admin skill `debug.set` writes the fields; voice activation works ("Debug mode on for 4 hours" → sets `active=true, verbose_until=now()+4h`). Auto-off via TTL check on read: `verbose = active AND (verbose_until IS NULL OR now() < verbose_until)`.
 
-Konsequenz: es gibt **keinen** separaten Per-Call-Opt-In für Volltext-Logging in der Cloud-Schleuse oder anderswo — der einzige Schalter ist `debug_mode`. User-facing Permissions („darf Cloud" usw.) bleiben davon unberührt.
+Consequence: there is **no** separate per-call opt-in for full-text logging in the Cloud connector or anywhere else — the only switch is `debug_mode`. User-facing permissions ("may use cloud" etc.) are unaffected.
 
-## Querschnitt: Logging
+## Cross-cutting: logging
 
-Zwei Spuren — **operational** (Container-stdout JSON → journald, gelesen über ServiceBay-MCP `get_container_logs` / `get_service_logs` / `get_podman_logs`) und **Domain-Audit** (Postgres-Tabellen in `oscar-brain`, gelesen über HERMES-Skill `audit.query`). Verbunden über `trace_id` pro Conversation-Turn.
+Two tracks — **operational** (container stdout JSON → journald, read via ServiceBay-MCP `get_container_logs` / `get_service_logs` / `get_podman_logs`) and **domain audit** (Postgres tables in `oscar-brain`, read via the HERMES skill `audit.query`). Connected by `trace_id` per conversation turn.
 
-Volle Spec: **[`docs/logging.md`](docs/logging.md)** — Shared-Lib `shared/oscar_logging/`, Retention-Policies pro Audit-Tabelle, Log-Level-Konvention, PII-Behandlung, ServiceBay-MCP-Read-Pfad inkl. Secret-Redaction-Layer.
+Full spec: **[`docs/logging.md`](docs/logging.md)** — shared library `shared/oscar_logging/`, retention policies per audit table, log-level convention, PII handling, ServiceBay-MCP read path including the secret-redaction layer.
 
-**Bewusst nicht jetzt:** Loki/Vector oder eigener Log-Aggregator (vor Phase 3+ unnötig). Kein eigenes Log-Web-UI — ServiceBay hat bereits einen Log-Viewer.
+**Deliberately not now:** Loki/Vector or a dedicated log aggregator (unnecessary before Phase 3+). No dedicated log web UI — ServiceBay already has a log viewer.
 
-## Wichtige Festlegungen
+## Key decisions
 
-| Punkt | Entscheidung |
+| Topic | Decision |
 |---|---|
-| Hardware | GPU-Server (RTX 4070 oder vergleichbar, ≥12 GB VRAM). Kein Mac mini. |
-| Identity | LLDAP-uid + -groups (`family`, `admins`) aus ServiceBay `auth`-Pod |
-| SSO für OSCAR-Web-UIs | Authelia-OIDC, registriert via `oidcClient`-Block in `variables.json` |
-| Reverse Proxy + TLS | NPM (ServiceBay `nginx`-Pod) via Wizard |
-| DNS-Block | AdGuard (ServiceBay `adguard`-Pod) |
-| Voice-Pipeline-Ownership | **OSCAR ownt komplett** (Rhasspy 3 + Türsteher in `oscar-voice`). HA-Voice-Pipeline wird **nicht** genutzt. |
-| HA-Rolle | Geräte-Hub via HA-MCP-Server (Integration `mcp_server`), nicht Voice-Vermittler |
-| STT-Modell | faster-whisper-large-v3 auf GPU (~50ms für 3s Audio). Whisper bleibt überlegen gegenüber Gemma-Audio für reines Transkribieren. |
-| LLM | Gemma 4-12B Q4 default (passt in ~7 GB VRAM auf GPU) |
-| Wakeword | Single ("Hey Jarvis" anfangs, später eigenes "Oscar"-Modell), kurze Antworten, "Gast:"-Präfix, Beep für erkannte Mitglieder |
-| Offline-Verhalten | Steuerung, Musik (lokal), Gedächtnis funktionieren. Verloren: Wetter, Streaming, externe Suche, Anreicherungs-Schleusen, Cloud-LLM |
-| Cloud-LLM | automatische Eskalation aus Gemma-1B-Router-Komplexitätsschätzung, falls Harness erlaubt. Audit (inkl. `trace_id` + Router-Score) in `cloud_audit`-Tabelle. Volltext-Mitschreiben hängt an `debug_mode`, kein eigener Per-Call-Opt-In. |
-| Gateway-Identitäten | `gateway_identities`-Tabelle in `oscar-brain.postgres` (Spec: `docs/gateway-identities.md`); Telefonnummer/Chat-ID → LLDAP-uid. **Nicht** in LLDAP. |
-| Debug-Modus | Globaler `system.yaml`-Schalter `debug_mode.active` — Bauphasen-Default an; produktiv aus; TTL-Reaktivierung per Admin-Sprachbefehl. Keine komponenten-eigenen verbose-Flags. |
-| Logging | Operational → stdout-JSON → journald, gelesen via ServiceBay-MCP (`get_container_logs` u.a.). Domain-Audit → Postgres-Tabellen in `oscar-brain`, gelesen via HERMES-Skill `audit.query`. `trace_id`-Korrelation. Shared-Lib `shared/oscar_logging/` erzwingt Schema. Spec: `docs/logging.md`. |
-| Audit-Backup | Wöchentlicher `pg_dump` als CronJob im `oscar-brain`-Pod, eigener Volume-Mount, 4 Wochen Retention. Off-Site-Backup als spätere Roadmap-Phase. |
-| Voice-Embeddings | Türsteher-Postgres-Tabelle in `oscar-brain` mit FK auf LLDAP-uid — *nicht* in LLDAP |
-| Memory | Zwei Schichten: HERMES-Honcho (Konversation/Skills) + OSCAR-Qdrant/Postgres (Domain-Collections). Harness-uid als Request-Parameter propagiert (kein Header-Marshalling durch HA mehr). |
-| Domain-Collections | Volle Tabellen für `books`/`records`/`documents`; dünne Spiegelung für `audiobooks`/`experiences` |
-| Material-Trigger | Signal-Foto ∪ Syncthing-Inbox pro LLDAP-uid |
-| Material-Store | eigener encrypted Mount (nicht über `file-share`-Stack) |
-| Schleusen | gemeinsamer `oscar-schleusen`-Pod, 1 Container pro Schleuse, jeweils MCP-Server |
-| ServiceBay-Steuerung durch HERMES | per ServiceBay-MCP-Endpoint mit Bearer-Token (`read+lifecycle` initial) |
-| HA-Steuerung durch HERMES | per HA-MCP-Endpoint mit Long-Lived Access Token oder Authelia-OIDC |
-| Mobile Music | Symfonium → Navidrome (ServiceBay `media`-Pod) |
-| Mobile Audiobooks | Audiobookshelf-eigene Apps (ServiceBay `media`-Pod) |
-| Mobile Chat | Signal → HERMES-Gateway |
-| VPN-Zugriff von außen | Wireguard (existiert) |
-| Vision-Modell | Gemma 4 multimodal, derselbe Stack wie Text |
-| Material-Originale | verschlüsselt im Material-Store, referenziert per UUID |
-| Anreicherung Dokumente | bewusst nicht — bleiben strikt lokal |
-| Music Assistant | später (Phase 4, sobald ≥2 Räume) |
-| Backup-Externalisierung | später, eigene Roadmap-Phase |
+| Hardware | GPU server (RTX 4070 or comparable, ≥12 GB VRAM). No Mac mini. |
+| Identity | LLDAP uid + groups (`family`, `admins`) from the ServiceBay `auth` pod |
+| SSO for OSCAR web UIs | Authelia OIDC, registered via the `oidcClient` block in `variables.json` |
+| Reverse proxy + TLS | NPM (ServiceBay `nginx` pod) via wizard |
+| DNS block | AdGuard (ServiceBay `adguard` pod) |
+| Voice pipeline ownership | **OSCAR owns it end to end** (Rhasspy 3 + gatekeeper in `oscar-voice`). HA's voice pipeline is **not** used. |
+| HA role | Device hub via the HA-MCP server (integration `mcp_server`), not a voice broker |
+| STT model | faster-whisper-large-v3 on GPU (~50 ms for 3 s audio). Whisper remains superior to Gemma audio for plain transcription. |
+| LLM | Gemma 4-12B Q4 default (fits in ~7 GB VRAM on GPU) |
+| Wakeword | Single ("Hey Jarvis" initially, later a custom "Oscar" model), short answers, "Guest:" prefix, beep for recognised members |
+| Offline behaviour | Control, music (local), memory keep working. Lost: weather, streaming, external search, enrichment connectors, cloud LLM |
+| Cloud LLM | Automatic escalation from the Gemma-1B router complexity score, if the harness allows. Audit (incl. `trace_id` + router score) in the `cloud_audit` table. Full-text logging is gated by `debug_mode`, no separate per-call opt-in. |
+| Gateway identities | `gateway_identities` table in `oscar-brain.postgres` (spec: `docs/gateway-identities.md`); phone number / chat id → LLDAP uid. **Not** in LLDAP. |
+| Debug mode | Global `system.yaml` switch `debug_mode.active` — build-phase default on; productive off; TTL reactivation via the admin voice command. No component-specific verbose flags. |
+| Logging | Operational → stdout JSON → journald, read via ServiceBay-MCP (`get_container_logs` etc.). Domain audit → Postgres tables in `oscar-brain`, read via the HERMES skill `audit.query`. `trace_id` correlation. Shared library `shared/oscar_logging/` enforces the schema. Spec: `docs/logging.md`. |
+| Audit backup | Weekly `pg_dump` as a CronJob in the `oscar-brain` pod, dedicated volume mount, 4 weeks retention. Off-site backup as a later roadmap phase. |
+| Voice embeddings | Gatekeeper Postgres table in `oscar-brain` with FK to LLDAP uid — *not* in LLDAP |
+| Memory | Two layers: HERMES Honcho (conversation/skills) + OSCAR Qdrant/Postgres (domain collections). Harness uid propagated as a request parameter (no HA header marshalling any more). |
+| Domain collections | Full tables for `books`/`records`/`documents`; thin mirrors for `audiobooks`/`experiences` |
+| Material trigger | Signal photo ∪ Syncthing inbox per LLDAP uid |
+| Material store | Own encrypted mount (not via the `file-share` stack) |
+| Connectors | Shared `oscar-connectors` pod, 1 container per connector, each its own MCP server |
+| ServiceBay control by HERMES | Via the ServiceBay-MCP endpoint with bearer token (`read+lifecycle` initially) |
+| HA control by HERMES | Via the HA-MCP endpoint with a long-lived access token or Authelia OIDC |
+| Mobile music | Symfonium → Navidrome (ServiceBay `media` pod) |
+| Mobile audiobooks | Audiobookshelf's own apps (ServiceBay `media` pod) |
+| Mobile chat | Signal → HERMES gateway |
+| External VPN access | Wireguard (exists) |
+| Vision model | Gemma 4 multimodal, same stack as text |
+| Material originals | Encrypted in the material store, referenced by UUID |
+| Document enrichment | Deliberately none — they stay strictly local |
+| Music Assistant | Later (Phase 4, once ≥2 rooms) |
+| Backup externalisation | Later, separate roadmap phase |
 
-## Offene Punkte für Claude Code
+## Open points for Claude Code
 
-1. **mdopp/servicebay#348 verfolgen** — Phase-0-Blocker. Vor `oscar-voice`-Template-Schreibung sicherstellen, dass der Patch gemerged ist.
-2. **Rhasspy 3 als Pipeline-Backbone integrieren** — Rhasspy 3 evaluieren (Reifegrad, API), entscheiden ob als Container im `oscar-voice`-Pod oder ob Türsteher den Rhasspy-3-Code direkt importiert. Hook-Point für Speaker-ID-Embedding-Extraktion identifizieren.
-3. **`oscar-voice`-Pod-Layout** — Wyoming-Ports nach außen (10300/10200/10400), interner Whisper auf 11300. Mehrere Voice-PE-Devices gleichzeitig handhaben (Session-Routing).
-4. **`oscar-brain`-Pod-Layout** — vier Container in einem Pod, GPU-Passthrough für Ollama via Quadlet (`AddDevice=nvidia.com/gpu=all`). Postgres-Initial-Schema-Migrationen sauber aufsetzen (alembic, sqitch, …).
-5. **HA-MCP-Server-Aktivierung** — HA-MCP-Integration konfigurieren, Token-Auth gegen HERMES, Tool-Listing-Stabilität testen. Eventuell HA-Areas/Aliases-Naming-Konventionen mit OSCAR-Skill-Erwartungen abgleichen.
-6. **Türsteher↔LLDAP-Mapping** — Embedding-Einlern-Wizard (Türsteher-Web-UI mit Authelia-OIDC), CLI-Fallback, evtl. HERMES-Skill "Lerne meine Stimme".
-7. **HERMES-Memory ↔ OSCAR-Memory** — Harness-uid-Propagation testen, sicherstellen dass beide Schichten den uid respektieren. HERMES-Konfigurations-Hooks identifizieren.
-8. **Material-Store-Verschlüsselung** — LUKS-Container oder Dateisystem-Layer (z.B. gocryptfs)? Schlüssel-Verwaltung (TPM, Passphrase beim Boot?).
-9. **MCP-Wrapper-Templates** — gehören `immich-search`/`radicale-cal`/`audiobookshelf-list` in `oscar-schleusen` (semantisch passend: konsumieren externe Quellen mit klarem In/Out) oder in einen eigenen `oscar-mcp-wrappers`-Pod?
-10. **Authelia-OIDC-Clients** — welche OSCAR-Services haben eine Web-UI? Initial vermutlich: Türsteher-Admin (Stimm-Einlernen), Ingestion-Bestätigungs-Dashboard, ggf. HERMES-Admin-UI.
-11. **Ingestion-Pipeline-Skelett** — Trigger-Disambiguation (Signal vs. Syncthing), Bestätigungs-Dialog-Skill in HERMES.
-12. **Domain-Collection-Schemas** — Postgres-DDLs für `books`, `records`, `documents` + dünne-Spiegelung-Tabellen für `audiobooks`/`experiences`. Vector-Index-Strategie (Qdrant-Collection pro Domain-Collection? Eine globale mit Filter?).
+1. **Track mdopp/servicebay#348** — Phase 0 blocker. Before writing the `oscar-voice` template, make sure the patch is merged.
+2. **Integrate Rhasspy 3 as the pipeline backbone** — evaluate Rhasspy 3 (maturity, API), decide whether to run it as a container in the `oscar-voice` pod or have the gatekeeper import the Rhasspy 3 code directly. Identify the hook point for speaker-ID embedding extraction.
+3. **`oscar-voice` pod layout** — Wyoming ports exposed (10300/10200/10400), internal Whisper on 11300. Handle multiple Voice-PE devices simultaneously (session routing).
+4. **`oscar-brain` pod layout** — four containers in one pod, GPU passthrough for Ollama via Quadlet (`AddDevice=nvidia.com/gpu=all`). Set up Postgres initial-schema migrations cleanly (alembic, sqitch, …).
+5. **Enable the HA-MCP server** — configure the HA-MCP integration, token auth against HERMES, test tool-listing stability. Possibly reconcile HA areas/aliases naming conventions with what OSCAR skills expect.
+6. **Gatekeeper ↔ LLDAP mapping** — embedding-training wizard (gatekeeper web UI with Authelia OIDC), CLI fallback, possibly a HERMES skill "Learn my voice".
+7. **HERMES memory ↔ OSCAR memory** — test harness-uid propagation, make sure both layers respect the uid. Identify HERMES configuration hooks.
+8. **Material-store encryption** — LUKS container or filesystem-layer (e.g. gocryptfs)? Key management (TPM, boot-time passphrase?).
+9. **MCP wrapper templates** — do `immich-search` / `radicale-cal` / `audiobookshelf-list` belong in `oscar-connectors` (semantically a fit: they consume an external source with a clear in/out contract) or in their own `oscar-mcp-wrappers` pod?
+10. **Authelia OIDC clients** — which OSCAR services have a web UI? Initially likely: gatekeeper admin (voice training), ingestion confirmation dashboard, maybe a HERMES admin UI.
+11. **Ingestion pipeline skeleton** — trigger disambiguation (Signal vs. Syncthing), confirmation-dialogue skill in HERMES.
+12. **Domain-collection schemas** — Postgres DDLs for `books`, `records`, `documents` + thin-mirror tables for `audiobooks`/`experiences`. Vector-index strategy (Qdrant collection per domain collection? A single global one with filters?).
 
-## Quellen / Referenzen
+## Sources / references
 
 - HERMES Agent: <https://github.com/nousresearch/hermes-agent>
 - Rhasspy 3: <https://github.com/rhasspy/rhasspy3>
 - Wyoming Protocol: <https://github.com/rhasspy/wyoming>
 - ServiceBay: <https://github.com/mdopp/servicebay>
-- ServiceBay Voice-Split-Issue: <https://github.com/mdopp/servicebay/issues/348>
-- Home Assistant MCP Server: <https://www.home-assistant.io/integrations/mcp_server/>
-- Harness Engineering (Böckeler): <https://martinfowler.com/articles/harness-engineering.html>
-- Anatomy of an Agent Harness (LangChain): verlinkt im Fowler-Artikel
+- ServiceBay voice-split issue: <https://github.com/mdopp/servicebay/issues/348>
+- Home Assistant MCP server: <https://www.home-assistant.io/integrations/mcp_server/>
+- Harness engineering (Böckeler): <https://martinfowler.com/articles/harness-engineering.html>
+- Anatomy of an Agent Harness (LangChain): linked from the Fowler article
 - Gemma 4: <https://deepmind.google/models/gemma/>
 - LLDAP: <https://github.com/lldap/lldap>
 - Authelia: <https://www.authelia.com/>
@@ -567,7 +567,7 @@ Volle Spec: **[`docs/logging.md`](docs/logging.md)** — Shared-Lib `shared/osca
 - Audiobookshelf: <https://www.audiobookshelf.org/>
 - Immich: <https://immich.app/>
 - Radicale: <https://radicale.org/>
-- Home Assistant Voice Preview Edition: über Nabu Casa
+- Home Assistant Voice Preview Edition: via Nabu Casa
 - Open Library API: <https://openlibrary.org/developers/api>
 - MusicBrainz API: <https://musicbrainz.org/doc/MusicBrainz_API>
 - Discogs API: <https://www.discogs.com/developers>

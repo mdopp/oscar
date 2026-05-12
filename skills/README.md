@@ -1,10 +1,10 @@
-# HERMES-Skills
+# HERMES skills
 
-Konversationsflüsse, Routinen, Domain-Aktionen. Werden von HERMES via Skill-System geladen ([HERMES-Docs](https://github.com/NousResearch/hermes-agent)).
+Conversation flows, routines, domain actions. Loaded by HERMES via its skill system ([HERMES docs](https://github.com/NousResearch/hermes-agent)).
 
-Geplante OSCAR-Skills:
-- Phase 0: Licht, Heizung, Musik (lokal über HA-Media-Player → Navidrome), `zeit` (Timer/Wecker), `audit.query`, `debug.set`
-- Phase 1: `identitaet.verknuepfe` (Admin), `erinnerung` (vertagt)
-- Phase 4: „Guten Morgen"-Routine (HA + TuneIn), proaktive Memo-Erstellung
+Planned OSCAR skills:
+- Phase 0: light, heating, music (local via HA media player → Navidrome), `timer`, `alarm` (one doc covers both), `audit.query`, `debug.set`
+- Phase 1: `identity.link` (admin), `reminder` (deferred)
+- Phase 4: "good morning" routine (HA + TuneIn), proactive memo creation
 
-Skill-Specs liegen pro Skill als `docs/skill-<name>.md` (Beispiel: [`../docs/skill-zeit.md`](../docs/skill-zeit.md)).
+Skill specs live per-skill in `docs/skill-<name>.md` (combined skills can share a doc, e.g. [`../docs/timer-and-alarm.md`](../docs/timer-and-alarm.md)).

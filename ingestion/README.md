@@ -1,9 +1,9 @@
-# Ingestion-Pipeline-Code
+# Ingestion pipeline code
 
-Python-Container-Code für den Pipeline-Container im `oscar-ingestion`-Pod.
+Python container code for the pipeline container in the `oscar-ingestion` pod.
 
-Stufen: Pre-Processing → Klassifikation (Gemma 4 multimodal über HERMES) → Anreicherung (opt-in via Schleuse) → Bestätigungs-Dialog → Persistierung in `oscar-brain.postgres`-Domain-Collection.
+Stages: pre-processing → classification (Gemma 4 multimodal via HERMES) → enrichment (opt-in via connector) → confirmation dialog → persistence into the `oscar-brain.postgres` domain collection.
 
-Zielphase: 3a, inkrementeller Roll-out pro Material-Typ (Bücher → Schallplatten → Hörbücher → Dokumente → Erlebnis-Notizen).
+Target phase: 3a, incremental roll-out per material type (books → records → audiobooks → documents → experiences).
 
-Architektur: [`../oscar-architecture.md`](../oscar-architecture.md) → „8. Inbound Knowledge Pipeline".
+Architecture: [`../oscar-architecture.md`](../oscar-architecture.md) → "8. Inbound knowledge pipeline".

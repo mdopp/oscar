@@ -1,65 +1,65 @@
-# Gateway-Identities
+# Gateway identities
 
-> Status: Entwurf, Mai 2026. Zielphase: Phase 1 (erste Nutzung mit Signal). Heimat: Tabelle in `oscar-brain.postgres`, geschrieben von Setup-Wizard, gelesen von HERMES vor jedem Gateway-Conversation-Call.
+> Status: draft, May 2026. Target phase: Phase 1 (first use with Signal). Home: a table in `oscar-brain.postgres`, written by a setup wizard, read by HERMES before every gateway conversation call.
 
-## Zweck
+## Purpose
 
-HERMES-Gateways (Signal, Telegram, Email, Discord, …) sehen eingehende Nachrichten mit der **externen Identität** des Absenders — z.B. `+4915112345678` bei Signal, `123456789` bei Telegram. Damit Harness-Auswahl, Memory-Namespace und Skill-Permissions funktionieren, braucht HERMES daraus den **LLDAP-uid**. Diese Tabelle ist das Mapping.
+HERMES gateways (Signal, Telegram, email, Discord, …) see incoming messages with the sender's **external identity** — e.g. `+4915112345678` for Signal, `123456789` for Telegram. For harness selection, memory namespacing, and skill permissions to work, HERMES needs to turn that into the **LLDAP uid**. This table is that mapping.
 
-Voice-Erkennung läuft **nicht** über diese Tabelle — Sprach-Embeddings sind kontinuierlich und brauchen eine eigene Distanz-basierte Auflösung in `tuersteher_voice_embeddings` ([oscar-architecture.md:468](../oscar-architecture.md#L468)). Hier nur die exakt-matchbaren Kanäle.
+Voice recognition does **not** go through this table — voice embeddings are continuous and need their own distance-based resolution in `gatekeeper_voice_embeddings` ([oscar-architecture.md](../oscar-architecture.md)). Only exact-match channels live here.
 
-## Datenmodell
+## Data model
 
 ```sql
 CREATE TABLE gateway_identities (
   gateway      TEXT NOT NULL,                  -- 'signal' | 'telegram' | 'email' | 'discord' | …
-  external_id  TEXT NOT NULL,                  -- E.164-Nummer, Chat-ID, E-Mail-Adresse, Discord-ID
-  uid          TEXT NOT NULL,                  -- LLDAP-uid (oder 'gast' wird *nicht* hier gespeichert)
-  display_name TEXT,                           -- optional, für Logs/UI
+  external_id  TEXT NOT NULL,                  -- E.164 number, chat id, email address, Discord id
+  uid          TEXT NOT NULL,                  -- LLDAP uid ('guest' is *not* stored here)
+  display_name TEXT,                           -- optional, for logs/UI
   verified_at  TIMESTAMPTZ NOT NULL,
-  created_by   TEXT NOT NULL,                  -- LLDAP-uid des Admins, der die Zuordnung gemacht hat
+  created_by   TEXT NOT NULL,                  -- LLDAP uid of the admin who created the mapping
   PRIMARY KEY (gateway, external_id)
 );
 CREATE INDEX gateway_identities_uid_idx ON gateway_identities (uid);
 ```
 
-**Mehrere External-IDs pro uid** sind erlaubt (Michael hat private + Arbeits-Signal-Nummer): Primary Key ist `(gateway, external_id)`, nicht `uid`.
+**Multiple external ids per uid** are allowed (Michael has private + work Signal numbers): the primary key is `(gateway, external_id)`, not `uid`.
 
-**Unbekannte external_id** bedeutet: kein Eintrag, kein Match. HERMES behandelt den Anrufer dann als **Gast-Harness**, lehnt aber per Default sensible Tools ab und antwortet mit Verbal-Hinweis („Ich kenne dich noch nicht — wenn du in der Familie bist, lass dich von Michael eintragen.").
+**Unknown external_id** means: no row, no match. HERMES then treats the caller as **guest harness**, denies sensitive tools by default, and answers with a verbal hint ("I don't know you yet — if you're in the family, ask Michael to register you.").
 
-## Lookup-Pfad
-
-```
-Gateway empfängt Nachricht
-  → HERMES holt (gateway, external_id) → uid via gateway_identities
-  → uid NULL? → uid = 'gast'
-  → Harness laden = system.yaml ∪ ({uid}.yaml | gast.yaml)
-  → Conversation-Call mit (text, uid, endpoint, …)
-```
-
-Bei jedem Call frisch nachschlagen — kein Caching im Gateway-Code. Tabelle ist klein, Postgres-Lookup vernachlässigbar gegen LLM-Inference-Zeit.
-
-## Schreibpfad
-
-**Phase 1:** kein Web-UI. Eintrag per HERMES-Skill `identitaet.verknuepfe`, Aufruf nur durch Admin-Harness (`groups: [admins]` in LLDAP):
+## Lookup path
 
 ```
-Michael (Voice-PE-Büro, Admin):
-  „Verknüpfe Signal-Nummer +49 151 1234 5678 mit dem User anna."
-  → Skill prüft Admin-Permission, schreibt Zeile, bestätigt verbal.
+gateway receives a message
+  → HERMES looks up (gateway, external_id) → uid via gateway_identities
+  → uid NULL? → uid = 'guest'
+  → harness load = system.yaml ∪ ({uid}.yaml | guest.yaml)
+  → conversation call with (text, uid, endpoint, …)
 ```
 
-Verifikation in Phase 1 ist **implizit-vertraulich** — der Admin spricht, der Skill schreibt. Keine Cross-Channel-Bestätigung (z.B. „Sende JA an dieses Signal-Konto").
+Fresh lookup on every call — no caching in gateway code. The table is small and the Postgres lookup is negligible compared to LLM inference time.
 
-**Phase 2+:** wenn der Türsteher ein Web-UI für Voice-Embedding-Onboarding bekommt ([oscar-architecture.md:403](../oscar-architecture.md#L403)), ergänzt es einen Reiter „Gateway-Verknüpfungen" — Authelia-OIDC-geschützt, dort manuell editierbar.
+## Write path
 
-## Datenschutz
+**Phase 1:** no web UI. Entries are written via the HERMES skill `identity.link`, callable only from an admin harness (`groups: [admins]` in LLDAP):
 
-- Telefonnummern und Chat-IDs sind PII. Tabelle liegt in `oscar-brain.postgres`, **nicht** in LLDAP — analog zur Begründung bei Voice-Embeddings ([oscar-architecture.md:468](../oscar-architecture.md#L468)): biometrische und kontaktbezogene Daten gehören in eine OSCAR-eigene Schicht, nicht in den Identity-Provider.
-- Kein HMAC/Hashing: Lookup ist exakt-Match, plain reicht. Postgres ist eh encrypted-at-rest auf Fedora-CoreOS-LUKS-Volumes.
-- LLDAP-uid-Löschung → Cascade: bei uid-Delete in LLDAP muss ein Hook (oder periodischer Reconciler in HERMES) verwaiste `gateway_identities`-Zeilen entfernen. Variante 1 (Hook) hängt an ServiceBay; Variante 2 (Reconciler) ist OSCAR-intern und damit robuster gegen ServiceBay-Upgrades. **Empfehlung: Reconciler, täglich.**
+```
+Michael (Voice PE office, admin):
+  "Link the Signal number +49 151 1234 5678 to user anna."
+  → skill checks admin permission, writes the row, confirms verbally.
+```
 
-## Offene Fragen
+Verification in Phase 1 is **implicit and trust-based** — the admin speaks, the skill writes. No cross-channel confirmation (e.g. "send YES to this Signal account").
 
-1. **Cross-Channel-Verifikation** vor Phase-2-UI: lohnt es sich, schon in Phase 1 einen Bestätigungs-Code-Roundtrip einzubauen („Ich habe dir gerade eine 6-stellige Nummer per Signal geschickt — sag sie laut")? Vorteil: kein Vertrauensbruch durch versehentliche Falschverknüpfung. Nachteil: Komplexität für ein 4-Personen-Setup. Empfehlung: nein, später.
-2. **Gast-Konten mit eigener Identität**: wenn ein bekannter Gast (z.B. Schwester) regelmäßig per Signal schreibt — wollen wir einen eigenen `gast:schwester`-uid oder bleibt sie bei `gast`? Hängt vom Harness-Design ab; vertagen bis Phase 2.
+**Phase 2+:** once the gatekeeper grows a web UI for voice-embedding onboarding ([oscar-architecture.md](../oscar-architecture.md)), it gets a "Gateway links" tab — Authelia OIDC protected, editable there.
+
+## Privacy
+
+- Phone numbers and chat ids are PII. The table lives in `oscar-brain.postgres`, **not** in LLDAP — same reasoning as for voice embeddings ([oscar-architecture.md](../oscar-architecture.md)): biometric and contact-related data belong in an OSCAR-internal layer, not in the identity provider.
+- No HMAC / hashing: lookup is exact-match, plain is fine. Postgres is encrypted at rest on Fedora-CoreOS LUKS volumes anyway.
+- LLDAP uid deletion → cascade: when a uid is deleted in LLDAP, a hook (or a periodic reconciler in HERMES) must remove orphan `gateway_identities` rows. Variant 1 (hook) couples to ServiceBay; variant 2 (reconciler) is OSCAR-internal and therefore robust against ServiceBay upgrades. **Recommendation: reconciler, daily.**
+
+## Open questions
+
+1. **Cross-channel verification** before the Phase 2 UI: is it worth wiring a confirmation-code round-trip in Phase 1 ("I just sent you a six-digit code on Signal — say it out loud")? Upside: no trust break from accidental misregistration. Downside: complexity for a 4-person household. Recommendation: no, later.
+2. **Guest accounts with their own identity:** if a known guest (e.g. a sister) regularly messages via Signal — do we want a dedicated `guest:sister` uid or do they stay `guest`? Depends on harness design; defer until Phase 2.
