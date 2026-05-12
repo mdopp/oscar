@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/mdopp/oscar/compare/v1.0.0...v1.1.0) (2026-05-12)
+
+
+### Features
+
+* **connectors:** cloud-llm connector with Anthropic + Google backends ([8d35682](https://github.com/mdopp/oscar/commit/8d356820a0447c9ffc390ad4a0254f73c494a036))
+* **debug:** runtime debug-mode toggle via Postgres + debug-set skill ([2f3192e](https://github.com/mdopp/oscar/commit/2f3192e9a5920a34e5f726d475968e200f10d8bb))
+* **deployment:** add cpu-local and cloud deployment modes ([734b3da](https://github.com/mdopp/oscar/commit/734b3da229fb34dd61ede96d8bd0b6e1116afe02))
+* **mcp:** .mcp.json so Claude Code can query OSCAR's live state ([cea6d33](https://github.com/mdopp/oscar/commit/cea6d336a0868988f607c76a0759c6c507d3988f))
+* **skills:** audit.query — generic filter over OSCAR's audit tables ([d524aa0](https://github.com/mdopp/oscar/commit/d524aa065a02586f6b53da0f75a6c72ef066e973))
+* **skills:** timer and alarm with shared oscar_time_jobs library ([a3c7c2d](https://github.com/mdopp/oscar/commit/a3c7c2d9c3ba4055898690750376178005a2783e))
+
 ## 1.0.0 (2026-05-12)
 
 
