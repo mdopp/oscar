@@ -54,12 +54,11 @@ spec:
     # OSCAR moves to productive use (Phase 2/3).
     - name: OSCAR_DEBUG_MODE
       value: "true"
-    # Make the shared/oscar_logging package importable inside the HERMES
-    # container so OSCAR-side skills can use the structured logger.
-    # Points at the src/ directory of the oscar-logging project so the
-    # package is found as `import oscar_logging` without a pip install.
+    # Make OSCAR's shared Python packages importable inside the HERMES
+    # container so skills can use them without an image rebuild. Each
+    # entry points at the src/ directory of a shared-library project.
     - name: PYTHONPATH
-      value: "/opt/oscar/shared/oscar_logging/src:${PYTHONPATH}"
+      value: "/opt/oscar/shared/oscar_logging/src:/opt/oscar/shared/oscar_time_jobs/src:${PYTHONPATH}"
     - name: TZ
       value: "{{TZ}}"
     ports:
