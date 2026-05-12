@@ -17,8 +17,9 @@ spec:
   hostNetwork: true
   containers:
   # 1. faster-whisper — speech-to-text via Wyoming protocol.
-  #    GPU passthrough so large-v3 hits ~50ms for 3s audio (CPU is too slow
-  #    for the target voice latency).
+  #    GPU passthrough lets large-v3 hit ~50ms for 3s audio. Without GPU,
+  #    drop WHISPER_MODEL to `small` or `base` — large-v3 on CPU is too
+  #    slow (~5-20 s for 3 s audio) for natural voice latency.
   - name: faster-whisper
     image: docker.io/rhasspy/wyoming-whisper:latest
     args:
@@ -40,9 +41,11 @@ spec:
     volumeMounts:
     - mountPath: /data
       name: whisper-data
+    {{#STT_GPU_PASSTHROUGH}}
     resources:
       limits:
         nvidia.com/gpu: "1"
+    {{/STT_GPU_PASSTHROUGH}}
 
   # 2. piper — text-to-speech via Wyoming protocol. CPU is fine here;
   #    Piper streams audio and a single voice runs comfortably without GPU.

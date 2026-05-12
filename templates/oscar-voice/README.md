@@ -13,10 +13,24 @@ Phase 0 target. HA Voice PE devices speak Wyoming directly to this pod; HERMES h
 | `openwakeword` | `docker.io/rhasspy/wyoming-openwakeword:latest` | Wake-word detection. Reserved for software clients in Phase 0; HA Voice PE does wakeword on-device. |
 | `gatekeeper` | `ghcr.io/mdopp/oscar-gatekeeper:latest` | OSCAR pipeline orchestrator. Source in [`../../gatekeeper/`](../../gatekeeper/). |
 
+## Deployment modes
+
+Mirrors the `oscar-brain` axis on the STT side:
+
+| Mode | `STT_GPU_PASSTHROUGH` | `WHISPER_MODEL` | STT latency for 3 s audio |
+|---|---|---|---|
+| **gpu** (default) | `yes` | `large-v3` | ~50 ms |
+| **cpu** | empty | `small` or `base` | 0.5–2 s |
+
+There is **no cloud-STT mode** here — STT stays local even when `oscar-brain` runs in cloud mode. Whisper-`small` on CPU is fast enough to keep voice usable; replacing it with a cloud STT API would add another egress channel that doesn't pay off for a household.
+
+Pair with `oscar-brain`'s mode: GPU brain + GPU STT, or CPU brain + CPU STT, or cloud brain + CPU STT.
+
 ## Host prerequisites
 
-- **GPU passthrough configured.** Whisper-large-v3 on CPU is too slow to meet the voice-latency target. Same `nvidia-container-toolkit` + CDI setup as `oscar-brain`.
-- **mdopp/servicebay#348 merged** so the HA pod can deploy with `VOICE_BUILTIN=disabled` and not collide on Wyoming ports.
+- **gpu mode:** `nvidia-container-toolkit` + CDI same as `oscar-brain`. Whisper-large-v3 on CPU is unusable for live voice (~5–20 s for 3 s audio).
+- **cpu mode:** any host with 4+ cores and ≥4 GB RAM.
+- **mdopp/servicebay#348 merged** so the HA pod can deploy with `VOICE_BUILTIN=disabled` and not collide on Wyoming ports (all modes).
 - **HA Voice PE device** (or a wyoming-satellite-speaking software client) on the LAN.
 - `oscar-brain` deployed and HERMES reachable at `HERMES_URL`.
 
