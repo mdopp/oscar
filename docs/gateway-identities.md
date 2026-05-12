@@ -23,9 +23,9 @@ CREATE TABLE gateway_identities (
 CREATE INDEX gateway_identities_uid_idx ON gateway_identities (uid);
 ```
 
-**Mehrere External-IDs pro uid** sind erlaubt (Markus hat private + Arbeits-Signal-Nummer): Primary Key ist `(gateway, external_id)`, nicht `uid`.
+**Mehrere External-IDs pro uid** sind erlaubt (Michael hat private + Arbeits-Signal-Nummer): Primary Key ist `(gateway, external_id)`, nicht `uid`.
 
-**Unbekannte external_id** bedeutet: kein Eintrag, kein Match. HERMES behandelt den Anrufer dann als **Gast-Harness**, lehnt aber per Default sensible Tools ab und antwortet mit Verbal-Hinweis („Ich kenne dich noch nicht — wenn du in der Familie bist, lass dich von Markus eintragen.").
+**Unbekannte external_id** bedeutet: kein Eintrag, kein Match. HERMES behandelt den Anrufer dann als **Gast-Harness**, lehnt aber per Default sensible Tools ab und antwortet mit Verbal-Hinweis („Ich kenne dich noch nicht — wenn du in der Familie bist, lass dich von Michael eintragen.").
 
 ## Lookup-Pfad
 
@@ -44,7 +44,7 @@ Bei jedem Call frisch nachschlagen — kein Caching im Gateway-Code. Tabelle ist
 **Phase 1:** kein Web-UI. Eintrag per HERMES-Skill `identitaet.verknuepfe`, Aufruf nur durch Admin-Harness (`groups: [admins]` in LLDAP):
 
 ```
-Markus (Voice-PE-Büro, Admin):
+Michael (Voice-PE-Büro, Admin):
   „Verknüpfe Signal-Nummer +49 151 1234 5678 mit dem User anna."
   → Skill prüft Admin-Permission, schreibt Zeile, bestätigt verbal.
 ```

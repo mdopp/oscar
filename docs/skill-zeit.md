@@ -86,7 +86,7 @@ Jeder HERMES-Conversation-Call führt den Routing-Endpoint mit — Türsteher be
 
 ```
 POST /hermes/converse
-{ "text": "…", "uid": "markus", "endpoint": "voice-pe:buero", "audio_features": {…} }
+{ "text": "…", "uid": "michael", "endpoint": "voice-pe:buero", "audio_features": {…} }
 ```
 
 `endpoint` ist Phase-0-Pflichtfeld, sobald `zeit` deployed wird. Ohne `endpoint` lehnt HERMES `timer.set` / `wecker.set` ab („Von wo soll ich klingeln?"). Phase 1: Signal-/Telegram-Pfade liefern ihren eigenen Endpoint mit, der Skill funktioniert ohne Voice-PE.

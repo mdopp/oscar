@@ -29,8 +29,8 @@ Im Gegensatz zur HA-zentrierten Voice-Architektur (HA macht STT/TTS, HERMES ist 
 
 ## Familie & Identitäten
 
-- Drei Personen: Vater (Markus), Mutter, Kind — jedes mit eigenem LLDAP-Account (`uid`)
-- Familienmitglieder in LLDAP-Gruppe `family`, Markus zusätzlich in `admins`
+- Drei Personen: Vater (Michael), Mutter, Kind — jedes mit eigenem LLDAP-Account (`uid`)
+- Familienmitglieder in LLDAP-Gruppe `family`, Michael zusätzlich in `admins`
 - Gäste werden als Gruppe behandelt — Gast-Mode aktiviert sich für jede nicht-erkannte Stimme; kein individueller Gast-LLDAP-Account
 - Jede Person hat einen Personal-Harness in `harnesses/{uid}.yaml`
 - System soll auch in anderen Haushalten installierbar sein (Multi-Tenant durch eigenen LLDAP + Harness-Repo pro Haushalt)
@@ -59,10 +59,10 @@ Begriff im Sinne von Birgitta Böckeler / Martin Fowler:
 ### Beispiel-YAML
 
 ```yaml
-harness: markus          # entspricht der LLDAP-uid
+harness: michael          # entspricht der LLDAP-uid
 extends: system
 context:
-  memory_namespaces: [markus_private, markus_journal, family_shared]
+  memory_namespaces: [michael_private, michael_journal, family_shared]
   preferences: { language: de, response_style: concise }
 tools:
   inherit_from_system: true
@@ -345,7 +345,7 @@ github.com/mdopp/oscar/
 │   └── discogs/
 ├── harnesses/                     # YAML pro LLDAP-uid + system.yaml + gast.yaml
 │   ├── system.yaml
-│   ├── markus.yaml                # Dateiname = LLDAP-uid
+│   ├── michael.yaml                # Dateiname = LLDAP-uid
 │   ├── anna.yaml
 │   ├── kind.yaml
 │   └── gast.yaml
@@ -380,7 +380,7 @@ Ziel: Spürbar bessere Sprachsteuerung als Google Home, vollständig lokal, mit 
   - HERMES erhält Bearer-Token für ServiceBay-MCP (`read+lifecycle`) und HA-MCP (Long-Lived Access Token)
   - Postgres-Backup: wöchentlicher `pg_dump` als CronJob im Pod, dedizierter Volume-Mount für Dumps, 4 Wochen Retention
 - HA Voice Preview Edition für Büro bestellen + auf `oscar-voice` konfigurieren
-- LLDAP-User für Familie anlegen (Markus, Mutter, Kind), `family`-Gruppe
+- LLDAP-User für Familie anlegen (Michael, Mutter, Kind), `family`-Gruppe
 - Lokale MP3s an Music-Folder von `media`-Pod binden
 - Symfonium auf Handy gegen Navidrome konfigurieren
 - Erste Skills in HERMES (statt HA Custom Intents): Licht, Heizung, Timer/Wecker (Spec: `docs/skill-zeit.md`), Musik (lokal über Navidrome via HA-Media-Player)
@@ -396,7 +396,7 @@ Resultat: Vollständig OSCAR-eigene Voice-Pipeline, HA als Geräte-Tool, eine Id
 - Pairing-Flow per QR-Scan einmal beim Initial-Deploy, in README dokumentieren
 - `gateway_identities`-Tabelle in `oscar-brain.postgres` einführen (Spec: `docs/gateway-identities.md`) — Telefonnummer → LLDAP-uid-Mapping
 - Admin-Skill `identitaet.verknuepfe` für Erstbefüllung — dünn: HERMES enforced Admin-Permission über Harness, Skill selbst nur E.164-Regex + LLDAP-uid-Existenzcheck + INSERT. Kein Web-UI in Phase 1.
-- **Roll-out-Reihenfolge**: Markus zuerst allein, Familie en bloc erst nach ~2 Wochen Stabilitäts-Probe (kein Re-Pairing, keine verlorenen Nachrichten)
+- **Roll-out-Reihenfolge**: Michael zuerst allein, Familie en bloc erst nach ~2 Wochen Stabilitäts-Probe (kein Re-Pairing, keine verlorenen Nachrichten)
 - Telegram parallel als zweiter Gateway, gleicher Mechanismus — kein automatischer Failover, symmetrisch zu Signal
 - Routing-Endpoint `signal:<phone>` / `telegram:<chat-id>` durchgereicht an Skills wie `zeit` (Spec: `docs/skill-zeit.md`)
 
@@ -420,7 +420,7 @@ Resultat: Konversation unterwegs, Welt-Zugang opt-in pro Harness, automatisches 
 - Embeddings pro Familienmitglied einlernen (z.B. 10 Sätze pro Person; Setup-Wizard im Türsteher-Web-UI, Authelia-OIDC-geschützt)
 - Harness-YAML-Schema formalisieren (JSON Schema in `docs/harness-spec.md`)
 - Memory-Namespaces in Qdrant + Postgres einführen
-- System + Markus + Gast als erste Harnesses
+- System + Michael + Gast als erste Harnesses
 - Verbal-Hinweise für Gast-Mode
 
 Resultat: Privatsphäre gewahrt.

@@ -72,7 +72,7 @@ ServiceBay's `voice` template (after mdopp/servicebay#348 lands) is **for non-OS
 
 ## Harness system
 
-Three harness types compose at runtime: **System** (always active) ∪ (**Personal** | **Guest**). YAML files live in `harnesses/`, named after the LLDAP `uid` (e.g. `markus.yaml`). Each harness has five fields: `context`, `tools`, `guides`, `sensors`, `permissions`. See `oscar-architecture.md` for full schema + example.
+Three harness types compose at runtime: **System** (always active) ∪ (**Personal** | **Guest**). YAML files live in `harnesses/`, named after the LLDAP `uid` (e.g. `michael.yaml`). Each harness has five fields: `context`, `tools`, `guides`, `sensors`, `permissions`. See `oscar-architecture.md` for full schema + example.
 
 Memory is two layers:
 - **HERMES** (Honcho + FTS5): conversation history, skill curation.
@@ -106,7 +106,7 @@ Domain collections in Postgres (in `oscar-brain`):
 
 - **Phase 0 — Voice + Brain Fundament** (merged old Phase 0 + 1). Voraussetzung: **GPU-Server** bereit, ServiceBay v3.16+ + full-stack deployed, **mdopp/servicebay#348 gemerged**, HA-Pod deployed mit `VOICE_BUILTIN=disabled` + HA-MCP-Server aktiviert. Write `oscar-voice` (Rhasspy-3-Basis, Türsteher initial pass-through) und `oscar-brain` (HERMES + GPU-Ollama). HA Voice PE konfiguriert gegen `oscar-voice`. HERMES bekommt ServiceBay-MCP- und HA-MCP-Bearer-Tokens (`read+lifecycle`). LLDAP-User für Familie. Erste Skills: Licht, Heizung, Timer, Radio, Musik, „Guten Morgen"-Routine.
 - **Phase 1 — Mobile + Schleusen**. Signal-Gateway, erste `oscar-schleusen` (Cloud-LLM, TuneIn, Wetter, Websuche). Cloud-LLM default aus.
-- **Phase 2 — Speaker-ID + Harnesses**. SpeechBrain in Türsteher aktivieren, Voice-Embedding-Tabelle, Harness-YAML-Schema, Memory-Namespaces, `system.yaml` + `markus.yaml` + `gast.yaml`.
+- **Phase 2 — Speaker-ID + Harnesses**. SpeechBrain in Türsteher aktivieren, Voice-Embedding-Tabelle, Harness-YAML-Schema, Memory-Namespaces, `system.yaml` + `michael.yaml` + `gast.yaml`.
 - **Phase 3a — Streaming-Ingestion**. `oscar-ingestion` + Anreicherungs-Schleusen (Open Library, MusicBrainz, Discogs). Roll-out: books → records → audiobooks → documents → experiences.
 - **Phase 3b — Bulk-Import + MCP-Wrapper**. `immich-search`, `radicale-cal`, `audiobookshelf-list` MCP-Tools. Signal-Verlauf-Import, Google Takeout, Mail/CalDAV/CardDAV-Sync.
 - **Phase 4 — Aktive Erweiterungen**. Voice-Tone-Analyse, Multi-Room-Voice-Routing (≥2 Räume), Multi-Haushalt, Custom-Wakeword „Oscar", proaktive HERMES-Memo-Erstellung.
