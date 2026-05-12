@@ -24,13 +24,17 @@ def _info() -> Info:
             AsrProgram(
                 name="oscar-gatekeeper-asr",
                 description="OSCAR gatekeeper — ASR via internal Whisper",
-                attribution=Attribution(name="OSCAR", url="https://github.com/mdopp/oscar"),
+                attribution=Attribution(
+                    name="OSCAR", url="https://github.com/mdopp/oscar"
+                ),
                 installed=True,
                 models=[
                     AsrModel(
                         name="oscar-gatekeeper",
                         description="Gatekeeper pipeline (Whisper -> HERMES -> Piper)",
-                        attribution=Attribution(name="OSCAR", url="https://github.com/mdopp/oscar"),
+                        attribution=Attribution(
+                            name="OSCAR", url="https://github.com/mdopp/oscar"
+                        ),
                         installed=True,
                         languages=["de", "en"],
                     )
@@ -41,7 +45,9 @@ def _info() -> Info:
             TtsProgram(
                 name="oscar-gatekeeper-tts",
                 description="OSCAR gatekeeper — TTS via internal Piper",
-                attribution=Attribution(name="OSCAR", url="https://github.com/mdopp/oscar"),
+                attribution=Attribution(
+                    name="OSCAR", url="https://github.com/mdopp/oscar"
+                ),
                 installed=True,
                 voices=[],
             )

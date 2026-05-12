@@ -10,7 +10,9 @@ from .tools import current_weather, forecast
 
 def build_server() -> FastMCP:
     auth = StaticTokenVerifier(
-        tokens={settings.connectors_bearer: {"sub": "hermes", "client_id": "oscar-brain"}}
+        tokens={
+            settings.connectors_bearer: {"sub": "hermes", "client_id": "oscar-brain"}
+        }
     )
     mcp = FastMCP(name="oscar-connector-weather", auth=auth)
     mcp.tool()(current_weather.run)
@@ -20,7 +22,12 @@ def build_server() -> FastMCP:
 
 def main() -> None:
     mcp = build_server()
-    log.info("connector.boot", port=settings.port, language=settings.weather_language, units=settings.weather_units)
+    log.info(
+        "connector.boot",
+        port=settings.port,
+        language=settings.weather_language,
+        units=settings.weather_units,
+    )
     mcp.run(host="0.0.0.0", port=settings.port, transport="streamable-http")
 
 
