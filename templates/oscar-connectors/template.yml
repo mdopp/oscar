@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-connectors
+  labels:
+    app: oscar-connectors
+  annotations:
+    servicebay.label: "OSCAR Connectors (external + enrichment)"
+    servicebay.schema-version: "1"
+    # One host port per connector container, 8800-range.
+    servicebay.ports: "{{WEATHER_PORT}}/tcp"
+spec:
+  containers:
+  # weather — OpenWeatherMap-backed current weather + 5-day forecast.
+  - name: weather
+    image: ghcr.io/mdopp/oscar-connector-weather:latest
+    env:
+    - name: CONNECTORS_BEARER
+      value: "{{CONNECTORS_BEARER}}"
+    - name: WEATHER_API_KEY
+      value: "{{WEATHER_API_KEY}}"
+    - name: WEATHER_LANGUAGE
+      value: "{{WEATHER_LANGUAGE}}"
+    - name: WEATHER_UNITS
+      value: "{{WEATHER_UNITS}}"
+    - name: PORT
+      value: "8801"
+    - name: OSCAR_COMPONENT
+      value: "connector-weather"
+    - name: OSCAR_DEBUG_MODE
+      value: "true"
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 8801
+      hostPort: {{WEATHER_PORT}}

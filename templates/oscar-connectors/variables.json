@@ -1,0 +1,32 @@
+{
+  "CONNECTORS_BEARER": {
+    "type": "secret",
+    "description": "Bearer that HERMES sends to every connector in this pod. Generated once on first deploy; rotate by re-deploying. Also has to be set as HERMES env in oscar-brain."
+  },
+  "WEATHER_PORT": {
+    "type": "text",
+    "description": "Host port for the weather connector's MCP server. HERMES needs to know this to call it.",
+    "default": "8801"
+  },
+  "WEATHER_API_KEY": {
+    "type": "secret",
+    "description": "OpenWeatherMap API key. Free tier (openweathermap.org/api) is sufficient for a household; the connector uses /data/2.5 endpoints which don't need a paid plan."
+  },
+  "WEATHER_LANGUAGE": {
+    "type": "select",
+    "description": "Forecast language returned by OpenWeatherMap.",
+    "options": ["de", "en"],
+    "default": "de"
+  },
+  "WEATHER_UNITS": {
+    "type": "select",
+    "description": "Unit system. Metric → Celsius + m/s (converted to km/h by the connector); imperial → Fahrenheit + mph.",
+    "options": ["metric", "imperial"],
+    "default": "metric"
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps.",
+    "default": "Europe/Berlin"
+  }
+}
