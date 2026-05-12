@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "oscar-postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "${OSCAR_POSTGRES_DSN}"
+      ]
+    },
+    "oscar-servicebay": {
+      "url": "${OSCAR_SERVICEBAY_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${OSCAR_SERVICEBAY_MCP_TOKEN}"
+      }
+    },
+    "oscar-hermes": {
+      "url": "${OSCAR_HERMES_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${OSCAR_HERMES_TOKEN}"
+      }
+    },
+    "oscar-ha": {
+      "url": "${OSCAR_HA_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${OSCAR_HA_MCP_TOKEN}"
+      }
+    }
+  }
+}
