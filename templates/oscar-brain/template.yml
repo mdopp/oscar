@@ -1,0 +1,257 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-brain
+  labels:
+    app: oscar-brain
+  annotations:
+    servicebay.label: "OSCAR Brain (HERMES + Ollama + Qdrant + Postgres)"
+    servicebay.schema-version: "1"
+    servicebay.ports: "{{HERMES_PORT}}/tcp,{{OLLAMA_PORT}}/tcp,{{QDRANT_PORT}}/tcp"
+spec:
+  containers:
+  # 1. HERMES — agent core. Loads OSCAR skills, talks to Ollama, Postgres, Qdrant,
+  #    and (via MCP) to ServiceBay-MCP, HA-MCP, and the oscar-connectors pod.
+  #    Skills under skills/<name>/ inside the registry import `oscar_logging`
+  #    from the mounted shared package.
+  - name: hermes
+    image: ghcr.io/nousresearch/hermes-agent:latest
+    env:
+    - name: OLLAMA_BASE_URL
+      value: "http://localhost:{{OLLAMA_PORT}}"
+    - name: HERMES_MODEL
+      value: "{{HERMES_MODEL}}"
+    - name: HERMES_ROUTER_MODEL
+      value: "{{ROUTER_MODEL}}"
+    - name: POSTGRES_DSN
+      value: "postgresql://oscar:{{POSTGRES_PASSWORD}}@localhost:5432/oscar"
+    - name: QDRANT_URL
+      value: "http://localhost:{{QDRANT_PORT}}"
+    - name: HA_MCP_URL
+      value: "{{HA_MCP_URL}}"
+    - name: HA_MCP_TOKEN
+      value: "{{HA_MCP_TOKEN}}"
+    - name: SERVICEBAY_MCP_URL
+      value: "{{SERVICEBAY_MCP_URL}}"
+    - name: SERVICEBAY_MCP_TOKEN
+      value: "{{SERVICEBAY_MCP_TOKEN}}"
+    - name: OSCAR_COMPONENT
+      value: "hermes"
+    # Phase-0 default: debug mode on. Flip via the debug.set admin skill once
+    # OSCAR moves to productive use (Phase 2/3).
+    - name: OSCAR_DEBUG_MODE
+      value: "true"
+    # Make the shared/oscar_logging package importable inside the HERMES
+    # container so OSCAR-side skills can use the structured logger.
+    # Points at the src/ directory of the oscar-logging project so the
+    # package is found as `import oscar_logging` without a pip install.
+    - name: PYTHONPATH
+      value: "/opt/oscar/shared/oscar_logging/src:${PYTHONPATH}"
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 8000
+      hostPort: {{HERMES_PORT}}
+    volumeMounts:
+    - mountPath: /root/.hermes
+      name: hermes-data
+    - mountPath: /opt/oscar/shared
+      name: oscar-shared
+      readOnly: true
+    - mountPath: /opt/oscar/skills
+      name: oscar-skills
+      readOnly: true
+
+  # 2. Ollama — local LLM runtime with GPU passthrough.
+  #    Pulls `{{HERMES_MODEL}}` and `{{ROUTER_MODEL}}` on first start.
+  #    Requires host with nvidia-container-toolkit + CDI configured.
+  - name: ollama
+    image: docker.io/ollama/ollama:latest
+    env:
+    - name: OLLAMA_HOST
+      value: "0.0.0.0:11434"
+    - name: OLLAMA_KEEP_ALIVE
+      value: "24h"
+    - name: OLLAMA_MAX_LOADED_MODELS
+      value: "2"
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 11434
+      hostPort: {{OLLAMA_PORT}}
+    volumeMounts:
+    - mountPath: /root/.ollama
+      name: ollama-models
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+
+  # 3. Qdrant — vector store for OSCAR domain memory (semantic index over
+  #    domain collections in Phase 3a+; empty in Phase 0).
+  - name: qdrant
+    image: docker.io/qdrant/qdrant:latest
+    env:
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 6333
+      hostPort: {{QDRANT_PORT}}
+    volumeMounts:
+    - mountPath: /qdrant/storage
+      name: qdrant-data
+
+  # 4. Postgres — OSCAR domain tables + system_settings + cloud_audit.
+  #    Initial schema is dropped into /docker-entrypoint-initdb.d/ by the
+  #    wrapper command below so the standard postgres entrypoint picks it
+  #    up on first start (empty data dir).
+  - name: postgres
+    image: docker.io/postgres:16-alpine
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        mkdir -p /docker-entrypoint-initdb.d
+        cat > /docker-entrypoint-initdb.d/01-oscar-init.sql <<'EOSQL'
+        -- system_settings: key/value, holds debug_mode + future global flags
+        CREATE TABLE IF NOT EXISTS system_settings (
+          key   TEXT PRIMARY KEY,
+          value JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        INSERT INTO system_settings (key, value) VALUES
+          ('debug_mode', '{"active": true, "verbose_until": null, "latency_annotations": false}'::jsonb)
+        ON CONFLICT (key) DO NOTHING;
+
+        -- time_jobs: backing store for the timer + alarm skills
+        --   spec: docs/timer-and-alarm.md
+        CREATE TABLE IF NOT EXISTS time_jobs (
+          id              UUID PRIMARY KEY,
+          kind            TEXT NOT NULL CHECK (kind IN ('timer','alarm')),
+          owner_uid       TEXT NOT NULL,
+          label           TEXT,
+          fires_at        TIMESTAMPTZ NOT NULL,
+          rrule           TEXT,
+          duration_set    INTERVAL,
+          target_endpoint TEXT NOT NULL,
+          hermes_cron_id  TEXT,
+          state           TEXT NOT NULL CHECK (state IN ('armed','firing','snoozed','done','cancelled')),
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS time_jobs_fires_idx ON time_jobs (state, fires_at)
+          WHERE state IN ('armed','snoozed');
+        CREATE INDEX IF NOT EXISTS time_jobs_owner_idx ON time_jobs (owner_uid, state);
+
+        -- gateway_identities: phone-number / chat-id -> LLDAP uid (Phase 1)
+        --   spec: docs/gateway-identities.md
+        CREATE TABLE IF NOT EXISTS gateway_identities (
+          gateway      TEXT NOT NULL,
+          external_id  TEXT NOT NULL,
+          uid          TEXT NOT NULL,
+          display_name TEXT,
+          verified_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+          created_by   TEXT NOT NULL,
+          PRIMARY KEY (gateway, external_id)
+        );
+        CREATE INDEX IF NOT EXISTS gateway_identities_uid_idx ON gateway_identities (uid);
+
+        -- cloud_audit: structured record of every escalation to the Cloud-LLM
+        --   connector (Phase 1). Metadata-only by default; full text only when
+        --   debug_mode.active is true (see docs/logging.md).
+        CREATE TABLE IF NOT EXISTS cloud_audit (
+          id                 UUID PRIMARY KEY,
+          ts                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+          trace_id           UUID NOT NULL,
+          uid                TEXT NOT NULL,
+          vendor             TEXT NOT NULL,
+          prompt_hash        TEXT NOT NULL,
+          prompt_length      INTEGER NOT NULL,
+          response_length    INTEGER NOT NULL,
+          latency_ms         INTEGER NOT NULL,
+          cost_usd_micro     INTEGER,
+          router_score       REAL,
+          escalation_reason  TEXT,
+          prompt_fulltext    TEXT,
+          response_fulltext  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS cloud_audit_ts_idx ON cloud_audit (ts DESC);
+        CREATE INDEX IF NOT EXISTS cloud_audit_uid_idx ON cloud_audit (uid, ts DESC);
+        CREATE INDEX IF NOT EXISTS cloud_audit_trace_idx ON cloud_audit (trace_id);
+        EOSQL
+        exec /usr/local/bin/docker-entrypoint.sh postgres
+    env:
+    - name: POSTGRES_USER
+      value: "oscar"
+    - name: POSTGRES_PASSWORD
+      value: "{{POSTGRES_PASSWORD}}"
+    - name: POSTGRES_DB
+      value: "oscar"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/postgresql/data
+      name: postgres-data
+
+  # 5. pg-backup — weekly pg_dump sidecar, 4-week retention.
+  #    Simple loop: dump, prune, sleep a week. No external scheduler needed.
+  - name: pg-backup
+    image: docker.io/postgres:16-alpine
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        export PGPASSWORD='{{POSTGRES_PASSWORD}}'
+        # Wait for postgres to accept connections (first boot can take a minute).
+        until pg_isready -h localhost -U oscar -d oscar -q; do sleep 5; done
+        echo "pg-backup: postgres ready, entering weekly loop"
+        while true; do
+          NOW=$(date +%Y%m%d-%H%M%S)
+          DUMP="/backups/oscar-$NOW.sql.gz"
+          echo "pg-backup: writing $DUMP"
+          if pg_dump -h localhost -U oscar oscar | gzip > "$DUMP"; then
+            echo "pg-backup: dump ok ($(stat -c%s "$DUMP") bytes)"
+          else
+            echo "pg-backup: dump failed" >&2
+            rm -f "$DUMP"
+          fi
+          find /backups -name 'oscar-*.sql.gz' -mtime +28 -delete
+          sleep 604800
+        done
+    env:
+    - name: OSCAR_COMPONENT
+      value: "pg-backup"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /backups
+      name: postgres-backups
+
+  volumes:
+  - name: hermes-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/hermes
+      type: DirectoryOrCreate
+  - name: ollama-models
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/ollama
+      type: DirectoryOrCreate
+  - name: qdrant-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/qdrant
+      type: DirectoryOrCreate
+  - name: postgres-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/postgres
+      type: DirectoryOrCreate
+  - name: postgres-backups
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/postgres-backups
+      type: DirectoryOrCreate
+  # Read-only mounts of the OSCAR registry checkout so HERMES picks up the
+  # shared logging package and the skill code without rebuilding the image.
+  # OSCAR_REGISTRY_DIR is where ServiceBay clones github.com/mdopp/oscar.git.
+  - name: oscar-shared
+    hostPath:
+      path: {{OSCAR_REGISTRY_DIR}}/shared
+      type: Directory
+  - name: oscar-skills
+    hostPath:
+      path: {{OSCAR_REGISTRY_DIR}}/skills
+      type: Directory
