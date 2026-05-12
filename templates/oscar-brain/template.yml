@@ -35,6 +35,13 @@ spec:
       value: "{{SERVICEBAY_MCP_URL}}"
     - name: SERVICEBAY_MCP_TOKEN
       value: "{{SERVICEBAY_MCP_TOKEN}}"
+    # Signal gateway (Phase 1). HERMES talks to a signal-cli daemon
+    # running as a sidecar in this pod; the daemon manages the linked-
+    # device session state in /home/.local/share/signal-cli.
+    - name: SIGNAL_HTTP_URL
+      value: "http://127.0.0.1:8080"
+    - name: SIGNAL_ACCOUNT
+      value: "{{SIGNAL_ACCOUNT}}"
     - name: OSCAR_COMPONENT
       value: "hermes"
     # Phase-0 default: debug mode on. Flip via the debug.set admin skill once
@@ -61,6 +68,23 @@ spec:
     - mountPath: /opt/oscar/skills
       name: oscar-skills
       readOnly: true
+
+  # 1b. signal-cli daemon — Phase-1 sidecar so HERMES's Signal gateway has
+  #     an HTTP endpoint to talk to. Linked-device session state lives in
+  #     /home/.local/share/signal-cli (persistent volume below). First-time
+  #     pairing happens once at deploy via the README's QR-scan flow.
+  - name: signal-cli-daemon
+    image: docker.io/bbernhard/signal-cli-rest-api:latest
+    env:
+    - name: MODE
+      value: "json-rpc"
+    - name: TZ
+      value: "{{TZ}}"
+    ports:
+    - containerPort: 8080
+    volumeMounts:
+    - mountPath: /home/.local/share/signal-cli
+      name: signal-cli-data
 
   # 2. Ollama — local LLM runtime with GPU passthrough.
   #    Pulls `{{HERMES_MODEL}}` and `{{ROUTER_MODEL}}` on first start.
@@ -243,6 +267,10 @@ spec:
   - name: postgres-backups
     hostPath:
       path: {{DATA_DIR}}/oscar-brain/postgres-backups
+      type: DirectoryOrCreate
+  - name: signal-cli-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/signal-cli
       type: DirectoryOrCreate
   # Read-only mounts of the OSCAR registry checkout so HERMES picks up the
   # shared logging package and the skill code without rebuilding the image.
