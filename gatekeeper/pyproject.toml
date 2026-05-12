@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-gatekeeper"
+version = "0.1.0"
+description = "OSCAR voice-pipeline orchestrator — Wyoming server that drives whisper/piper and hands off conversation to HERMES."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "wyoming>=1.5.0",
+  "httpx>=0.27",
+  "oscar-logging",
+]
+
+[project.scripts]
+gatekeeper = "gatekeeper.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/mdopp/oscar"
+Spec = "https://github.com/mdopp/oscar/blob/main/gatekeeper/README.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["gatekeeper*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
