@@ -1,0 +1,24 @@
+name: pre-commit
+
+# Enforce the same hooks that local devs run with `pre-commit install`,
+# so the config is meaningful even for drive-by PRs that haven't bothered
+# with the local install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: pre-commit/action@v3.0.1
