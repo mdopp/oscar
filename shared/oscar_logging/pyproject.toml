@@ -10,7 +10,18 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
-dependencies = []
+dependencies = [
+  "asyncpg>=0.29",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+"oscar-logging-admin" = "oscar_logging.admin:main"
 
 [project.urls]
 Homepage = "https://github.com/mdopp/oscar"
