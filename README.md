@@ -131,4 +131,4 @@ Issues with concrete reproductions or design suggestions are welcome at [github.
 
 ## License
 
-MIT (declared in the `pyproject.toml` of every OSCAR-owned Python project). A top-level `LICENSE` file is on the open-follow-up list.
+[MIT](LICENSE). The same intent is declared in every OSCAR-owned `pyproject.toml`.
