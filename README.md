@@ -112,6 +112,21 @@ Each template's `README.md` walks through variables, smoke tests, and per-pod op
 
 Conversation with the maintainer is German. **All versioned artefacts — docs, READMEs, code identifiers, comments, issue titles, commit messages — are English.**
 
+## Debugging with Claude Code (MCP)
+
+The repo ships a [`.mcp.json`](.mcp.json) that wires four MCP servers into Claude Code so the maintainer's debug sessions can query OSCAR's state directly:
+
+| Server | Reads | When useful |
+|---|---|---|
+| `oscar-postgres` | `cloud_audit`, `time_jobs`, `gateway_identities`, `system_settings` (read-only role recommended) | "Why was last night's cloud call so expensive?", "Which alarms are armed for michael right now?" |
+| `oscar-servicebay` | container logs, health, services, diagnostics | "Why did oscar-voice crash-loop after the last deploy?" |
+| `oscar-hermes` | HERMES MCP surface (skill catalog, session, …) | "Which skill picked this question up?" |
+| `oscar-ha` | Home Assistant entities, areas, services | "Did the office light actually turn on after that voice command?" |
+
+Setup: copy [`.env.example`](.env.example) to `~/.config/oscar.env` (or wherever your shell sources from), fill in real values, ensure those env vars are in scope when you open the repo. Claude Code substitutes `${...}` in `.mcp.json` from the environment.
+
+**Security note:** project MCP servers require explicit user approval the first time Claude Code uses them. Treat the credentials as secret — `oscar-postgres` in particular gives Claude full read access to `cloud_audit` and, in debug-mode, full prompts and responses. Best practice: a dedicated read-only Postgres role (`claude_ro` — see `.env.example` for the SQL).
+
 ## Hardware expectations
 
 - Single GPU server (RTX 4070 / ≥12 GB VRAM target). Voice latency and Gemma 4-12B+ are unreachable on CPU only. No Mac mini path planned.
