@@ -1,0 +1,31 @@
+name: release-please
+
+# Maintains a "release PR" against main with the version bump + CHANGELOG
+# entry computed from conventional-commit messages. Merging that PR
+# creates a Git tag (e.g. v0.1.0) which in turn triggers build-images.yml
+# to push the corresponding image tags to GHCR.
+#
+# Conventional-commit prefixes that move versions:
+#   feat:     -> minor bump
+#   fix:      -> patch bump
+#   feat!:    -> breaking change, major bump (until v1.0.0: minor bump)
+# Other types (chore, docs, refactor, ci, build, perf, test) are recorded
+# in the changelog but don't bump the version.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
