@@ -56,6 +56,11 @@
     "type": "secret",
     "description": "Bearer token for ServiceBay-MCP. Mint with scope 'read+lifecycle' under ServiceBay → Settings → Integrations → MCP."
   },
+  "SIGNAL_ACCOUNT": {
+    "type": "text",
+    "description": "Phone number (E.164, e.g. +4915112345678) of the family Signal account that this OSCAR install pairs with as a linked device. Leave empty to defer pairing — Signal gateway stays disabled until set.",
+    "default": ""
+  },
   "TZ": {
     "type": "text",
     "description": "IANA time zone for log timestamps and cron scheduling.",
