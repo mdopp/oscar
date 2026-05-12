@@ -93,8 +93,8 @@ python -m oscar_time_jobs cancel --uid <active-uid> --label <label>
 
 | Phase | Delivery |
 |---|---|
-| **0 (now)** | Set + list + cancel work. Fire on `voice-pe:` endpoints returns `delivery_pending: voice-pe` — the timer fires correctly in the DB, but no audio plays yet (waits on gatekeeper push). Fire on `signal:` / `telegram:` works end-to-end via HERMES auto-delivery. |
-| **1** | Voice-PE push: gatekeeper exposes a "play this text on this device" HTTP endpoint that the fire path calls. |
+| **0** | Set + list + cancel work. Fire on `voice-pe:` endpoints returned `delivery_pending: voice-pe` — DB updated, no audio. Fire on `signal:` / `telegram:` worked E2E. |
+| **1 (now)** | Voice-PE push: the gatekeeper exposes `POST http://oscar-voice:10750/push` accepting `{"endpoint": "voice-pe:<device>", "text": "<message>"}` (bearer-auth via `PUSH_TOKEN`). When fire returns `delivery_pending: voice-pe`, the scheduled cronjob prompt should POST to that endpoint instead of dropping the payload. |
 | **1** | Snooze (`timer.snooze`) after a fired timer — "Noch 5 Minuten." Re-arms the job at `now() + duration`. |
 | **2** | Strict harness filter (guest vs personal owners). |
 | **4** | Multi-room: target_endpoint becomes a list; broadcast cancel. |

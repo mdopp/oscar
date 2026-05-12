@@ -62,6 +62,15 @@
     "type": "secret",
     "description": "Bearer token the gatekeeper presents when calling HERMES. Mint this once oscar-brain is up; HERMES's own auth config decides what's required."
   },
+  "PUSH_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token HERMES presents on the gatekeeper's push endpoint (POST /push). Leave blank during local-only testing — the port isn't host-mapped — but set a value once external callers (Phase-1 routines, etc.) might hit it."
+  },
+  "VOICE_PE_DEVICES": {
+    "type": "text",
+    "description": "JSON map from short device name to its Wyoming URI, e.g. `{\"office\": \"tcp://192.168.1.10:10700\", \"bedroom\": \"tcp://192.168.1.11:10700\"}`. The push endpoint resolves `voice-pe:<name>` against this map. Leave as `{}` until you've paired at least one device.",
+    "default": "{}"
+  },
   "TZ": {
     "type": "text",
     "description": "IANA time zone for log timestamps.",

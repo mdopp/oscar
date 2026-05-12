@@ -24,10 +24,10 @@ from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncClient
 from wyoming.event import Event
 from wyoming.server import AsyncEventHandler
-from wyoming.tts import Synthesize, SynthesizeVoice
 
 from .config import settings
 from .hermes import HermesClient
+from .tts import synthesize_to_writer
 
 
 class GatekeeperHandler(AsyncEventHandler):
@@ -123,21 +123,4 @@ class GatekeeperHandler(AsyncEventHandler):
                     return Transcript.from_event(evt).text
 
     async def _synthesize_and_stream(self, text: str) -> None:
-        async with AsyncClient.from_uri(settings.piper_uri) as client:
-            await client.write_event(
-                Synthesize(text=text, voice=SynthesizeVoice(name=None)).event()
-            )
-            while True:
-                evt = await client.read_event()
-                if evt is None:
-                    return
-                # Forward AudioStart / AudioChunk / AudioStop verbatim to the
-                # original caller so it can play the synthesised speech.
-                if (
-                    AudioStart.is_type(evt.type)
-                    or AudioChunk.is_type(evt.type)
-                    or AudioStop.is_type(evt.type)
-                ):
-                    await self.write_event(evt)
-                    if AudioStop.is_type(evt.type):
-                        return
+        await synthesize_to_writer(settings.piper_uri, text, self.write_event)
