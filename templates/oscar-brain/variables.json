@@ -1,0 +1,69 @@
+{
+  "POSTGRES_PASSWORD": {
+    "type": "secret",
+    "description": "Password for the internal Postgres database. Auto-generated on first deploy."
+  },
+  "HERMES_PORT": {
+    "type": "text",
+    "description": "Host port the HERMES HTTP API listens on (gatekeeper and Signal/Telegram gateways call this).",
+    "default": "8000"
+  },
+  "OLLAMA_PORT": {
+    "type": "text",
+    "description": "Host port Ollama listens on. Only used pod-internally in Phase 0, but exposed for diagnostics and CLI testing.",
+    "default": "11434"
+  },
+  "QDRANT_PORT": {
+    "type": "text",
+    "description": "Host port for Qdrant HTTP API. Pod-internal in Phase 0.",
+    "default": "6333"
+  },
+  "HERMES_MODEL": {
+    "type": "select",
+    "description": "Local model HERMES runs by default. Pick the largest one that fits comfortably in VRAM with router headroom. Gemma 4 options assume the family is released on Ollama; fall back to Gemma 3 if not.",
+    "options": [
+      "gemma4:12b-instruct-q4_K_M",
+      "gemma4:4b-instruct-q4_K_M",
+      "gemma3:12b-instruct-q4_K_M",
+      "gemma3:4b-instruct-q4_K_M"
+    ],
+    "default": "gemma4:12b-instruct-q4_K_M"
+  },
+  "ROUTER_MODEL": {
+    "type": "select",
+    "description": "Tiny model used by the Gemma-1B router to score query complexity and decide on cloud escalation. Should stay loaded alongside the main model.",
+    "options": [
+      "gemma4:1b",
+      "gemma3:1b"
+    ],
+    "default": "gemma4:1b"
+  },
+  "HA_MCP_URL": {
+    "type": "text",
+    "description": "URL of the Home Assistant MCP server (integration mcp_server). Example: https://ha.dopp.cloud/mcp_server/sse",
+    "default": ""
+  },
+  "HA_MCP_TOKEN": {
+    "type": "secret",
+    "description": "Long-lived access token from Home Assistant (Profile → Security → Long-lived access tokens) that authorises HERMES against HA-MCP."
+  },
+  "SERVICEBAY_MCP_URL": {
+    "type": "text",
+    "description": "URL of the ServiceBay MCP endpoint. Usually https://<servicebay-host>/mcp on the same machine.",
+    "default": ""
+  },
+  "SERVICEBAY_MCP_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token for ServiceBay-MCP. Mint with scope 'read+lifecycle' under ServiceBay → Settings → Integrations → MCP."
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps and cron scheduling.",
+    "default": "Europe/Berlin"
+  },
+  "OSCAR_REGISTRY_DIR": {
+    "type": "text",
+    "description": "Absolute path on the host where ServiceBay cloned github.com/mdopp/oscar.git. HERMES read-mounts shared/ and skills/ from here. Update this if your ServiceBay install uses a non-default registry path.",
+    "default": "/var/lib/servicebay/registries/oscar"
+  }
+}
