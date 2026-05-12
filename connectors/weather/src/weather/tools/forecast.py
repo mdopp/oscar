@@ -10,7 +10,9 @@ from ..config import settings
 
 
 class ForecastInput(BaseModel):
-    location: str = Field(..., description="Place name or postal code, e.g. 'Berlin' or '10115,DE'")
+    location: str = Field(
+        ..., description="Place name or postal code, e.g. 'Berlin' or '10115,DE'"
+    )
     days: int = Field(3, ge=1, le=5, description="How many days ahead (1-5)")
 
 
@@ -33,7 +35,13 @@ async def run(input: ForecastInput, ctx) -> ForecastOutput:
         if hasattr(ctx, "request_context") and ctx.request_context.meta
         else None
     )
-    log.info("connector.call", event_type="forecast", trace_id=trace_id, location=input.location, days=input.days)
+    log.info(
+        "connector.call",
+        event_type="forecast",
+        trace_id=trace_id,
+        location=input.location,
+        days=input.days,
+    )
 
     url = f"{settings.weather_base_url}/forecast"
     params = {
@@ -48,7 +56,12 @@ async def run(input: ForecastInput, ctx) -> ForecastOutput:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, params=params)
     except httpx.HTTPError as exc:
-        log.error("connector.external_error", event_type="forecast", trace_id=trace_id, error=str(exc))
+        log.error(
+            "connector.external_error",
+            event_type="forecast",
+            trace_id=trace_id,
+            error=str(exc),
+        )
         raise
 
     if response.status_code >= 400:

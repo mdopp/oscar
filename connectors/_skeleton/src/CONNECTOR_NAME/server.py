@@ -17,7 +17,9 @@ from .tools import example
 
 def build_server() -> FastMCP:
     auth = StaticTokenVerifier(
-        tokens={settings.connectors_bearer: {"sub": "hermes", "client_id": "oscar-brain"}}
+        tokens={
+            settings.connectors_bearer: {"sub": "hermes", "client_id": "oscar-brain"}
+        }
     )
     mcp = FastMCP(name=f"oscar-connector-{settings.connector_name}", auth=auth)
     mcp.tool()(example.run)

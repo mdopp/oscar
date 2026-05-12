@@ -26,7 +26,9 @@ class Settings:
             gatekeeper_uri=os.environ.get("GATEKEEPER_URI", "tcp://0.0.0.0:10700"),
             whisper_uri=os.environ.get("WHISPER_URI", "tcp://127.0.0.1:10300"),
             piper_uri=os.environ.get("PIPER_URI", "tcp://127.0.0.1:10200"),
-            openwakeword_uri=os.environ.get("OPENWAKEWORD_URI", "tcp://127.0.0.1:10400"),
+            openwakeword_uri=os.environ.get(
+                "OPENWAKEWORD_URI", "tcp://127.0.0.1:10400"
+            ),
             hermes_url=os.environ["HERMES_URL"],
             hermes_token=os.environ.get("HERMES_TOKEN", ""),
             default_uid=os.environ.get("DEFAULT_UID", "michael"),
