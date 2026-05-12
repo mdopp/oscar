@@ -1,6 +1,7 @@
 """Mock-backed tests for current_weather. No real API calls."""
 
 import os
+import re
 
 import pytest
 
@@ -20,7 +21,7 @@ class _Ctx:
 @pytest.mark.asyncio
 async def test_happy_path(httpx_mock):
     httpx_mock.add_response(
-        url__regex=r".*/weather\?.*q=Berlin.*",
+        url=re.compile(r".*/weather\?.*q=Berlin.*"),
         json={
             "name": "Berlin",
             "main": {"temp": 18.4, "feels_like": 17.8, "humidity": 62},
