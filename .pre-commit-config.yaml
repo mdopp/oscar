@@ -1,0 +1,35 @@
+# Pre-commit hooks for OSCAR. Install once with `pre-commit install`;
+# CI enforces the same set on every PR via .github/workflows/pre-commit.yml
+# so the hooks bite even if a contributor skips the local install.
+#
+# Keep this list robust, not strict. Phase 0/1 favours catching dumb
+# mistakes (whitespace, bad JSON, large binaries) over enforcing style
+# opinions. Strict Ruff rules can come once the code base is larger.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '^.*\.md$'  # markdown allows trailing-2-spaces for line break
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-toml
+      - id: check-json
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+      # The Pod-YAML templates contain `{{VARIABLE}}` Mustache placeholders
+      # in scalar positions (e.g. `hostPort: {{HERMES_PORT}}`) that aren't
+      # valid YAML before rendering. Skip the templates dir from the YAML
+      # check; everything else still validates.
+      - id: check-yaml
+        exclude: '^templates/.*/template\.yml$'
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
