@@ -1,4 +1,8 @@
-"""Gatekeeper entry point — start the Wyoming server on the configured URI."""
+"""Gatekeeper entry point — start the Wyoming server + push-HTTP server.
+
+Both run as concurrent tasks under one asyncio loop. If either crashes,
+the process exits so the pod restarts and recovers a consistent state.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from wyoming.server import AsyncServer
 
 from .config import settings
 from .handler import GatekeeperHandler
+from .push import serve as serve_push
 
 
 def _info() -> Info:
@@ -55,10 +60,37 @@ def _info() -> Info:
     )
 
 
-async def _serve() -> None:
+async def _serve_wyoming() -> None:
     server = AsyncServer.from_uri(settings.gatekeeper_uri)
     log.info("gatekeeper.boot", uri=settings.gatekeeper_uri)
     await server.run(lambda r, w: GatekeeperHandler(r, w, _info()))
+
+
+async def _serve() -> None:
+    wyoming = asyncio.create_task(_serve_wyoming(), name="wyoming")
+    push = asyncio.create_task(
+        serve_push(
+            settings.push_host,
+            settings.push_port,
+            piper_uri=settings.piper_uri,
+            devices=settings.voice_pe_devices,
+            push_token=settings.push_token,
+        ),
+        name="push",
+    )
+    done, pending = await asyncio.wait(
+        {wyoming, push}, return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
+    for task in done:
+        if task.exception():
+            log.error(
+                "gatekeeper.task.crashed",
+                task=task.get_name(),
+                error=str(task.exception()),
+            )
+            raise task.exception()  # propagate so the pod restarts
 
 
 def main() -> None:

@@ -75,8 +75,8 @@ When cancelling, also remove the corresponding HERMES cron job via HERMES's `cro
 
 | Phase | Delivery |
 |---|---|
-| **0 (now)** | Set + list + cancel for one-shot and RRULE alarms. Fire on `voice-pe:` returns `delivery_pending: voice-pe`. `signal:` / `telegram:` work end-to-end. |
-| **1** | Voice-PE push (same gatekeeper endpoint as `oscar-timer`). |
+| **0** | Set + list + cancel for one-shot and RRULE alarms. Fire on `voice-pe:` returned `delivery_pending: voice-pe`. `signal:` / `telegram:` worked E2E. |
+| **1 (now)** | Voice-PE push: cronjob payload POSTs to `oscar-voice:10750/push` with `{endpoint, text}` (bearer-auth `PUSH_TOKEN`). See [`oscar-timer`](../timer/SKILL.md#phase-mapping) for the shared mechanism. |
 | **1** | Snooze (`alarm.snooze`) defaults to PT9M. |
 | **2** | Strict harness filter. |
 | **4** | Multi-room (broadcast wake-up). |

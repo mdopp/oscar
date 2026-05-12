@@ -107,6 +107,18 @@ spec:
       value: "{{HERMES_TOKEN}}"
     - name: DEFAULT_UID
       value: "michael"
+    # Push endpoint — POST /push from HERMES (timer/alarm fire, future routines).
+    # Pod-internal listener; not exposed via hostPort.
+    - name: PUSH_HOST
+      value: "0.0.0.0"
+    - name: PUSH_PORT
+      value: "10750"
+    - name: PUSH_TOKEN
+      value: "{{PUSH_TOKEN}}"
+    # JSON map of `<device-name> -> <wyoming-uri>` for push-to-device. Empty by
+    # default — populate per household via variables.json once devices are paired.
+    - name: VOICE_PE_DEVICES
+      value: '{{VOICE_PE_DEVICES}}'
     - name: TZ
       value: "{{TZ}}"
     ports:
