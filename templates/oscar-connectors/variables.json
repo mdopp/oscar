@@ -24,6 +24,23 @@
     "options": ["metric", "imperial"],
     "default": "metric"
   },
+  "CLOUD_LLM_PORT": {
+    "type": "text",
+    "description": "Host port for the cloud-LLM connector's MCP server. HERMES routes per-request cloud escalations here.",
+    "default": "8802"
+  },
+  "ANTHROPIC_API_KEY": {
+    "type": "secret",
+    "description": "API key for Anthropic Claude (sk-ant-...). Leave empty to disable the Anthropic provider — the cloud-LLM connector returns a clear error for that vendor if so. At least one of ANTHROPIC_API_KEY / GOOGLE_API_KEY should be set if you actually want cloud escalations."
+  },
+  "GOOGLE_API_KEY": {
+    "type": "secret",
+    "description": "API key for Google Gemini (Google AI Studio key, starts with AIza). Leave empty to disable the Google provider."
+  },
+  "POSTGRES_PASSWORD": {
+    "type": "secret",
+    "description": "Must match POSTGRES_PASSWORD from the oscar-brain template. The cloud-LLM connector writes audit rows into the same database."
+  },
   "TZ": {
     "type": "text",
     "description": "IANA time zone for log timestamps.",
