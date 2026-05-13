@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-hermes
+  labels:
+    app: oscar-hermes
+  annotations:
+    servicebay.label: "OSCAR Hermes (agent runtime — gateways, cron, MCP clients, skills)"
+    servicebay.schema-version: "1"
+    servicebay.ports: "{{API_SERVER_PORT}}/tcp,{{DASHBOARD_PORT}}/tcp"
+spec:
+  # hostNetwork mirrors the upstream docker-compose.yml — Hermes' messaging
+  # gateways (Signal, Telegram, Discord, Slack, WhatsApp, Email) reach out
+  # to the platform APIs and accept their webhooks. Behind a non-host
+  # network they'd need explicit port mappings per platform; host network
+  # avoids that.
+  hostNetwork: true
+  containers:
+  - name: hermes
+    image: docker.io/nousresearch/hermes-agent:latest
+    args: ["gateway", "run"]
+    env:
+    - name: HERMES_UID
+      value: "10000"
+    - name: HERMES_GID
+      value: "10000"
+    - name: TZ
+      value: "{{TZ}}"
+    # OpenAI-compatible API server — off-by-default per upstream guidance.
+    # Turn on to let external callers (OSCAR voice-gatekeeper push, automation
+    # scripts, the dashboard) reach Hermes over HTTP. Without this only
+    # localhost on the host can hit 127.0.0.1:8642.
+    - name: API_SERVER_ENABLED
+      value: "{{API_SERVER_ENABLED}}"
+    - name: API_SERVER_HOST
+      value: "0.0.0.0"
+    - name: API_SERVER_KEY
+      value: "{{API_SERVER_KEY}}"
+    # Web dashboard — off-by-default. Stores API keys, never expose to LAN
+    # without auth. Phase-1 default: off; enable only over SSH tunnel.
+    - name: HERMES_DASHBOARD
+      value: "{{HERMES_DASHBOARD}}"
+    - name: HERMES_DASHBOARD_HOST
+      value: "127.0.0.1"
+    volumeMounts:
+    # Everything: config, API keys, sessions, skills, memories, cron jobs,
+    # messaging-platform session state. The image is stateless; the volume
+    # is everything. Backed up by the household's own backup mechanism.
+    - mountPath: /opt/data
+      name: hermes-data
+    # OSCAR's skills directory — symlinked into Hermes' skills loader so
+    # household-specific skills (oscar-light, oscar-status, …) show up
+    # alongside Hermes' built-in Skills Hub entries.
+    - mountPath: /opt/data/skills/oscar
+      name: oscar-skills
+      readOnly: true
+
+  volumes:
+  - name: hermes-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-hermes/data
+      type: DirectoryOrCreate
+  - name: oscar-skills
+    hostPath:
+      path: {{OSCAR_REGISTRY_DIR}}/skills
+      type: Directory
