@@ -14,7 +14,6 @@ Exit code 0 = ok; non-zero flagged but doesn't roll back the deploy.
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import sys
@@ -62,9 +61,7 @@ def wait_for_postgres() -> bool:
     last_log = 0.0
     while True:
         if tcp_ok(SB_HOST, POSTGRES_PORT):
-            log(
-                f"post-deploy: postgres ready after {int(time.monotonic() - started)}s"
-            )
+            log(f"post-deploy: postgres ready after {int(time.monotonic() - started)}s")
             return True
         elapsed = time.monotonic() - started
         if elapsed > 120:
@@ -104,7 +101,9 @@ def print_next_steps() -> None:
     log("=" * 60)
     log("")
     log("1. Install Hermes Agent on this host (or a separate machine):")
-    log("   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+    log(
+        "   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+    )
     log("")
     log("2. Configure Hermes to point at this pod's Ollama + Postgres:")
     log(f"   - Model provider:      http://{SB_HOST}:{OLLAMA_PORT}  (Ollama)")
