@@ -23,10 +23,6 @@ class _FakeConn:
         self.last_args = args
         if "FROM cloud_audit" in sql:
             return list(self.rows_by_table.get("cloud_audit", []))
-        if "FROM gateway_identities" in sql:
-            return list(self.rows_by_table.get("gateway_identities", []))
-        if "FROM time_jobs" in sql:
-            return list(self.rows_by_table.get("time_jobs", []))
         raise AssertionError(f"FakeConn: no fixture for query: {sql[:60]}")
 
 
@@ -141,27 +137,3 @@ async def test_limit_bounds():
         await query(pool, stream="cloud_audit", limit=0)
     with pytest.raises(ValueError):
         await query(pool, stream="cloud_audit", limit=1000)
-
-
-@pytest.mark.asyncio
-async def test_time_jobs_stream():
-    pool = FakePool(
-        {
-            "time_jobs": [
-                {
-                    "id": "j1",
-                    "kind": "timer",
-                    "owner_uid": "michael",
-                    "label": "Pizza",
-                    "fires_at": datetime(2026, 5, 12, 8, tzinfo=timezone.utc),
-                    "rrule": None,
-                    "target_endpoint": "voice-pe:office",
-                    "state": "armed",
-                    "created_at": datetime(2026, 5, 12, 7, 55, tzinfo=timezone.utc),
-                }
-            ]
-        }
-    )
-    rows = await query(pool, stream="time_jobs", uid="michael")
-    assert len(rows) == 1
-    assert rows[0]["state"] == "armed"

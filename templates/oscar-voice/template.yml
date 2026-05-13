@@ -82,10 +82,14 @@ spec:
 
   # 4. gatekeeper — OSCAR pipeline orchestrator. Listens on GATEKEEPER_PORT
   #    for satellite connections (HA Voice PE or any Wyoming-satellite-
-  #    speaking client), drives whisper/piper/openwakeword, calls HERMES at
-  #    the conversation step. Phase 0: pass-through — uid hardcoded to
-  #    "michael", endpoint set to "voice-pe:<wyoming-session-name>". Phase 2
-  #    adds speaker ID via SpeechBrain.
+  #    speaking client), drives whisper/piper/openwakeword, calls the
+  #    Hermes Agent (deployed as the oscar-hermes pod) at the conversation
+  #    step. Phase 0: pass-through — uid hardcoded to "michael", endpoint
+  #    set to "voice-pe:<wyoming-session>". Phase 2 adds speaker ID via
+  #    SpeechBrain.
+  #
+  #    HERMES_URL defaults to http://127.0.0.1:8642 (both pods use
+  #    hostNetwork; matches oscar-hermes' API_SERVER_PORT default).
   - name: gatekeeper
     image: ghcr.io/mdopp/oscar-gatekeeper:latest
     env:
@@ -107,7 +111,7 @@ spec:
       value: "{{HERMES_TOKEN}}"
     - name: DEFAULT_UID
       value: "michael"
-    # Push endpoint — POST /push from HERMES (timer/alarm fire, future routines).
+    # Push endpoint — POST /push from Hermes (cron-fire deliveries).
     # Pod-internal listener; not exposed via hostPort.
     - name: PUSH_HOST
       value: "0.0.0.0"

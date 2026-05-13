@@ -1,14 +1,12 @@
 # oscar-audit
 
-Read-side companion to OSCAR's domain-audit Postgres tables. Backs the `audit-query` HERMES skill.
+Read-side companion to OSCAR's domain-audit Postgres tables. Backs the `oscar-audit-query` skill.
 
 ## Streams supported
 
 | Stream | Table | Filters |
 |---|---|---|
 | `cloud_audit` | `cloud_audit` | `since`, `until`, `uid`, `vendor`, `trace_id`, `min_cost_micro_usd` |
-| `gateway_identities` | `gateway_identities` | `since`, `gateway`, `uid` |
-| `time_jobs` | `time_jobs` | `since`, `uid`, `kind`, `state` |
 
 Future streams (`gatekeeper_decisions` from Phase 2, `ingestion_classifications` from Phase 3a) plug into the same dispatch table.
 
@@ -17,7 +15,6 @@ Future streams (`gatekeeper_decisions` from Phase 2, `ingestion_classifications`
 ```bash
 python -m oscar_audit query --stream cloud_audit --since 1h --uid michael --limit 20
 python -m oscar_audit query --stream cloud_audit --trace-id 11111111-1111-1111-1111-111111111111
-python -m oscar_audit query --stream time_jobs --state armed --kind alarm
 ```
 
 `--since` accepts ISO 8601 (`2026-05-12T08:00:00`) or relative (`1h`, `24h`, `7d`, `today`, `yesterday`).
@@ -45,7 +42,7 @@ cd shared/oscar_audit
 pytest
 ```
 
-Uses a FakePool same pattern as `oscar_time_jobs`.
+Uses a FakePool to exercise the SQL builder without a live Postgres.
 
 ## Privacy
 

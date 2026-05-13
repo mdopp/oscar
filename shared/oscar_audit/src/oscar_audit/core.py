@@ -26,7 +26,7 @@ def _debug_active() -> bool:
 
 
 def supported_streams() -> list[str]:
-    return ["cloud_audit", "gateway_identities", "time_jobs"]
+    return ["cloud_audit"]
 
 
 async def query(
@@ -38,9 +38,6 @@ async def query(
     uid: str | None = None,
     vendor: str | None = None,
     trace_id: str | None = None,
-    gateway: str | None = None,
-    kind: str | None = None,
-    state: str | None = None,
     min_cost_micro_usd: int | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
@@ -58,9 +55,6 @@ async def query(
         uid=uid,
         vendor=vendor,
         trace_id=trace_id,
-        gateway=gateway,
-        kind=kind,
-        state=state,
         min_cost_micro_usd=min_cost_micro_usd,
         limit=limit,
     )
@@ -116,64 +110,8 @@ def _build_cloud_audit(
     return sql, args
 
 
-def _build_gateway_identities(*, since, gateway, uid, limit, **_):
-    where: list[str] = []
-    args: list[Any] = []
-
-    def add(clause: str, value: Any) -> None:
-        args.append(value)
-        where.append(clause.format(idx=len(args)))
-
-    if since is not None:
-        add("verified_at >= ${idx}", _aware(since))
-    if gateway is not None:
-        add("gateway = ${idx}", gateway)
-    if uid is not None:
-        add("uid = ${idx}", uid)
-
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-    sql = f"""
-        SELECT gateway, external_id, uid, display_name, verified_at, created_by
-        FROM gateway_identities
-        {where_sql}
-        ORDER BY verified_at DESC
-        LIMIT {limit}
-    """
-    return sql, args
-
-
-def _build_time_jobs(*, since, uid, kind, state, limit, **_):
-    where: list[str] = []
-    args: list[Any] = []
-
-    def add(clause: str, value: Any) -> None:
-        args.append(value)
-        where.append(clause.format(idx=len(args)))
-
-    if since is not None:
-        add("created_at >= ${idx}", _aware(since))
-    if uid is not None:
-        add("owner_uid = ${idx}", uid)
-    if kind is not None:
-        add("kind = ${idx}", kind)
-    if state is not None:
-        add("state = ${idx}", state)
-
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-    sql = f"""
-        SELECT id, kind, owner_uid, label, fires_at, rrule, target_endpoint, state, created_at
-        FROM time_jobs
-        {where_sql}
-        ORDER BY created_at DESC
-        LIMIT {limit}
-    """
-    return sql, args
-
-
 _BUILDERS = {
     "cloud_audit": _build_cloud_audit,
-    "gateway_identities": _build_gateway_identities,
-    "time_jobs": _build_time_jobs,
 }
 
 

@@ -42,9 +42,6 @@ async def _query(args: argparse.Namespace) -> int:
             uid=args.uid,
             vendor=args.vendor,
             trace_id=args.trace_id,
-            gateway=args.gateway,
-            kind=args.kind,
-            state=args.state,
             min_cost_micro_usd=args.min_cost_micro_usd,
             limit=args.limit,
         )
@@ -74,25 +71,12 @@ def main() -> None:
     )
     q.add_argument("--until", help="ISO 8601 datetime or shorthand.")
     q.add_argument("--uid", help="LLDAP uid to filter on.")
-    q.add_argument(
-        "--vendor", help="Vendor prefix (cloud_audit only): anthropic | google"
-    )
-    q.add_argument(
-        "--trace-id", help="Find every row matching this trace_id (cloud_audit only)."
-    )
-    q.add_argument(
-        "--gateway",
-        help="Gateway name (gateway_identities only): signal | telegram | …",
-    )
-    q.add_argument("--kind", help="Job kind (time_jobs only): timer | alarm")
-    q.add_argument(
-        "--state",
-        help="Job state (time_jobs only): armed | firing | done | cancelled | snoozed",
-    )
+    q.add_argument("--vendor", help="Vendor prefix: anthropic | google | …")
+    q.add_argument("--trace-id", help="Find every row matching this trace_id.")
     q.add_argument(
         "--min-cost-micro-usd",
         type=int,
-        help="cloud_audit only — minimum cost in micro-USD.",
+        help="Minimum cost in micro-USD.",
     )
     q.add_argument(
         "--limit", type=int, default=50, help="Max rows returned (1–500, default 50)."

@@ -14,6 +14,9 @@ import pytest
 
 os.environ.setdefault("OSCAR_COMPONENT", "test")
 os.environ.setdefault("POSTGRES_DSN", "postgresql://stub")
+# Point at the in-repo layout so _alembic_dir() resolves to a real dir during tests.
+_REPO_OSCAR_DB = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+os.environ.setdefault("OSCAR_DB_DIR", _REPO_OSCAR_DB)
 
 
 def _reset_modules():
