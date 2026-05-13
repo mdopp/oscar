@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.2.0](https://github.com/mdopp/oscar/compare/v1.1.0...v1.2.0) (2026-05-13)
+
+
+### Features
+
+* **brain:** one-key cloud-backend setup for Gemini/Anthropic ([#36](https://github.com/mdopp/oscar/issues/36)) ([e1ed068](https://github.com/mdopp/oscar/commit/e1ed06865764528d45bf0355cfa9524edafc0304))
+* **db:** alembic migrations + migrate-on-start sidecar ([#32](https://github.com/mdopp/oscar/issues/32)) ([7137f21](https://github.com/mdopp/oscar/commit/7137f213bcb05f51c3e7614d3d96dec9f4d72fbe))
+* **gatekeeper:** voice-pe push endpoint for timer/alarm fire ([#34](https://github.com/mdopp/oscar/issues/34)) ([809d2c1](https://github.com/mdopp/oscar/commit/809d2c1bed026361e2848ce464c6033fe4b3684e))
+* **install:** oscar stack walkthrough + oscar-brain post-deploy hook ([9aa3ecb](https://github.com/mdopp/oscar/commit/9aa3ecb52bf0aa9543a6bff32ab753f70edc3afe))
+* **observability:** oscar_health library + status skill ([a313069](https://github.com/mdopp/oscar/commit/a31306981baa61e36351605eb792ec4361a5006d))
+* **signal:** signal-gateway container — inbound poll + outbound /send ([#43](https://github.com/mdopp/oscar/issues/43)) ([6ebd183](https://github.com/mdopp/oscar/commit/6ebd183eb3e0061b21a49763bfd123e9bc78129b))
+* **skills:** layered public + local skills with local git history ([#44](https://github.com/mdopp/oscar/issues/44)) ([2be83fa](https://github.com/mdopp/oscar/commit/2be83fa365d694aac5638782e57419cee2bd2f93))
+* **skills:** observability schema + negation-detector library ([#45](https://github.com/mdopp/oscar/issues/45)) ([184e181](https://github.com/mdopp/oscar/commit/184e18154f4c78658827697be29adbcd0678e278))
+* **skills:** oscar-help skill + registry introspection library ([#33](https://github.com/mdopp/oscar/issues/33)) ([e1f46cf](https://github.com/mdopp/oscar/commit/e1f46cfaf3d152bbb2079752abb5a9396ed62b62))
+
+
+### CI/CD
+
+* auto-merge release-please PRs once CI passes ([b6bfef5](https://github.com/mdopp/oscar/commit/b6bfef588abe59797ebdf0ced5af6288b3b13be7))
+
 ## [1.1.0](https://github.com/mdopp/oscar/compare/v1.0.0...v1.1.0) (2026-05-12)
 
 
