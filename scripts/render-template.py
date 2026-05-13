@@ -74,13 +74,17 @@ def main() -> int:
         return 2
     text = src.read_text(encoding="utf-8")
     for name, keep in _flags_for(template).items():
-        pattern = re.compile(r"\{\{#" + name + r"\}\}(.*?)\{\{/" + name + r"\}\}", re.DOTALL)
+        pattern = re.compile(
+            r"\{\{#" + name + r"\}\}(.*?)\{\{/" + name + r"\}\}", re.DOTALL
+        )
         text = pattern.sub((lambda m, k=keep: m.group(1) if k else ""), text)
     for k, v in _vars_for(template).items():
         text = text.replace("{{" + k + "}}", v)
     leftover = re.findall(r"\{\{[A-Z_]+\}\}", text)
     if leftover:
-        sys.stderr.write(f"Warning: unrendered placeholders remain: {sorted(set(leftover))}\n")
+        sys.stderr.write(
+            f"Warning: unrendered placeholders remain: {sorted(set(leftover))}\n"
+        )
     sys.stdout.write(text)
     return 0
 
