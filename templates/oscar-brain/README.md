@@ -115,7 +115,8 @@ All under `{{DATA_DIR}}/oscar-brain/` on the host:
 | `ollama/` | Downloaded model blobs (large; re-downloadable) | no |
 | `qdrant/` | Vector index | no in Phase 0; review when Phase 3a populates it |
 | `postgres/` | OSCAR domain tables, audit, settings | **yes** — `pg_dump` weekly into `postgres-backups/` |
-| `postgres-backups/` | `oscar-YYYYMMDD-HHMMSS.sql.gz`, 4-week retention | this *is* the backup |
+| `postgres-backups/` | `oscar-YYYYMMDD-HHMMSS.sql.gz` + `skills-local-YYYYMMDD-HHMMSS.tar.gz`, 4-week retention | this *is* the backup |
+| `skills-local/` | Writable overrides for `skills/` — user-initiated and reviewer-applied edits land here with full local git history. Shadows same-named entries in the public `skills/` mount when HERMES loads its catalog. | **yes** — weekly tar by `pg-backup` |
 | `signal-cli/` | Linked-device keys + session DB. **Critical** — losing this means re-pairing every family member's number. | not yet in `pg-backup`; covered by ServiceBay's own backup pipeline |
 
 ## Shared library
