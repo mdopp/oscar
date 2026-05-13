@@ -66,7 +66,7 @@ spec:
     # container so skills can use them without an image rebuild. Each
     # entry points at the src/ directory of a shared-library project.
     - name: PYTHONPATH
-      value: "/opt/oscar/shared/oscar_logging/src:/opt/oscar/shared/oscar_time_jobs/src:/opt/oscar/shared/oscar_audit/src:/opt/oscar/shared/oscar_health/src:/opt/oscar/shared/oscar_help/src:${PYTHONPATH}"
+      value: "/opt/oscar/shared/oscar_logging/src:/opt/oscar/shared/oscar_time_jobs/src:/opt/oscar/shared/oscar_audit/src:/opt/oscar/shared/oscar_health/src:/opt/oscar/shared/oscar_help/src:/opt/oscar/shared/oscar_skill_runs/src:${PYTHONPATH}"
     - name: TZ
       value: "{{TZ}}"
     ports:
