@@ -1,7 +1,7 @@
 ---
 name: oscar-light
-description: Use when the user asks to turn lights on or off, dim them, or set a light scene in a specific room or area of the house. Calls HA-MCP `HassTurnOn` / `HassTurnOff` / `HassSetBrightness` against the matching area or entity. First HERMES skill in OSCAR Phase 0 — the E2E proof that voice → gatekeeper → HERMES → HA-MCP → device works.
-version: 0.1.0
+description: Use when the user asks to turn lights on or off, dim them, or set brightness in a specific room or area of the house. Routes the request through the Home Assistant MCP server — HERMES picks whichever HA-MCP tool matches the (area, action, brightness) intent at runtime from the discovered tool catalog. First HERMES skill in OSCAR Phase 0 — the E2E proof that voice → gatekeeper → HERMES → HA-MCP → device works.
+version: 0.2.0
 author: OSCAR
 license: MIT
 metadata:
@@ -16,58 +16,85 @@ metadata:
 
 Direct lighting control via the Home Assistant MCP server. This skill exists primarily to verify the Phase-0 end-to-end pipeline (voice in → HA action out). Once the routine flow works for lights, it becomes the template for heating, music, and any other HA-MCP-mediated control.
 
+**Resolution architecture (important to understand before changing this prose):**
+
+- HERMES connects to HA-MCP on boot and gets the **full tool catalog** via `tools/list`. The tools' canonical names (`HassTurnOn` etc. in current HA versions) live in that catalog, *not* in this file.
+- This skill describes the *intent* — what we want to happen — and lets HERMES match it to whatever tool HA-MCP currently exposes for "turn lights on/off in an area".
+- Entity-level resolution ("Wohnzimmer" → `light.wohnzimmer_decke + light.wohnzimmer_steh`) happens **inside HA**, via HA's Assist intent system. OSCAR passes the area name verbatim; HA finds the entities.
+
+This is why the skill stays correct across HA upgrades: tool names and entity catalogues are HA's problem, not ours.
+
 ## When to use
 
 The user wants to:
 - turn one or more lights on or off
 - dim or brighten a light or a room
-- set a quick scene ("warm white", "evening", "100 %", "halb")
+- set a brightness level ("100 %", "halb", "thirty percent")
 
 Out of scope (different skills):
-- timer / alarm setting → `timer` / `alarm` skills
-- music playback → music skill (Phase 0)
+- timer / alarm setting → `oscar-timer` / `oscar-alarm`
+- music playback → music skill (Phase 0+)
 - HA automation editing → use ServiceBay-MCP for config writes, not this skill
 
-## Required tools
+## Capability the skill needs from HA-MCP
 
-- `HA-MCP` — the bearer-authenticated MCP client wired in by the `oscar-brain` template via env vars `HA_MCP_URL` and `HA_MCP_TOKEN`.
-  - `HassTurnOn` — accepts `area` or `entity_id`, optional `brightness_pct` / `color_name` / `kelvin`
-  - `HassTurnOff` — `area` or `entity_id`
-  - `HassSetPosition` — for blinds/lamps that take a positional value
-  - `HassLightSet` — direct light-domain set (less commonly needed when area suffices)
+You don't reference tool names directly — HERMES has them from the live tool catalog. You need *one* HA-MCP tool that can:
+
+- Accept an **`area`** (string, e.g. `"Wohnzimmer"`) or **entity name** parameter.
+- Apply an **action** in `{on, off}` plus an optional **brightness percentage** (1–100).
+- Return success or a structured error.
+
+In current HA versions that's the `HassTurnOn` / `HassTurnOff` family of Assist intents. If those names change in a future HA release, the tool catalog updates, and this skill keeps working as long as the *capability* is exposed.
 
 ## Operating principles
 
-1. **Prefer `area` over `entity_id`.** Users say "the living room", not `light.living_room_ceiling_left`. Pass the area name verbatim to HA-MCP — HA resolves it.
-2. **Trust the LLM to parse, the tool to validate.** Don't pattern-match in this document. The LLM should structure `(area, action, brightness?)` from the utterance and call the right HA-MCP tool. If HA rejects (unknown area, no light entities), respond with the HA error verbatim — short.
-3. **Resolve "the light" without a room only via the active endpoint.** If the routing endpoint is `voice-pe:office`, "turn the light on" defaults to area `office`. If the endpoint is `signal:...` or `telegram:...` (mobile chat), no room context — ask back: "Which room?"
-4. **Confirm by action, not by speech.** Keep verbal confirmation to a few words ("ok", "office lights on"). The user hears the lights click anyway.
-5. **Brightness is a percentage 1-100** in the HA-MCP API. Map "dim", "halb", "low" to ~30; "bright", "full", "voll" to 100; "off" to `HassTurnOff` rather than 0.
+1. **Pass area names verbatim.** Users say "Wohnzimmer", not `light.wohnzimmer_decke_links`. HA's Assist intent system resolves the area; OSCAR doesn't try to enumerate entities.
+2. **Trust the LLM to parse, the tool catalog to validate.** Don't pattern-match in this document. The LLM should structure `(area, action, brightness?)` from the utterance and call the matching tool. If HA rejects (unknown area, no light entities), respond with the HA error verbatim — short.
+3. **Resolve "the light" without a room only via the active endpoint.** If the routing endpoint is `voice-pe:wohnzimmer`, "mach das Licht an" defaults to area `Wohnzimmer`. If the endpoint is `signal:...` or `telegram:...` (mobile chat), no room context — ask back: "Welcher Raum?"
+4. **Confirm by action, not by speech.** Keep verbal confirmation to a few words ("ok", "Wohnzimmer ist an"). The user hears the lights click anyway.
+5. **Brightness is a percentage 1-100.** Map "dim", "halb", "low" to ~30; "bright", "full", "voll" to 100; "off" must use the turn-off tool, not brightness=0.
 
 ## Failure paths
 
-- HA unreachable / HA-MCP returns 5xx → respond "Home Assistant doesn't answer right now"; log via `oscar_logging` as `skill.light.ha_unreachable` (warn).
-- Area not found in HA → respond "I don't see a {area} in Home Assistant"; log as `skill.light.area_unknown` (info).
-- Bearer rejected (401) → respond "I can't reach Home Assistant"; log as `skill.light.auth_failed` (error). Likely the `HA_MCP_TOKEN` in `oscar-brain` is stale.
+- HA unreachable / HA-MCP returns 5xx → respond "Home Assistant antwortet gerade nicht."; log via `oscar_logging` as `skill.light.ha_unreachable` (warn).
+- Area not found in HA → respond "Das {area} kenne ich in Home Assistant nicht. Lege es dort an oder benenne den Raum um."; log as `skill.light.area_unknown` (info).
+- Bearer rejected (401) → respond "Ich erreiche Home Assistant nicht — Token vermutlich abgelaufen."; log as `skill.light.auth_failed` (error). Likely the `HA_MCP_TOKEN` in `oscar-brain` is stale.
+- HA-MCP returned the tool catalog at boot but doesn't include a turn-on/off tool (e.g. HA Assist disabled) → respond "Home Assistant hat mir keine Licht-Werkzeuge gegeben."; log as `skill.light.no_capability` (error). The fix is HA-side (enable Assist + expose entities).
 
 In every failure case the user gets a short verbal reason — no troubleshooting prose. Details belong in the structured logs.
 
-## Pre-deployment checks
+## HA-side prerequisites
 
-1. In Home Assistant, areas are named in plain language matching how the family speaks: `Office`, `Living Room`/`Wohnzimmer`, `Kitchen`/`Küche`, `Bedroom`/`Schlafzimmer`. Avoid technical names (`Floor 1 East`).
-2. Each area has at least one entity in the `light` domain (not `switch`) — HA-MCP routes only entities marked as lights through the light action tools.
-3. The HA-MCP integration is enabled in HA and a long-lived access token is in `oscar-brain` as `HA_MCP_TOKEN`.
+These live in **Home Assistant**, not OSCAR. Without them the skill can't work even if everything else is wired correctly:
 
-## Smoke tests (E2E for issue #3)
+1. **Areas named in household language.** `Wohnzimmer`, `Küche`, `Bad`, `Schlafzimmer`, `Büro` — not `Floor 1 East` or `zone_3`. HA's Assist intent system matches user utterances against these names.
+2. **Light entities assigned to areas.** Every light bulb / lamp / strip lives in exactly one HA area. Mixed areas (one entity in two areas) will route ambiguously.
+3. **Entities exposed to Voice Assistants.** HA → Settings → Voice Assistants → "Expose" tab. Toggle every light you want voice-controlled. Unexposed entities are invisible to MCP — the same as not having them at all.
+4. **`mcp_server` integration enabled.** HA → Settings → Devices & Services → "Add Integration" → MCP Server. The URL goes into `oscar-brain`'s `HA_MCP_URL` variable.
+5. **Long-lived access token minted.** HA → user profile → Security → Long-lived access tokens. Paste into `HA_MCP_TOKEN`. Treat it like any other secret — losing it means OSCAR locks out of HA.
+
+If any of these is missing, `oscar-light` will fail at runtime — usually with `skill.light.area_unknown` or `skill.light.no_capability`. The fix is always in HA, not in this skill's prose.
+
+## Inspecting the live tool catalog (debugging)
+
+When something feels off ("OSCAR sagt das Tool kennt es nicht"), inspect what HERMES actually saw from HA-MCP:
+
+```bash
+podman logs oscar-brain-hermes 2>&1 | grep -i "mcp.tools\|ha-mcp"
+```
+
+HERMES logs the tool catalog at MCP-handshake time. If the expected tool isn't there, the problem is HA-side (Assist not enabled, no exposed entities, integration broken). If it *is* there but OSCAR still can't use it, the problem is in this skill prose or in HERMES's routing.
+
+## Smoke tests
 
 These verify the full Phase-0 pipeline, not just this skill:
 
 ```
-"Hey Jarvis, turn the office light on"      → office light(s) on
-"Turn the office light off"                  → office light(s) off
-"Dim the kitchen light to thirty percent"    → kitchen at 30 %
-"Turn the light on" (spoken in the office)   → office light on (endpoint-derived area)
-"Turn the light on"  (sent via Signal)       → "Which room?"
+"Hey Jarvis, schalte das Wohnzimmerlicht an"  → Wohnzimmer-Licht(er) an
+"Mach das Licht im Wohnzimmer aus"            → Wohnzimmer-Licht(er) aus
+"Dimm das Küchenlicht auf dreißig Prozent"    → Küche bei 30 %
+"Mach das Licht an" (gesprochen im Büro)      → Büro-Licht an (endpoint-derived)
+"Mach das Licht an" (über Signal geschickt)   → "Welcher Raum?"
 ```
 
 In each case `get_container_logs(id="oscar-brain-hermes")` should show a single `trace_id` that ties together `gatekeeper.transcript`, the HA-MCP call, and `gatekeeper.response`. `cloud_audit` must be empty — local Gemma should handle this without escalation.
