@@ -143,39 +143,6 @@ spec:
     - mountPath: /home/.local/share/signal-cli
       name: signal-cli-data
 
-  # 1c. signal-gateway — bridges signal-cli-rest-api (1b) and HERMES.
-  #     Inbound: polls for new messages, gateway_identities lookup,
-  #     forwards to HERMES /converse. Outbound: POST /send on 8090 for
-  #     timer/alarm fire + skill-reviewer DMs.
-  #     Crashes itself out (exit 2) if SIGNAL_ACCOUNT is empty — the
-  #     container then just stops, pod stays up, signal stack is
-  #     effectively "disabled" until pairing happens.
-  - name: signal-gateway
-    image: ghcr.io/mdopp/oscar-signal-gateway:latest
-    env:
-    - name: OSCAR_COMPONENT
-      value: "signal-gateway"
-    - name: SIGNAL_REST_URL
-      value: "http://127.0.0.1:8080"
-    - name: SIGNAL_ACCOUNT
-      value: "{{SIGNAL_ACCOUNT}}"
-    - name: SIGNAL_TOKEN
-      value: "{{SIGNAL_TOKEN}}"
-    - name: HERMES_URL
-      value: "http://127.0.0.1:{{HERMES_PORT}}"
-    - name: HERMES_TOKEN
-      value: "{{HERMES_TOKEN}}"
-    - name: POSTGRES_DSN
-      value: "postgresql://oscar:{{POSTGRES_PASSWORD}}@localhost:5432/oscar"
-    - name: LISTEN_HOST
-      value: "0.0.0.0"
-    - name: LISTEN_PORT
-      value: "8090"
-    - name: TZ
-      value: "{{TZ}}"
-    ports:
-    - containerPort: 8090
-
   {{#OLLAMA_ENABLED}}
   # 2. Ollama — local LLM runtime. GPU passthrough is a separate toggle
   #    (`GPU_PASSTHROUGH`) so this same container can also run CPU-only

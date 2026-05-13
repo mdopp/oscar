@@ -17,14 +17,12 @@ on:
     tags: ['v*']
     paths:
       - 'gatekeeper/**'
-      - 'signal_gateway/**'
       - 'connectors/**'
       - 'shared/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'gatekeeper/**'
-      - 'signal_gateway/**'
       - 'connectors/**'
       - 'shared/**'
       - '.github/workflows/build-images.yml'
@@ -53,9 +51,6 @@ jobs:
           - image: oscar-db-migrate
             dockerfile: shared/oscar_db/Dockerfile
             description: "OSCAR DB migrate sidecar — runs alembic upgrade head against the oscar-brain Postgres on pod start."
-          - image: oscar-signal-gateway
-            dockerfile: signal_gateway/Dockerfile
-            description: "OSCAR Signal gateway — bridges signal-cli-rest-api and HERMES /converse, exposes POST /send for outbound DMs."
     steps:
       - name: Checkout
         uses: actions/checkout@v4

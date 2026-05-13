@@ -83,14 +83,6 @@
     "description": "Phone number (E.164, e.g. +4915112345678) of the family Signal account that this OSCAR install pairs with as a linked device. Leave empty to defer pairing — Signal gateway stays disabled until set.",
     "default": ""
   },
-  "SIGNAL_TOKEN": {
-    "type": "secret",
-    "description": "Bearer token required on the signal-gateway's POST /send endpoint (port 8090, pod-internal). Used by HERMES skills (timer/alarm fire, skill-reviewer DMs). Empty disables auth — fine for pod-internal use; set a value if you ever expose 8090 outside the pod."
-  },
-  "HERMES_TOKEN": {
-    "type": "secret",
-    "description": "Bearer token that the signal-gateway (and any other pod-local caller) presents when calling HERMES /converse. Same token shape as the gatekeeper's HERMES_TOKEN — HERMES's own auth config decides what's required."
-  },
   "TZ": {
     "type": "text",
     "description": "IANA time zone for log timestamps and cron scheduling.",
