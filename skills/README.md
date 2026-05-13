@@ -16,9 +16,6 @@ Each subdirectory is one skill with a `SKILL.md` carrying YAML frontmatter (`nam
 | `debug-set/` | `oscar-debug-set` | 1 | Admin: toggle `system_settings.debug_mode` (verbose logging on demand) |
 | `identity-link/` | `oscar-identity-link` | 1 | Admin: bind `(gateway, external_id)` → LLDAP uid |
 | `help/` | `oscar-help` | 1 | Self-describing capability list (`oscar_help list`) |
-| `skill-author/` | `oscar-skill-author` | 1 | Admin: drafts a new or edited `SKILL.md`, previews via Signal, applies after `/ja` (writes to `skills-local/` with local git history) |
-| `skill-reviewer/` | `oscar-skill-reviewer` | 1 | Internal cron (hourly): aggregates `skill_corrections`, when k≥3 it autonomously edits operating-sequence prose and DMs admin via Signal. Rate-limited 24h/skill. |
-| `skill-revert/` | `oscar-skill-revert` | 1 | Admin: undo a skill edit. Calls `oscar_skill_author revert`, which `git revert`s the commit in `skills-local/` and stamps `skill_edits.reverted_at`. |
 
 Specs live in `docs/skill-<name>.md` (combined skills can share a doc, e.g. [`../docs/timer-and-alarm.md`](../docs/timer-and-alarm.md)).
 
