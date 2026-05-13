@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/mdopp/oscar/compare/v1.2.0...v1.3.0) (2026-05-13)
+
+
+### Features
+
+* **skills:** oscar-skill-author for user-initiated SKILL.md edits ([#46](https://github.com/mdopp/oscar/issues/46)) ([ad571a7](https://github.com/mdopp/oscar/commit/ad571a7ce6b0b00780bfceefa54282d41ff3a4cf))
+
 ## [1.2.0](https://github.com/mdopp/oscar/compare/v1.1.0...v1.2.0) (2026-05-13)
 
 
