@@ -41,14 +41,15 @@ async def _stub_fetch(rows):
 
 
 async def test_aggregate_returns_only_groups_at_or_above_k():
+    # All three light rows normalise to the same (utterance_prefix,
+    # correction_prefix) — 4 tokens each, after lowercase + punctuation strip.
     rows = [
-        # 3× same skill + same prefix pair → group
-        _row("oscar-light", "mach das licht hell", "nein, dimmen"),
-        _row("oscar-light", "Mach das Licht hell.", "Nein dimmen"),
-        _row("oscar-light", "mach das licht hell bitte", "nein, dimmen bitte"),
-        # 2× different skill, doesn't reach k
-        _row("oscar-timer", "stell timer", "nein, alarm"),
-        _row("oscar-timer", "stell timer", "nein, alarm"),
+        _row("oscar-light", "mach das licht hell", "nein, ich meinte dimmen"),
+        _row("oscar-light", "Mach das Licht hell!", "Nein! Ich meinte dimmen."),
+        _row("oscar-light", "MACH das licht hell.", "nein ich meinte dimmen"),
+        # Different skill, only 2 entries — below k=3
+        _row("oscar-timer", "stell den timer", "nein, ich meinte alarm"),
+        _row("oscar-timer", "stell den timer", "nein, ich meinte alarm"),
     ]
     conn = await _stub_fetch(rows)
     with patch("asyncpg.connect", AsyncMock(return_value=conn)):
