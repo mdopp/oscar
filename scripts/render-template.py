@@ -91,9 +91,7 @@ def main() -> int:
         text = text.replace("{{" + k + "}}", v)
     leftover = re.findall(r"\{\{[A-Z_]+\}\}", text)
     if leftover:
-        sys.stderr.write(
-            f"Warning: unrendered placeholders: {sorted(set(leftover))}\n"
-        )
+        sys.stderr.write(f"Warning: unrendered placeholders: {sorted(set(leftover))}\n")
     sys.stdout.write(text)
     return 0
 
