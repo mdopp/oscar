@@ -67,10 +67,15 @@ def _wait_for_postgres(dsn: str) -> None:
 
 
 def _alembic_dir() -> pathlib.Path:
-    """alembic.ini and migrations/ are sibling to this package."""
-    here = pathlib.Path(__file__).resolve()
-    # src/oscar_db/cli.py → project root is src/../
-    return here.parent.parent.parent  # → shared/oscar_db/
+    """Where alembic.ini and migrations/ live.
+
+    Inside the published image the Dockerfile copies them to /app/, so we
+    look there by default. Override via OSCAR_DB_DIR for tests / non-image
+    runs. The legacy "relative to __file__" lookup that this replaced
+    broke after `pip install` because cli.py lands in site-packages and
+    `parent.parent.parent` is then `/usr/local/lib/python3.12`.
+    """
+    return pathlib.Path(os.environ.get("OSCAR_DB_DIR", "/app"))
 
 
 def _run_alembic(*args: str) -> int:
