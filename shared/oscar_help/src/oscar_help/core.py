@@ -37,30 +37,60 @@ class SkillEntry:
         }
 
 
-def load_all(skills_dir: pathlib.Path | str) -> list[SkillEntry]:
-    """Walk `skills_dir`, return one SkillEntry per `<dir>/SKILL.md`.
+def load_all(
+    skills_dir: pathlib.Path | str | Iterable[pathlib.Path | str],
+) -> list[SkillEntry]:
+    """Walk one or more skill-registry dirs, return one SkillEntry per skill.
+
+    Accepts either a single path (back-compat) or an iterable of paths.
+    When multiple dirs are given they're treated as layers in order:
+    later layers shadow earlier ones on `name:` collision. This is what
+    lets the local writable `skills-local/` dir override defaults from
+    the public repo without copying the whole file.
 
     Files that lack frontmatter or fail to parse are skipped silently —
     we'd rather drop one broken skill from the help output than crash
     the whole list. Caller can re-parse explicitly via `describe()`.
     """
-    root = pathlib.Path(skills_dir)
-    if not root.is_dir():
-        return []
-    entries: list[SkillEntry] = []
-    for skill_md in sorted(root.glob("*/SKILL.md")):
-        try:
-            entries.append(_parse(skill_md))
-        except (ValueError, OSError):
-            continue
-    return entries
+    dirs = _coerce_dirs(skills_dir)
+    merged: dict[str, SkillEntry] = {}
+    order: list[str] = []
+    for root in dirs:
+        for skill_md in sorted(root.glob("*/SKILL.md")):
+            try:
+                entry = _parse(skill_md)
+            except (ValueError, OSError):
+                continue
+            if entry.name not in merged:
+                order.append(entry.name)
+            merged[entry.name] = entry
+    return [merged[name] for name in order]
 
 
-def describe(skills_dir: pathlib.Path | str, name: str) -> SkillEntry | None:
+def describe(
+    skills_dir: pathlib.Path | str | Iterable[pathlib.Path | str],
+    name: str,
+) -> SkillEntry | None:
     for entry in load_all(skills_dir):
         if entry.name == name:
             return entry
     return None
+
+
+def _coerce_dirs(
+    skills_dir: pathlib.Path | str | Iterable[pathlib.Path | str],
+) -> list[pathlib.Path]:
+    """Normalize the input to a list of existing directories."""
+    if isinstance(skills_dir, (str, pathlib.Path)):
+        candidates = [skills_dir]
+    else:
+        candidates = list(skills_dir)
+    paths: list[pathlib.Path] = []
+    for c in candidates:
+        p = pathlib.Path(c)
+        if p.is_dir():
+            paths.append(p)
+    return paths
 
 
 def filter_by_tag(entries: Iterable[SkillEntry], tag: str) -> list[SkillEntry]:

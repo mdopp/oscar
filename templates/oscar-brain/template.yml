@@ -81,6 +81,50 @@ spec:
     - mountPath: /opt/oscar/skills
       name: oscar-skills
       readOnly: true
+    # Local writable overrides layer — user-initiated edits and reviewer-
+    # applied auto-merges land here. `oscar_help` reads both mounts and
+    # lets entries here shadow same-named public-repo skills.
+    - mountPath: /opt/oscar/skills-local
+      name: oscar-skills-local
+
+  # 1a. skills-local-init — runs once on pod start. If the writable
+  #     skills-local hostPath doesn't have a `.git` yet, init one with
+  #     a baseline commit so future user/reviewer edits accumulate a
+  #     real local history (used by `oscar-skill-revert` later).
+  #     Pod-init semantics aren't standard in non-K8s Pod runtimes — we
+  #     model it as a fast-exit container that just runs `git init` and
+  #     then sleeps; safe to restart, idempotent.
+  - name: skills-local-init
+    image: docker.io/alpine/git:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        set -eu
+        DIR=/opt/oscar/skills-local
+        cd "$DIR"
+        if [ ! -d .git ]; then
+          echo "skills-local-init: initialising local skills git history"
+          git init -q .
+          git config user.email "oscar@localhost"
+          git config user.name "OSCAR"
+          # Mark the dir as safe — hostPath UID may not match git's owner check.
+          git config --global --add safe.directory "$DIR"
+          touch .gitkeep
+          git add -A
+          git commit -q -m "baseline: empty skills-local store"
+        else
+          echo "skills-local-init: .git already present, leaving alone"
+        fi
+        # Stay alive so the pod stays in 'running' state. Re-runs on pod restart.
+        exec sleep infinity
+    volumeMounts:
+    - mountPath: /opt/oscar/skills-local
+      name: oscar-skills-local
+    env:
+    - name: OSCAR_COMPONENT
+      value: "skills-local-init"
+    - name: TZ
+      value: "{{TZ}}"
 
   # 1b. signal-cli daemon — Phase-1 sidecar so HERMES's Signal gateway has
   #     an HTTP endpoint to talk to. Linked-device session state lives in
@@ -210,7 +254,7 @@ spec:
     - name: TZ
       value: "{{TZ}}"
 
-  # 5. pg-backup — weekly pg_dump sidecar, 4-week retention.
+  # 5. pg-backup — weekly pg_dump sidecar + skills-local tar, 4-week retention.
   #    Simple loop: dump, prune, sleep a week. No external scheduler needed.
   - name: pg-backup
     image: docker.io/postgres:16-alpine
@@ -231,7 +275,17 @@ spec:
             echo "pg-backup: dump failed" >&2
             rm -f "$DUMP"
           fi
+          # Tar the writable skills-local dir alongside the SQL dump. .git is
+          # included on purpose — the local history is the rollback story.
+          SKILLS_TAR="/backups/skills-local-$NOW.tar.gz"
+          if tar -czf "$SKILLS_TAR" -C /skills-local . 2>/dev/null; then
+            echo "pg-backup: skills tar ok ($(stat -c%s "$SKILLS_TAR") bytes)"
+          else
+            echo "pg-backup: skills tar failed (dir empty or absent)" >&2
+            rm -f "$SKILLS_TAR"
+          fi
           find /backups -name 'oscar-*.sql.gz' -mtime +28 -delete
+          find /backups -name 'skills-local-*.tar.gz' -mtime +28 -delete
           sleep 604800
         done
     env:
@@ -242,6 +296,9 @@ spec:
     volumeMounts:
     - mountPath: /backups
       name: postgres-backups
+    - mountPath: /skills-local
+      name: oscar-skills-local
+      readOnly: true
 
   volumes:
   - name: hermes-data
@@ -281,3 +338,10 @@ spec:
     hostPath:
       path: {{OSCAR_REGISTRY_DIR}}/skills
       type: Directory
+  # Writable overrides layer: user/reviewer edits live here. Survives pod
+  # restarts; pg-backup tars it weekly into postgres-backups/. Owns its own
+  # local git history (initialised by the skills-local-init container).
+  - name: oscar-skills-local
+    hostPath:
+      path: {{DATA_DIR}}/oscar-brain/skills-local
+      type: DirectoryOrCreate

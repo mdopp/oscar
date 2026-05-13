@@ -21,6 +21,15 @@ when the LLM hasn't loaded the full skill catalog, when a new user
 wants to know what they can ask, or when debugging "why isn't OSCAR
 doing X?" — if X isn't in the help list, no skill is registered for it.
 
+## Skill registry layout
+
+`oscar_help` reads two directories in this order:
+
+1. `/opt/oscar/skills` (read-only mount of the public OSCAR repo) — the **defaults**.
+2. `/opt/oscar/skills-local` (writable hostPath, household-private, has its own git history) — the **overrides**.
+
+On `name:` collision the local override wins. New names in the overrides dir are simply new skills. Both dirs are scanned on every CLI call; there's no cache.
+
 ## When to use
 
 - "Was kannst du eigentlich?" / "What can you do?"
