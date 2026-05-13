@@ -38,8 +38,16 @@ spec:
     # Cloud-LLM credentials. Only populated in the `cloud` deployment mode
     # (OLLAMA_ENABLED=""). With a cloud HERMES_MODEL like
     # `anthropic/claude-sonnet-4` HERMES routes everything through the
-    # provider; with a local model these are ignored.
+    # provider; with a local model these are ignored. We expose the same
+    # key under three names so HERMES picks it up regardless of whether
+    # it reads its own `HERMES_API_KEY` variable or the provider-SDK
+    # standard env vars (`GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`). One key
+    # in the wizard → both code paths covered.
     - name: HERMES_API_KEY
+      value: "{{HERMES_API_KEY}}"
+    - name: GOOGLE_API_KEY
+      value: "{{HERMES_API_KEY}}"
+    - name: ANTHROPIC_API_KEY
       value: "{{HERMES_API_KEY}}"
     # Signal gateway (Phase 1). HERMES talks to a signal-cli daemon
     # running as a sidecar in this pod; the daemon manages the linked-

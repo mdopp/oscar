@@ -50,7 +50,7 @@ Trade-offs:
 
 - **gpu-local:** Fedora CoreOS with `nvidia-container-toolkit` + CDI configured (`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`). Without CDI the Ollama container fails to start when GPU passthrough is requested.
 - **cpu-local:** any host with ≥8 GB RAM. No special setup; Ollama auto-uses CPU when no GPU device is passed through.
-- **cloud:** any host with reachable internet. The Ollama container is skipped entirely; HERMES talks straight to the provider with `HERMES_API_KEY`.
+- **cloud:** any host with reachable internet. The Ollama container is skipped entirely; HERMES talks straight to the provider. The `HERMES_API_KEY` variable is exposed in the container under three names — `HERMES_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` — so HERMES picks it up regardless of which env name the underlying SDK looks for. See "Cloud-backend setup (Gemini / Anthropic)" below for the wizard click-path.
 - ServiceBay v3.16+ on the same host (all modes).
 - HA-MCP integration (`mcp_server`) enabled in your HA pod and a long-lived access token minted for HERMES (all modes).
 - ServiceBay-MCP bearer token with scope `read+lifecycle` (all modes).
@@ -69,6 +69,41 @@ Trade-offs:
    - `curl http://localhost:{{HERMES_PORT}}/health` should answer 200.
    - `curl http://localhost:{{OLLAMA_PORT}}/api/tags` should list the pulled models.
    - In ServiceBay-MCP: `get_container_logs(id="oscar-brain-hermes")` should show structured JSON lines.
+
+## Cloud-backend setup (Gemini / Anthropic)
+
+Concrete walkthrough for the `cloud` deployment mode. Skip if you're on gpu-local or cpu-local.
+
+### Gemini (Google AI Studio)
+
+1. Generate an API key at https://aistudio.google.com/apikey. Starts with `AIza…`.
+2. In the ServiceBay `oscar-brain` wizard:
+   - `OLLAMA_ENABLED` → empty
+   - `GPU_PASSTHROUGH` → (ignored in cloud mode)
+   - `HERMES_MODEL` → `google/gemini-2.5-flash` (or `google/gemini-2.5-pro` if you want stronger reasoning at higher cost/latency)
+   - `ROUTER_MODEL` → leave at default; HERMES doesn't use it in cloud mode, but the variable is still required.
+   - `HERMES_API_KEY` → paste the `AIza…` key.
+3. Deploy. First start takes ~30 s — no Ollama model pull.
+4. **If you also want the per-request `cloud-llm` connector** (Phase-1 audited escalation path for a stack that's *otherwise* local): paste the *same* key into the `oscar-connectors` wizard as `GOOGLE_API_KEY`. ServiceBay doesn't (yet) share variables across templates, so you enter it twice.
+
+### Anthropic (Claude)
+
+Same flow with these substitutions:
+- `HERMES_MODEL` → `anthropic/claude-sonnet-4` or `anthropic/claude-haiku-4-5`
+- `HERMES_API_KEY` → your `sk-ant-…` key
+- `oscar-connectors` variable name → `ANTHROPIC_API_KEY`
+
+### Verification
+
+```bash
+podman logs oscar-brain-hermes | grep -i 'model\|provider\|api_key'
+```
+
+Should show HERMES boot lines naming the provider. If you see `unauthorized` or `missing API key`, the env didn't land — re-check that the wizard saved the value.
+
+### Privacy reminder
+
+Cloud mode sends **every prompt** to the provider — opposite of OSCAR's default stance. `cloud_audit` rows still get written so you can review what left the house, but the data is already out. Declare consciously and inform every family member.
 
 ## Storage paths
 
