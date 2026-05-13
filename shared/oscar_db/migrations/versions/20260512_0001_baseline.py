@@ -1,12 +1,12 @@
-"""baseline: system_settings, time_jobs, gateway_identities, cloud_audit
+"""baseline: system_settings + cloud_audit
 
 Revision ID: 0001_baseline
 Revises:
-Create Date: 2026-05-12
+Create Date: 2026-05-12 (updated post-Hermes reset)
 
-Mirrors the inline init SQL that used to live in
-templates/oscar-brain/template.yml. Same `IF NOT EXISTS` idempotency
-so applying this against an already-initialised DB is harmless.
+Household-domain tables only. Skill-management, timer/alarm, and
+gateway_identities tables that earlier drafts had are now Hermes-owned
+(skill versioning, cron scheduler, native messaging-gateway pairing).
 """
 
 from __future__ import annotations
@@ -36,48 +36,6 @@ def upgrade() -> None:
           ('debug_mode', '{"active": true, "verbose_until": null, "latency_annotations": false}'::jsonb)
         ON CONFLICT (key) DO NOTHING
         """
-    )
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS time_jobs (
-          id              UUID PRIMARY KEY,
-          kind            TEXT NOT NULL CHECK (kind IN ('timer','alarm')),
-          owner_uid       TEXT NOT NULL,
-          label           TEXT,
-          fires_at        TIMESTAMPTZ NOT NULL,
-          rrule           TEXT,
-          duration_set    INTERVAL,
-          target_endpoint TEXT NOT NULL,
-          hermes_cron_id  TEXT,
-          state           TEXT NOT NULL CHECK (state IN ('armed','firing','snoozed','done','cancelled')),
-          created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS time_jobs_fires_idx ON time_jobs (state, fires_at) "
-        "WHERE state IN ('armed','snoozed')"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS time_jobs_owner_idx ON time_jobs (owner_uid, state)"
-    )
-
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS gateway_identities (
-          gateway      TEXT NOT NULL,
-          external_id  TEXT NOT NULL,
-          uid          TEXT NOT NULL,
-          display_name TEXT,
-          verified_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-          created_by   TEXT NOT NULL,
-          PRIMARY KEY (gateway, external_id)
-        )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS gateway_identities_uid_idx ON gateway_identities (uid)"
     )
 
     op.execute(
