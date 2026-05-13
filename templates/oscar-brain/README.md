@@ -13,7 +13,8 @@ Phase 0 target. Phase 1 adds a `signal-cli-daemon` sidecar for the HERMES Signal
 | `qdrant` | `docker.io/qdrant/qdrant:latest` | Vector store for OSCAR domain memory. Empty in Phase 0; populated from Phase 3a. |
 | `postgres` | `docker.io/postgres:16-alpine` | Initial schema is dropped into `/docker-entrypoint-initdb.d/` by a wrapper command; the standard postgres entrypoint picks it up on first start. |
 | `pg-backup` | `docker.io/postgres:16-alpine` | Sidecar that runs `pg_dump` weekly and prunes dumps older than 28 days. |
-| `signal-cli-daemon` | `docker.io/bbernhard/signal-cli-rest-api:latest` | Phase-1 sidecar: HTTP front-end to signal-cli that the HERMES Signal gateway calls. Linked-device session state persists under `signal-cli/`. |
+| `signal-cli-daemon` | `docker.io/bbernhard/signal-cli-rest-api:latest` | Phase-1 sidecar: HTTP front-end to signal-cli. Linked-device session state persists under `signal-cli/`. |
+| `signal-gateway` | `ghcr.io/mdopp/oscar-signal-gateway:latest` | Phase-1 sidecar: polls `signal-cli-daemon` for incoming chats, maps sender numbers via `gateway_identities`, forwards to HERMES `/converse`, returns replies. Also exposes `POST /send` on 8090 for outbound DMs (timer/alarm fire, skill-reviewer notifications). |
 
 ## Initial Postgres schema
 
