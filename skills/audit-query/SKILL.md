@@ -1,13 +1,9 @@
 ---
 name: oscar-audit-query
-description: Use when the user asks "what happened today?", "show me errors in the last hour", "what did the cloud connector cost yesterday?", "who's linked to which Signal number?", "what timers are armed?". Reads from OSCAR's domain-audit Postgres tables via `python -m oscar_audit query`. Read-only — never mutates state.
-version: 0.1.0
+description: Use when the user asks "what happened today?", "show me errors in the last hour", "what did the cloud connector cost yesterday?". Reads from OSCAR's household-domain Postgres tables (cloud_audit, system_settings) via `python -m oscar_audit query`. Read-only — never mutates state.
+version: 0.2.0
 author: OSCAR
 license: MIT
-metadata:
-  hermes:
-    tags: [audit, observability, phase-1]
-    related_skills: [oscar-debug-set]
 ---
 
 # OSCAR — audit.query
@@ -16,32 +12,29 @@ metadata:
 
 Generic filter over OSCAR's domain-audit tables. One CLI call returns a JSON page of rows; the agent summarises in natural language for the user.
 
-Three streams in Phase 1:
+Currently one stream:
 - `cloud_audit` — every cloud-LLM call (timestamp, uid, trace_id, vendor, lengths, latency, cost-estimate, router score + reason; prompt/response fulltext only when debug-mode is on)
-- `gateway_identities` — phone-number / chat-id → LLDAP-uid mappings
-- `time_jobs` — armed timers and alarms
 
-More streams plug into the same dispatch (`gatekeeper_decisions` Phase 2+, `ingestion_classifications` Phase 3a+).
+More streams plug into the same dispatch as Phase 3+ tables land (book/record/document collections, ingestion_classifications, etc.).
 
 ## When to use
 
 - "What did OSCAR send to the cloud today?"
 - "Wieviel hat das gestern gekostet?"
 - "Show me errors in the last hour."
-- "Welche Wecker sind gerade scharf?"
-- "Wer ist hinter der Signal-Nummer +49…?"
 - "Find every event tied to trace_id <X>."
 
 Out of scope:
-- Anything that mutates state (use the corresponding skill instead — `oscar-timer`, `oscar-identity-link`, `oscar-debug-set`).
+- Anything that mutates state (use `oscar-debug-set` for the debug-mode flag).
 - Reading **operational** logs (stdout-JSON). Those go through ServiceBay-MCP `get_container_logs` — different mechanism entirely.
+- Conversation history / messaging gateway state — Hermes owns those (SQLite + its own admin commands).
 
 ## Operating sequence
 
 1. Parse the user request into:
-   - `stream` (which table): infer from the topic. "cloud cost" → `cloud_audit`. "Signal user" → `gateway_identities`. "timer/alarm" → `time_jobs`.
+   - `stream` (which table): currently always `cloud_audit`.
    - `since` / `until`: parse natural-language time. "today" → `today`. "last hour" → `1h`. "yesterday evening" → ISO timestamp.
-   - filter fields (`uid`, `vendor`, `trace_id`, `gateway`, `kind`, `state`, `min_cost_micro_usd`) as they apply.
+   - filter fields (`uid`, `vendor`, `trace_id`, `min_cost_micro_usd`) as they apply.
 2. Run:
    ```
    python -m oscar_audit query --stream <stream> --since <time> [--uid X] [--vendor X] [--trace-id X] [--limit N]
@@ -57,8 +50,6 @@ Out of scope:
 | Stream | Useful filters |
 |---|---|
 | `cloud_audit` | `--since`, `--uid`, `--vendor`, `--trace-id`, `--min-cost-micro-usd` |
-| `gateway_identities` | `--gateway`, `--uid`, `--since` |
-| `time_jobs` | `--uid`, `--kind`, `--state`, `--since` |
 
 `--limit` defaults to 50; bump to 200 for trends but don't read all rows back, summarise.
 
@@ -78,6 +69,6 @@ For deep debugging of a specific failure: instruct the user to flip debug-mode f
 
 | Phase | Streams |
 |---|---|
-| **1 (now)** | cloud_audit, gateway_identities, time_jobs |
+| **1 (now)** | cloud_audit |
 | **2** | + gatekeeper_decisions (speaker-ID confidence, harness chosen, embedding distance) |
 | **3a** | + ingestion_classifications (Gemma vision class, confidence, final domain) |

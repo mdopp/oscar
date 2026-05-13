@@ -1,13 +1,9 @@
 ---
 name: oscar-status
-description: Use when the user asks "is OSCAR alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Runs `python -m oscar_health doctor`, which pings every configured OSCAR dependency (Postgres, HERMES, Ollama, Whisper/Piper/openWakeWord, connectors, HA-MCP, ServiceBay-MCP) and reports per-component status. Read-only.
-version: 0.1.0
+description: Use when the user asks "is OSCAR alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Runs `python -m oscar_health doctor`, which pings every configured OSCAR dependency (Postgres, Ollama, Whisper/Piper/openWakeWord, connectors, HA-MCP, ServiceBay-MCP) and reports per-component status. Read-only.
+version: 0.2.0
 author: OSCAR
 license: MIT
-metadata:
-  hermes:
-    tags: [observability, status, phase-1]
-    related_skills: [oscar-audit-query, oscar-debug-set]
 ---
 
 # OSCAR — status
@@ -46,16 +42,15 @@ Quick "is everything OK?" probe across every OSCAR dependency. Backed by the sha
 3. Summarise verbally:
    - **All green** → "Alles ok." or "Alles grün."
    - **One red** → name it: "HA-MCP antwortet nicht — ich erreiche Home Assistant gerade nicht."
-   - **Multiple red** → group by impact: "Postgres und HERMES sind beide down — das ist ernst."
+   - **Multiple red** → group by impact: "Postgres und Hermes sind beide down — das ist ernst."
 
 ## What gets probed
 
-Auto-discovered from env vars on the HERMES container:
+Auto-discovered from env vars in Hermes' environment:
 
 | Env var | Probe | Failure means |
 |---|---|---|
 | `OSCAR_POSTGRES_DSN` | Postgres `SELECT 1` | OSCAR can't read/write its own state |
-| `OSCAR_HERMES_URL` | HTTP GET `/health` | HERMES is down (rare; we're talking to it) |
 | `OSCAR_OLLAMA_URL` | HTTP GET `/api/tags` | Local LLM offline → cloud or local-only fallback |
 | `OSCAR_WHISPER_HOST` | TCP open | Voice STT broken |
 | `OSCAR_PIPER_HOST` | TCP open | Voice TTS broken |
@@ -68,7 +63,7 @@ Missing env vars are silently skipped — that's the "this OSCAR install doesn't
 
 ## What this does NOT cover
 
-- **Skill correctness** — we know HERMES is reachable, not that a specific skill behaves. For that, `oscar-audit-query` over `cloud_audit` and the relevant SKILL events.
+- **Skill correctness** — we know Hermes is reachable, not that a specific skill behaves. For that, `oscar-audit-query` over `cloud_audit` and the relevant SKILL events.
 - **Voice latency** — TCP-open says the port is alive, not that it's fast. For latency hunting, `oscar-debug-set` + the gatekeeper's `gatekeeper.transcript` / `gatekeeper.response` timestamps.
 - **HA device state** — "is the office light actually on?" is an HA-MCP query, not a status probe.
 
