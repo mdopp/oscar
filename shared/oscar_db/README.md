@@ -8,7 +8,7 @@ OSCAR's Postgres schema as versioned alembic migrations + the small migrate-on-s
 
 ## What ships
 
-- `shared/oscar_db/migrations/` — alembic-managed `versions/` directory + `env.py` + `alembic.ini`. One **baseline** revision creates today's schema (`system_settings`, `time_jobs`, `gateway_identities`, `cloud_audit`). Future revisions add what's needed.
+- `shared/oscar_db/migrations/` — alembic-managed `versions/` directory + `env.py` + `alembic.ini`. One **baseline** revision creates today's household-domain schema (`system_settings`, `cloud_audit`). Future revisions add Phase-3 domain tables (`books`, `records`, `documents`, …).
 - `oscar_db.cli` — thin wrapper around alembic that reads `POSTGRES_DSN` from env, waits for Postgres to be reachable, then runs `alembic upgrade head`.
 - `Dockerfile` builds `ghcr.io/mdopp/oscar-db-migrate` — a 50-MB Python+alembic image used as a sidecar in the oscar-brain pod.
 

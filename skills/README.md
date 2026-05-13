@@ -1,36 +1,36 @@
-# HERMES skills
+# OSCAR skills
 
-Conversation flows, routines, domain actions. Loaded by HERMES via its skill system ([HERMES docs](https://github.com/NousResearch/hermes-agent)).
+Household-specific skills consumed by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Each subdirectory is one skill with a `SKILL.md` carrying YAML frontmatter (`name`, `description`, `version`, `metadata.hermes.{tags, related_skills}`). The directory name and the `name:` field follow the `oscar-<short>` convention — `oscar_help` reads this when answering "what can you do?".
+Hermes provides the agent loop, skill registry, cron, messaging gateways, and the self-improvement loop natively. OSCAR contributes only the **household-specific** procedures that aren't in Hermes' bundled Skills Hub — anything tied to *our* data plane (oscar-brain Postgres, oscar-connectors MCP servers) or *our* hardware (HA-MCP for lights, voice-PE for audio).
+
+The install path (`scripts/install.sh`) symlinks this directory into `~/.hermes/skills/oscar` so Hermes loads everything here on next restart.
 
 ## Currently registered skills
 
 | Directory | `name:` | Phase | One-liner |
 |---|---|---|---|
-| `light/` | `oscar-light` | 0 | Lights on/off/dim via HA-MCP |
-| `timer/` | `oscar-timer` | 0 | Relative-duration reminders (PT5M, halbe Stunde) |
-| `alarm/` | `oscar-alarm` | 0 | Absolute-time wake-ups + rrule recurrences |
-| `status/` | `oscar-status` | 1 | `oscar_health doctor` wrapper — "is everything OK?" |
-| `audit-query/` | `oscar-audit-query` | 1 | Read-only query over `cloud_audit`, `time_jobs`, `gateway_identities`, … |
-| `debug-set/` | `oscar-debug-set` | 1 | Admin: toggle `system_settings.debug_mode` (verbose logging on demand) |
-| `identity-link/` | `oscar-identity-link` | 1 | Admin: bind `(gateway, external_id)` → LLDAP uid |
-| `help/` | `oscar-help` | 1 | Self-describing capability list (`oscar_help list`) |
-| `skill-author/` | `oscar-skill-author` | 1 | Admin: drafts a new or edited `SKILL.md`, previews via Signal, applies after `/ja` (writes to `skills-local/` with local git history) |
-| `skill-reviewer/` | `oscar-skill-reviewer` | 1 | Internal cron (hourly): aggregates `skill_corrections`, when k≥3 it autonomously edits operating-sequence prose and DMs admin via Signal. Rate-limited 24h/skill. |
-| `skill-revert/` | `oscar-skill-revert` | 1 | Admin: undo a skill edit. Calls `oscar_skill_author revert`, which `git revert`s the commit in `skills-local/` and stamps `skill_edits.reverted_at`. |
-
-Specs live in `docs/skill-<name>.md` (combined skills can share a doc, e.g. [`../docs/timer-and-alarm.md`](../docs/timer-and-alarm.md)).
+| `light/` | `oscar-light` | 0 | Lights on/off/dim via HA-MCP. Tool-name-agnostic — Hermes picks the right HA tool from `tools/list` at boot. |
+| `status/` | `oscar-status` | 1 | `python -m oscar_health doctor` — pings every OSCAR dependency, returns per-component status. Read-only. |
+| `audit-query/` | `oscar-audit-query` | 1 | Read-only query over `cloud_audit` (and future Phase-3 household-domain tables). |
+| `debug-set/` | `oscar-debug-set` | 1 | Admin: toggle `system_settings.debug_mode` in oscar-brain's Postgres (verbose logging on demand). |
 
 ## Adding a new skill
 
-1. `mkdir skills/<short>/` and write `SKILL.md` with the standard frontmatter (copy from any existing skill).
-2. If the skill needs a CLI, put the code under `shared/oscar_<short>/` (importable, testable, mockable) and shell out from the SKILL prose via `python -m oscar_<short> …`.
+1. `mkdir skills/<short>/` and write `SKILL.md` with the standard frontmatter (`name`, `description`, `version`, `author`, `license`).
+2. If the skill needs a CLI, put the code under `shared/oscar_<short>/` and have Hermes shell out via `python -m oscar_<short> …`. For Hermes to pick up the Python, install the OSCAR shared libs into Hermes' venv (or rely on the symlinked workspace).
 3. Add a row to the table above.
-4. The `oscar_help` parser will pick up the new entry on next pod restart — no code changes elsewhere.
+4. Restart Hermes to pick up the new skill.
 
-## Planned (not yet implemented)
+## What's *not* a skill
 
-- Phase 0: heating, music (HA media-player → Navidrome)
-- Phase 1: `reminder` (carries a message, not just a duration — distinct from timer)
-- Phase 4: "good morning" routine (HA + TuneIn), proactive memo creation
+Removed during the May 2026 architecture reset because Hermes does it natively:
+
+| Removed | Hermes equivalent |
+|---|---|
+| `oscar-help` | `/skills` |
+| `oscar-timer` / `oscar-alarm` | Hermes cron |
+| `oscar-skill-author` / `-reviewer` / `-revert` | Hermes' built-in skill management + self-improvement loop |
+| `oscar-identity-link` | Hermes' messaging-gateway pairing |
+
+Context: [`../docs/architecture/oscar-on-hermes.md`](../docs/architecture/oscar-on-hermes.md).

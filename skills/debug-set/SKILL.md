@@ -1,13 +1,9 @@
 ---
 name: oscar-debug-set
-description: Use when the user (admin-harness only) asks to turn debug-mode on or off, or to enable verbose logging for a bounded window. Writes `system_settings.debug_mode` in `oscar-brain.postgres`; containers that opted into the runtime watcher pick the change up within ~5 seconds. Admin-only — never invoke from a guest harness.
-version: 0.1.0
+description: Use when an admin asks to turn debug-mode on or off, or to enable verbose logging for a bounded window. Writes `system_settings.debug_mode` in oscar-brain's Postgres; OSCAR connectors that opted into the runtime watcher pick the change up within ~5 seconds. Admin-only — never invoke without explicit admin authorization.
+version: 0.2.0
 author: OSCAR
 license: MIT
-metadata:
-  hermes:
-    tags: [debug, observability, admin, phase-1]
-    related_skills: [oscar-audit-query]
 ---
 
 # OSCAR — debug.set

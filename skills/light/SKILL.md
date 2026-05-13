@@ -1,13 +1,9 @@
 ---
 name: oscar-light
-description: Use when the user asks to turn lights on or off, dim them, or set brightness in a specific room or area of the house. Routes the request through the Home Assistant MCP server — HERMES picks whichever HA-MCP tool matches the (area, action, brightness) intent at runtime from the discovered tool catalog. First HERMES skill in OSCAR Phase 0 — the E2E proof that voice → gatekeeper → HERMES → HA-MCP → device works.
-version: 0.2.0
+description: Use when the user asks to turn lights on or off, dim them, or set brightness in a specific room or area of the house. Routes the request through the Home Assistant MCP server — Hermes picks whichever HA-MCP tool matches the (area, action, brightness) intent at runtime from the discovered tool catalog.
+version: 0.3.0
 author: OSCAR
 license: MIT
-metadata:
-  hermes:
-    tags: [home, light, ha-mcp, phase-0]
-    related_skills: []
 ---
 
 # OSCAR — Light control
@@ -18,8 +14,8 @@ Direct lighting control via the Home Assistant MCP server. This skill exists pri
 
 **Resolution architecture (important to understand before changing this prose):**
 
-- HERMES connects to HA-MCP on boot and gets the **full tool catalog** via `tools/list`. The tools' canonical names (`HassTurnOn` etc. in current HA versions) live in that catalog, *not* in this file.
-- This skill describes the *intent* — what we want to happen — and lets HERMES match it to whatever tool HA-MCP currently exposes for "turn lights on/off in an area".
+- Hermes connects to HA-MCP on boot and gets the **full tool catalog** via `tools/list`. The tools' canonical names (`HassTurnOn` etc. in current HA versions) live in that catalog, *not* in this file.
+- This skill describes the *intent* — what we want to happen — and lets Hermes match it to whatever tool HA-MCP currently exposes for "turn lights on/off in an area".
 - Entity-level resolution ("Wohnzimmer" → `light.wohnzimmer_decke + light.wohnzimmer_steh`) happens **inside HA**, via HA's Assist intent system. OSCAR passes the area name verbatim; HA finds the entities.
 
 This is why the skill stays correct across HA upgrades: tool names and entity catalogues are HA's problem, not ours.
@@ -38,7 +34,7 @@ Out of scope (different skills):
 
 ## Capability the skill needs from HA-MCP
 
-You don't reference tool names directly — HERMES has them from the live tool catalog. You need *one* HA-MCP tool that can:
+You don't reference tool names directly — Hermes has them from the live tool catalog. You need *one* HA-MCP tool that can:
 
 - Accept an **`area`** (string, e.g. `"Wohnzimmer"`) or **entity name** parameter.
 - Apply an **action** in `{on, off}` plus an optional **brightness percentage** (1–100).
@@ -77,13 +73,13 @@ If any of these is missing, `oscar-light` will fail at runtime — usually with 
 
 ## Inspecting the live tool catalog (debugging)
 
-When something feels off ("OSCAR sagt das Tool kennt es nicht"), inspect what HERMES actually saw from HA-MCP:
+When something feels off ("OSCAR sagt das Tool kennt es nicht"), inspect what Hermes actually saw from HA-MCP:
 
 ```bash
-podman logs oscar-brain-hermes 2>&1 | grep -i "mcp.tools\|ha-mcp"
+hermes logs mcp | grep -i "ha-mcp\|tools/list"
 ```
 
-HERMES logs the tool catalog at MCP-handshake time. If the expected tool isn't there, the problem is HA-side (Assist not enabled, no exposed entities, integration broken). If it *is* there but OSCAR still can't use it, the problem is in this skill prose or in HERMES's routing.
+Hermes logs the tool catalog at MCP-handshake time. If the expected tool isn't there, the problem is HA-side (Assist not enabled, no exposed entities, integration broken). If it *is* there but OSCAR still can't use it, the problem is in this skill prose or in Hermes's routing.
 
 ## Smoke tests
 
@@ -97,7 +93,7 @@ These verify the full Phase-0 pipeline, not just this skill:
 "Mach das Licht an" (über Signal geschickt)   → "Welcher Raum?"
 ```
 
-In each case `get_container_logs(id="oscar-brain-hermes")` should show a single `trace_id` that ties together `gatekeeper.transcript`, the HA-MCP call, and `gatekeeper.response`. `cloud_audit` must be empty — local Gemma should handle this without escalation.
+In each case Hermes' session log should show a single trace that ties together the user utterance, the HA-MCP tool call, and the response. `cloud_audit` (in oscar-brain's Postgres) must be empty — local Ollama should handle this without escalation.
 
 ## Phase 4 forward
 
