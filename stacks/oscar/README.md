@@ -45,7 +45,7 @@ It owns the Postgres schema everything else writes into. From the ServiceBay wiz
 2. Fill in the variables for your chosen deployment mode.
 3. Mint a Home Assistant long-lived token (Profile → Security → Long-lived access tokens) for `HA_MCP_TOKEN`.
 4. Mint a ServiceBay-MCP bearer (Settings → Integrations → MCP → "Generate token", scope `read+lifecycle`) for `SERVICEBAY_MCP_TOKEN`.
-5. For `cloud` mode: also provide `HERMES_API_KEY` from your Anthropic or Google API console.
+5. For `cloud` mode: also provide `HERMES_API_KEY` from your Anthropic or Google API console. The brain template fans the value out to `HERMES_API_KEY`, `GOOGLE_API_KEY`, and `ANTHROPIC_API_KEY` inside the HERMES container — one key in the wizard covers all three SDKs. Full walkthrough: [`../../templates/oscar-brain/README.md`](../../templates/oscar-brain/README.md) → "Cloud-backend setup (Gemini / Anthropic)".
 6. Deploy. The included `post-deploy.py` waits for the pod to come up, verifies the init schema, and prints the next-step checklist. First start takes 5–10 min while Ollama pulls models (skipped in `cloud` mode).
 
 Verify with the `oscar-status` skill once the pod is up (or directly: `curl http://<host>:8000/health`).
@@ -61,7 +61,7 @@ From the wizard, pick `oscar-voice`. Set the variables to match the mode you pic
 Generate a `CONNECTORS_BEARER` (ServiceBay auto-generates on first deploy; emit it via `__SB_CREDENTIAL__` so it shows up under Settings → Integrations). Then:
 
 - `WEATHER_API_KEY` from openweathermap.org (free tier is fine)
-- `ANTHROPIC_API_KEY` and/or `GOOGLE_API_KEY` for the cloud-LLM connector (leave empty to disable that vendor)
+- `ANTHROPIC_API_KEY` and/or `GOOGLE_API_KEY` for the cloud-LLM connector (leave empty to disable that vendor). If you're running `oscar-brain` in `cloud` mode, paste the *same* key you used there — ServiceBay doesn't (yet) share variables across templates.
 - `POSTGRES_PASSWORD` must **match** the one used for oscar-brain — the cloud-llm connector writes audit rows into the same database
 
 ### 6. Wire HA Voice PE (optional, real-world voice)
