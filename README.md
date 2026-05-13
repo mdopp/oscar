@@ -2,12 +2,13 @@
 
 > Privacy-first, fully-local home assistant for a family household. All AI runs inside the house; cloud LLMs are opt-in per request through audited connectors.
 
-OSCAR is a layer on top of [ServiceBay](https://github.com/mdopp/servicebay) v3.16+. ServiceBay provides the platform (LLDAP/Authelia identity, Home Assistant as a device hub, Immich, Radicale, file-share, NPM, AdGuard, …); OSCAR adds:
+OSCAR is the household-specific layer on top of [Hermes Agent](https://github.com/nousresearch/hermes-agent) (host-installed) and [ServiceBay](https://github.com/mdopp/servicebay) v3.16+ (platform). Hermes provides the agent loop, gateways (Signal/Telegram/etc.), cron, conversation memory, skill registry, and self-improvement loop. ServiceBay provides the platform (LLDAP/Authelia identity, Home Assistant as a device hub, Immich, Radicale, file-share, NPM, AdGuard). **OSCAR adds:**
 
 - a voice pipeline that **OSCAR owns end to end** — HA Voice PE devices speak Wyoming directly to `oscar-voice`, not to HA;
-- a cognition core ([HERMES](https://github.com/nousresearch/hermes-agent) + Ollama running Gemma 4 on GPU + Postgres + Qdrant);
+- a data plane (`oscar-brain`: Postgres for household-domain audit + Qdrant for semantic memory + Ollama for the local LLM Hermes points at);
 - per-resident voice identity (Phase 2, SpeechBrain) and per-resident **harnesses** (Böckeler/Fowler sense) that compose system + personal + guest;
-- an ingestion pipeline that turns photos/scans/voice memos from Signal or a Syncthing inbox into structured long-term memory.
+- household-specific skills (light control via HA-MCP, status checks, audit query, debug-mode toggle) symlinked into Hermes' skills dir;
+- an ingestion pipeline that turns photos/scans/voice memos from Signal or a Syncthing inbox into structured long-term memory (Phase 3a).
 
 The architecture document is the source of truth: [`oscar-architecture.md`](oscar-architecture.md). Working notes for Claude Code live in [`CLAUDE.md`](CLAUDE.md).
 
@@ -17,7 +18,7 @@ Active build, Phase 0 / 1. The specs in [`docs/`](docs/) are stable; the templat
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | Voice pipeline (`oscar-voice`) + cognition core (`oscar-brain`) + first HERMES skill (light) | designed, PRs open |
+| **0** | Voice pipeline (`oscar-voice`) + cognition core (`oscar-brain`) + first Hermes skill (light) | designed, PRs open |
 | **1** | Signal/Telegram gateway + first connectors (Cloud-LLM, weather, web-search) | designed, PRs open |
 | 2 | Speaker ID + per-user harnesses | designed (specs) |
 | 3a | Streaming ingestion + enrichment connectors (Open Library, MusicBrainz, Discogs) | designed |
@@ -39,7 +40,7 @@ Active build, Phase 0 / 1. The specs in [`docs/`](docs/) are stable; the templat
   ┌─────────────┐    ┌───────────────────────────────────┐    ┌────────────┐
   │ oscar-voice │    │            oscar-brain            │    │ oscar-     │
   │ gatekeeper  │───►│           ┌────────────┐          │◄───│ ingestion  │
-  │ whisper ▣   │HTTP│           │   HERMES   │          │MCP │  (3a)      │
+  │ whisper ▣   │HTTP│           │   Hermes   │          │MCP │  (3a)      │
   │ piper       │    │           │  skills    │          │    │ classifier │
   │ openWake-   │    │           │  cron      │          │    │ + watcher  │
   │  Word       │    │           │  gateways  │          │    └────────────┘
@@ -73,40 +74,48 @@ Four Quadlet pods, three input channels (voice, chat, file sync), three output c
 ## Repo structure
 
 ```
-templates/         # ServiceBay Pod-YAML templates (consumed via external registry)
+templates/         # ServiceBay Pod-YAML templates (deployed via scripts/install.sh or wizard)
 ├── oscar-voice/       # Wyoming services + gatekeeper
-├── oscar-brain/       # HERMES + Ollama (GPU) + Qdrant + Postgres
+├── oscar-brain/       # Data plane: Postgres + Qdrant + Ollama + db-migrate + pg-backup
 ├── oscar-connectors/  # 1 container per connector
 └── oscar-ingestion/   # Material pipeline (Phase 3a)
 
-stacks/oscar/      # Bundle template that deploys all four pods at once
-gatekeeper/        # Python container code for the gatekeeper
-ingestion/         # Python container code for the ingestion pipeline
+stacks/oscar/      # Documentation-only walkthrough
+scripts/           # install.sh + render-template.py (Hermes install + template deploy)
+gatekeeper/        # Python container code for the gatekeeper (Wyoming + push endpoint)
+ingestion/         # Python container code for the ingestion pipeline (Phase 3a)
 connectors/        # One subdir per connector, _skeleton/ as copy template
-harnesses/         # YAML per LLDAP uid + system.yaml + guest.yaml
-skills/            # HERMES skills (Markdown with YAML frontmatter)
-shared/            # Cross-container Python libs (oscar_logging)
-docs/              # Specs adjacent to the architecture doc
+harnesses/         # YAML per LLDAP uid + system.yaml + guest.yaml (Phase 2)
+skills/            # Household-specific skills — symlinked into ~/.hermes/skills/oscar
+shared/            # Cross-container Python libs (oscar_logging, oscar_audit, oscar_health, oscar_db)
+docs/              # Specs adjacent to the architecture doc (incl. docs/architecture/oscar-on-hermes.md)
 ```
 
 ## Specs
 
 - [`oscar-architecture.md`](oscar-architecture.md) — top-level architecture, phase plan, key decisions
+- [`docs/architecture/oscar-on-hermes.md`](docs/architecture/oscar-on-hermes.md) — May 2026 reset rationale (why Hermes is host-installed, what OSCAR contributes on top)
 - [`docs/logging.md`](docs/logging.md) — operational stdout-JSON + domain-audit Postgres tracks, `trace_id` correlation, retention policies
 - [`docs/connector-skeleton.md`](docs/connector-skeleton.md) — FastMCP + Pydantic pattern, shared-bearer auth, `variables.json` example
-- [`docs/gateway-identities.md`](docs/gateway-identities.md) — phone-number / chat-id → LLDAP-uid mapping (Phase 1)
-- [`docs/timer-and-alarm.md`](docs/timer-and-alarm.md) — twin `timer` + `alarm` skills sharing `time_jobs` (Phase 0/1)
 
 ## Deploy
 
-OSCAR ships as a ServiceBay external registry. There is no standalone deploy path.
+```bash
+git clone https://github.com/mdopp/oscar.git
+cd oscar
+export SB_URL=http://<your-host>:5888/mcp
+export SB_TOKEN=<servicebay-mcp-token>
+scripts/install.sh
+```
 
-1. Install [ServiceBay v3.16+](https://github.com/mdopp/servicebay) on Fedora CoreOS, full stack deployed.
-2. Confirm [mdopp/servicebay#348](https://github.com/mdopp/servicebay/issues/348) is merged — the HA template needs `VOICE_BUILTIN=disabled` so it doesn't collide with `oscar-voice` on Wyoming ports.
-3. ServiceBay → Settings → Registries → add `https://github.com/mdopp/oscar.git`.
-4. From the wizard, deploy `oscar-brain` first (it provisions the Postgres schema everything else writes into). Then `oscar-voice`, then `oscar-connectors`, then add an HA Voice PE.
+The script (idempotent):
+1. Installs Hermes Agent on the host via Nous Research's installer.
+2. Deploys `oscar-brain` (data plane) via ServiceBay-MCP. Workaround for [mdopp/servicebay#443](https://github.com/mdopp/servicebay/issues/443) is built-in (renders the template locally instead of relying on registry sync).
+3. Symlinks `skills/` into `~/.hermes/skills/oscar` so Hermes picks them up.
 
-Each template's `README.md` walks through variables, smoke tests, and per-pod open follow-ups.
+After that: `hermes setup` (LLM + messaging gateway) + `hermes mcp add <ha-mcp-url>` + `hermes mcp add <servicebay-mcp-url>` + `hermes gateway start`. Detailed walkthrough: [`stacks/oscar/README.md`](stacks/oscar/README.md).
+
+Each template's `README.md` walks through its own variables + smoke tests.
 
 ## Language
 
@@ -118,9 +127,8 @@ The repo ships a [`.mcp.json`](.mcp.json) that wires four MCP servers into Claud
 
 | Server | Reads | When useful |
 |---|---|---|
-| `oscar-postgres` | `cloud_audit`, `time_jobs`, `gateway_identities`, `system_settings` (read-only role recommended) | "Why was last night's cloud call so expensive?", "Which alarms are armed for michael right now?" |
+| `oscar-postgres` | `cloud_audit`, `system_settings` (read-only role recommended) | "Why was last night's cloud call so expensive?" |
 | `oscar-servicebay` | container logs, health, services, diagnostics | "Why did oscar-voice crash-loop after the last deploy?" |
-| `oscar-hermes` | HERMES MCP surface (skill catalog, session, …) | "Which skill picked this question up?" |
 | `oscar-ha` | Home Assistant entities, areas, services | "Did the office light actually turn on after that voice command?" |
 
 Setup: copy [`.env.example`](.env.example) to `~/.config/oscar.env` (or wherever your shell sources from), fill in real values, ensure those env vars are in scope when you open the repo. Claude Code substitutes `${...}` in `.mcp.json` from the environment.

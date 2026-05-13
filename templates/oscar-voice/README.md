@@ -2,7 +2,7 @@
 
 ServiceBay Pod-YAML template: faster-whisper + Piper + openWakeWord + Gatekeeper.
 
-Phase 0 target. HA Voice PE devices speak Wyoming directly to this pod; HERMES handles conversation; HA stays in the loop only as an MCP-tool source for device control.
+Phase 0 target. HA Voice PE devices speak Wyoming directly to this pod; Hermes handles conversation; HA stays in the loop only as an MCP-tool source for device control.
 
 ## Containers
 
@@ -32,17 +32,18 @@ Pair with `oscar-brain`'s mode: GPU brain + GPU STT, or CPU brain + CPU STT, or 
 - **cpu mode:** any host with 4+ cores and ≥4 GB RAM.
 - **mdopp/servicebay#348 merged** so the HA pod can deploy with `VOICE_BUILTIN=disabled` and not collide on Wyoming ports (all modes).
 - **HA Voice PE device** (or a wyoming-satellite-speaking software client) on the LAN.
-- `oscar-brain` deployed and HERMES reachable at `HERMES_URL`.
+- `oscar-brain` (data plane) deployed.
+- **Hermes Agent installed on the host** via `scripts/install.sh` or the upstream installer (`curl … | bash`). The gatekeeper calls Hermes over HTTP.
 
 ## Deploy steps
 
-1. Deploy `oscar-brain` first (issue #1) and mint a HERMES token if HERMES enforces auth.
+1. Deploy `oscar-brain` first + install Hermes on the host.
 2. In ServiceBay, pick `oscar-voice` from the wizard.
 3. Fill in:
    - `GATEKEEPER_PORT` (default 10700) — the host port satellites connect to
    - `WHISPER_MODEL`, `PIPER_VOICE`, `WAKEWORD_MODEL` — defaults sensible for German household
-   - `HERMES_URL` = `http://127.0.0.1:8000` (works because both pods use `hostNetwork`)
-   - `HERMES_TOKEN`
+   - `HERMES_URL` — `http://127.0.0.1:<hermes-port>` if the pod uses hostNetwork; otherwise the host's LAN IP.
+   - `HERMES_TOKEN` — only if Hermes enforces HTTP auth (`hermes config set` controls this)
 4. Deploy. Whisper takes ~5–10 minutes to download the model on first start.
 5. Smoke test from a laptop on the same LAN:
    ```bash
@@ -52,8 +53,8 @@ Pair with `oscar-brain`'s mode: GPU brain + GPU STT, or CPU brain + CPU STT, or 
      --asr-uri tcp://<oscar-host>:{{GATEKEEPER_PORT}} \
      --mic-command 'arecord -r 16000 -c 1 -f S16_LE -t raw -' \
      --snd-command 'aplay -r 22050 -c 1 -f S16_LE -t raw'
-   # Speak a sentence. The gatekeeper should transcribe, call HERMES, and play
-   # back HERMES's response.
+   # Speak a sentence. The gatekeeper should transcribe, call Hermes, and play
+   # back Hermes's response.
    ```
 6. Check logs via ServiceBay-MCP: `get_container_logs(id="oscar-voice-gatekeeper")` should show structured JSON with `trace_id`, `event=gatekeeper.transcript`, `gatekeeper.response`.
 
