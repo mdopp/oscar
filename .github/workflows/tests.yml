@@ -39,6 +39,9 @@ jobs:
           - name: oscar_help
             path: shared/oscar_help
             install: ./shared/oscar_logging shared/oscar_help[test]
+          - name: oscar_skill_runs
+            path: shared/oscar_skill_runs
+            install: ./shared/oscar_logging shared/oscar_skill_runs[test]
           - name: gatekeeper
             path: gatekeeper
             install: ./shared/oscar_logging ./gatekeeper[test]
