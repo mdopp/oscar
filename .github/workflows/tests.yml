@@ -42,6 +42,9 @@ jobs:
           - name: oscar_skill_runs
             path: shared/oscar_skill_runs
             install: ./shared/oscar_logging shared/oscar_skill_runs[test]
+          - name: oscar_skill_author
+            path: shared/oscar_skill_author
+            install: ./shared/oscar_logging shared/oscar_skill_author[test]
           - name: gatekeeper
             path: gatekeeper
             install: ./shared/oscar_logging ./gatekeeper[test]
