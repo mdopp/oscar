@@ -97,7 +97,7 @@ Closes as superseded:
 - #41 (oscar-skill-reviewer) — Hermes natively
 - #42 (oscar-skill-revert) — Hermes natively
 - #52 (HA-MCP auto-config via Signal dialog) — Hermes likely has its own pairing flow; revisit after install
-- #54 (HERMES image replacement) — wrong premise; Hermes is host-installed, not a container
+- #54 (HERMES image replacement) — wrong premise; Hermes ships `docker.io/nousresearch/hermes-agent` and we wrap it in `templates/oscar-hermes/`
 
 Stays open:
 
@@ -113,7 +113,7 @@ Stays open:
 1. **Where does Hermes Agent run?** Native host install vs. thin container wrapping `install.sh`. Native is simpler but breaks the "ServiceBay manages everything" pattern. Container is more uniform but adds an image to maintain.
 2. **Voice-PE push endpoint home.** Stays in `gatekeeper` container, called by Hermes via cron — cleanest. Or moved into Hermes' delivery system if/when Hermes adds a Wyoming target.
 3. **Skill format conversion.** Hermes uses `agentskills.io` standard. We have `SKILL.md` with our own frontmatter. Need to either (a) write a one-shot converter, or (b) hand-port the surviving 2-5 skills.
-4. **Postgres ownership.** Hermes uses its own SQLite for Honcho + session search. OSCAR's Postgres stays for *domain* memory (books / records / cloud_audit / gateway_identities). They're separate concerns — no merge.
+4. **Postgres ownership.** Hermes uses its own SQLite for Honcho + session search. OSCAR's Postgres stays for *domain* memory (books / records / cloud_audit). They're separate concerns — no merge.
 5. **Cleanup tactics.** Delete branches outright (`feat/signal-gateway`, etc.), or `git revert` the merged PRs (preserves history)? The user has said "no production env" through this Sunday — leaning toward straight branch deletion + new PRs that remove the code.
 
 ## PR sequence (proposed)

@@ -6,7 +6,7 @@ Every external integration in OSCAR is a separate connector, its own container i
 
 ## What a connector is (recap)
 
-A defined purpose, what goes out, what comes in, logged. HERMES (in `oscar-brain`) is the only legitimate caller; connectors therefore don't enforce any harness internally, only the shared bearer (see below). Architecture anchoring: [oscar-architecture.md — external connectors](../oscar-architecture.md).
+A defined purpose, what goes out, what comes in, logged. Hermes (in `oscar-hermes`) is the only legitimate caller; connectors therefore don't enforce any harness internally, only the shared bearer (see below). Architecture anchoring: [oscar-architecture.md — external connectors](../oscar-architecture.md).
 
 ## Repo layout
 
@@ -83,13 +83,13 @@ Convention: the tool function is always called `run`; input/output are explicit 
 
 ## Auth: shared bearer
 
-All connectors in the `oscar-connectors` pod accept the same bearer (`CONNECTORS_BEARER`); HERMES sends it on every call:
+All connectors in the `oscar-connectors` pod accept the same bearer (`CONNECTORS_BEARER`); Hermes sends it on every call:
 
 ```
 Authorization: Bearer <CONNECTORS_BEARER>
 ```
 
-The token is generated at ServiceBay deploy time as `type: secret` in the template `variables.json`, once per `oscar-connectors` pod, shared between all containers via a pod-internal env var. A per-connector token would be finer-grained but is overkill for a 4-person household — the HERMES harness layer is the real permission gate; the bearer only stops "some other pod on the host" from calling.
+The token is generated at ServiceBay deploy time as `type: secret` in the template `variables.json`, once per `oscar-connectors` pod, shared between all containers via a pod-internal env var. A per-connector token would be finer-grained but is overkill for a 4-person household — the Hermes harness layer is the real permission gate; the bearer only stops "some other pod on the host" from calling.
 
 ## variables.json example (weather connector)
 
@@ -97,8 +97,8 @@ The token is generated at ServiceBay deploy time as `type: secret` in the templa
 {
   "connectorsBearer": {
     "type": "secret",
-    "label": "Connectors bearer (HERMES → connectors)",
-    "description": "Generated at deploy and propagated to HERMES + all connector containers. Regenerating means redeploying every connector.",
+    "label": "Connectors bearer (Hermes → connectors)",
+    "description": "Generated at deploy and propagated to Hermes + all connector containers. Regenerating means redeploying every connector.",
     "generate": true,
     "required": true
   },
@@ -149,7 +149,7 @@ Each connector is a container in the `template.yml` of the `oscar-connectors` po
     - containerPort: 8801
 ```
 
-Port convention: 8800–8899 for connector MCP servers, incrementing per connector. HERMES holds the mapping table.
+Port convention: 8800–8899 for connector MCP servers, incrementing per connector. Hermes holds the mapping table.
 
 ## Logging
 
@@ -192,4 +192,4 @@ mcp-inspector http://localhost:8801
 
 - **Per-connector bearer.** Shared bearer stays until Phase 3+, when connectors might warrant different trust levels.
 - **Rate limiting inside the connector.** External APIs enforce that themselves; at 4 people no OSCAR-side throttling is needed.
-- **Caching layer inside the connector.** Weather data is short-lived, Discogs lookups happen once per material item. HERMES can cache conversationally if the LLM step would repeat the same call.
+- **Caching layer inside the connector.** Weather data is short-lived, Discogs lookups happen once per material item. Hermes can cache conversationally if the LLM step would repeat the same call.
