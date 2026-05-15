@@ -15,7 +15,7 @@ import uuid
 from typing import Any
 
 from aiohttp import web
-from oscar_logging import log
+from gatekeeper.logging import log
 from wyoming.client import AsyncClient
 
 from .tts import synthesize_to_writer

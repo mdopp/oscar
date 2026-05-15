@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from oscar_logging import log
+from gatekeeper.logging import log
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info, TtsProgram
 from wyoming.server import AsyncServer
 

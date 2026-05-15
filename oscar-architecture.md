@@ -157,9 +157,9 @@ Alembic migrations live in `schema/`; the migration container is part of `oscar-
 
 ## Identity and harness (Phase 2)
 
-Three harness types compose at runtime: **System** (always active) ∪ (**Personal** | **Guest**). YAML in `harnesses/`, named after the LLDAP `uid` (e.g. `michael.yaml`). Five fields per harness: `context`, `tools`, `guides`, `sensors`, `permissions`.
+Three harness types compose at runtime: **System** (always active) ∪ (**Personal** | **Guest**). One YAML per LLDAP `uid` (e.g. `michael.yaml`), checked in once Phase 2 starts and the directory layout is decided. Five fields per harness: `context`, `tools`, `guides`, `sensors`, `permissions`.
 
-Until Phase 2 ships, `harnesses/` is a roadmap placeholder — the harness composition is layered on top of Hermes' own user/skill knobs by the gatekeeper at turn-handoff time.
+Until Phase 2 ships, harness composition is layered on top of Hermes' own user/skill knobs by the gatekeeper at turn-handoff time, with `uid = DEFAULT_UID` as the placeholder.
 
 Whether harness composition becomes a Hermes-upstream feature (so any multi-user Hermes deployment can use it) or stays an OSCAR-side wrapper is a Phase-2 decision.
 

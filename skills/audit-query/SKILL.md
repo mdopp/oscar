@@ -1,7 +1,7 @@
 ---
 name: oscar-audit-query
-description: Use when the user asks "what happened today?", "show me errors in the last hour", "what did the cloud connector cost yesterday?". Reads from OSCAR's household-domain Postgres tables (cloud_audit, system_settings) via `python -m oscar_audit query`. Read-only — never mutates state.
-version: 0.2.0
+description: Use when the user asks "what happened today?", "show me errors in the last hour", "what did the cloud connector cost yesterday?". Reads from OSCAR's SQLite tables (cloud_audit, system_settings) in oscar.db. Read-only — never mutates state.
+version: 0.3.0
 author: OSCAR
 license: MIT
 ---
@@ -10,7 +10,9 @@ license: MIT
 
 ## Overview
 
-Generic filter over OSCAR's domain-audit tables. One CLI call returns a JSON page of rows; the agent summarises in natural language for the user.
+Generic filter over OSCAR's domain-audit tables in `oscar.db`. One query returns a JSON page of rows; the agent summarises in natural language for the user.
+
+> **TODO (rewrite).** This skill was written against the deleted `shared/oscar_audit` library + Postgres backend. The intent below is correct; the Python implementation needs to land as inline SQLite queries in this skill or as a small companion script in `oscar-household`. The references to `python -m oscar_audit` are stale.
 
 Currently one stream:
 - `cloud_audit` — every cloud-LLM call (timestamp, uid, trace_id, vendor, lengths, latency, cost-estimate, router score + reason; prompt/response fulltext only when debug-mode is on)
@@ -35,11 +37,8 @@ Out of scope:
    - `stream` (which table): currently always `cloud_audit`.
    - `since` / `until`: parse natural-language time. "today" → `today`. "last hour" → `1h`. "yesterday evening" → ISO timestamp.
    - filter fields (`uid`, `vendor`, `trace_id`, `min_cost_micro_usd`) as they apply.
-2. Run:
-   ```
-   python -m oscar_audit query --stream <stream> --since <time> [--uid X] [--vendor X] [--trace-id X] [--limit N]
-   ```
-3. Parse the JSON output:
+2. Open `oscar.db` (path from `OSCAR_DB_PATH`, default `/var/lib/oscar/oscar.db`) and run a parameterised SELECT against `cloud_audit` with the filters above. Apply `LIMIT` (default 50, max 200).
+3. Shape the result as:
    ```
    {"ok": true, "stream": "cloud_audit", "count": 7, "rows": [...]}
    ```
@@ -55,13 +54,13 @@ Out of scope:
 
 ## Failure paths
 
-- Postgres unreachable → CLI exits non-zero, brief: "Ich kann das Audit-Log gerade nicht lesen."
+- `oscar.db` missing or unreadable → brief: "Ich kann das Audit-Log gerade nicht lesen."
 - Unknown stream → "Den Audit-Stream gibt's nicht." (Should never happen with proper parsing.)
-- Empty result → "Heute hat OSCAR nichts an die Cloud geschickt." / "Keine Wecker scharf."
+- Empty result → "Heute hat OSCAR nichts an die Cloud geschickt."
 
 ## PII
 
-`cloud_audit.prompt_fulltext` / `response_fulltext` are returned only when `OSCAR_DEBUG_MODE=true`. Otherwise the CLI returns the metadata (lengths, hash, latency, cost) plus `_pii_redacted: true` to make the masking explicit. **Don't try to reconstruct prompts from hashes.**
+`cloud_audit.prompt_fulltext` / `response_fulltext` are returned only when `system_settings.debug_mode.active = true` (read live from `oscar.db`). Otherwise the rows return the metadata (lengths, hash, latency, cost) and the fulltext columns are nulled out — make the masking explicit in the summary if it matters. **Don't try to reconstruct prompts from hashes.**
 
 For deep debugging of a specific failure: instruct the user to flip debug-mode for a short window via `oscar-debug-set`, re-run the failing query, then turn debug-mode off.
 
@@ -69,6 +68,6 @@ For deep debugging of a specific failure: instruct the user to flip debug-mode f
 
 | Phase | Streams |
 |---|---|
-| **1 (now)** | cloud_audit |
+| **0 (now)** | cloud_audit |
 | **2** | + gatekeeper_decisions (speaker-ID confidence, harness chosen, embedding distance) |
 | **3a** | + ingestion_classifications (Gemma vision class, confidence, final domain) |
