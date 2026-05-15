@@ -1,6 +1,6 @@
 # Gatekeeper
 
-OSCAR-published Python image that bridges Wyoming-protocol satellites (HA Voice PE, `wyoming-satellite` CLI) to Hermes. Consumed by ServiceBay's extended `voice` template as an optional sidecar via the `GATEKEEPER_IMAGE` variable.
+OSCAR-published Python image that bridges Wyoming-protocol satellites (HA Voice PE, `wyoming-satellite` CLI) to Hermes. Runs as a container inside OSCAR's `oscar-household` pod; reaches ServiceBay's unchanged `voice` template (Whisper + Piper + openWakeWord) via host loopback. Both pods are `hostNetwork: true`, sharing the host netns. The `GATEKEEPER_IMAGE` variable on `oscar-household` picks which image tag to run.
 
 ## What it does
 

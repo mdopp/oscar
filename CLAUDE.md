@@ -36,8 +36,8 @@ templates/
                               #   - wires HA-MCP + ServiceBay-MCP via post-deploy
 gatekeeper/                   # Python source for the gatekeeper image
                               #   (published as ghcr.io/mdopp/oscar-gatekeeper,
-                              #    consumed by ServiceBay's extended voice template
-                              #    as an optional sidecar)
+                              #    runs as a container inside oscar-household;
+                              #    reaches ServiceBay's voice template via host loopback)
 schema/                       # Alembic migrations for cloud_audit,
                               # system_settings, voice_embeddings
                               # (+ Phase 3a domain collections)
@@ -50,7 +50,7 @@ What is **not** in this repo:
 
 - Data-plane templates (Postgres, Qdrant, Ollama) — belong to ServiceBay's future `ai-stack`
 - Hermes container template — belongs to ServiceBay as a generic `hermes` template
-- Voice-pipeline template — belongs to ServiceBay's extended `voice` template
+- Voice-pipeline template — ServiceBay's unchanged `voice` template provides Whisper/Piper/openWakeWord; the gatekeeper container lives in OSCAR's `oscar-household` (both pods hostNetwork, host-loopback bridge)
 - Connector code (weather, etc.) — belongs to third-party MCP servers
 - Structured-logging / health-probe libraries — belong to ServiceBay platform contracts
 - `oscar-light` skill — upstreamed as `smart-home/home-assistant` to Hermes Skills Hub
@@ -71,24 +71,28 @@ If you find yourself adding any of the above to OSCAR, stop and open an issue in
 | DNS sinkhole | `adguard` |
 | Passwords | `vaultwarden` |
 | Platform MCP control surface | ServiceBay `/mcp`, scopes `read\|lifecycle\|mutate\|destroy` |
-| **Ollama, Hermes** | `ai-stack` for Phase 0 (planned in `mdopp/servicebay`) |
+| **Ollama, Hermes** | `ai-stack` for Phase 0 (planned in `mdopp/servicebay` — [#538](https://github.com/mdopp/servicebay/issues/538), [#539](https://github.com/mdopp/servicebay/issues/539), [#540](https://github.com/mdopp/servicebay/issues/540)) |
 | **Postgres, Qdrant** | only if Phase 3a chooses to migrate off SQLite (`ai-stack` extension, conditional) |
-| **Voice pipeline (Whisper + Piper + openWakeWord)** | extended `voice` template with `GATEKEEPER_IMAGE` sidecar (planned in `mdopp/servicebay`) |
+| **Voice pipeline (Whisper + Piper + openWakeWord)** | ServiceBay's unchanged `voice` template (shipped via [#348](https://github.com/mdopp/servicebay/issues/348)) deployed alongside `oscar-household` |
+| **Structured logging** | ServiceBay's `src/lib/logger.ts` (SQLite-backed; shape `{ts, level, tag, message, args}`). Doc-only contract tracked in [#542](https://github.com/mdopp/servicebay/issues/542). |
+| **Health checks** | ServiceBay's 16-check-type health system (v3.35–v3.37). OSCAR's `oscar-status` consumes the existing MCP tools (`get_health_checks`, `diagnose`). Doc-only contract tracked in [#543](https://github.com/mdopp/servicebay/issues/543). |
 
 ## Gatekeeper
 
-Wyoming-protocol server. One inbound satellite connection = one half-duplex pipeline turn:
+Wyoming-protocol server. **Runs as a container inside the `oscar-household` pod**, not as a sidecar in ServiceBay's `voice` template. Both pods are `hostNetwork: true` — same host netns — so the gatekeeper reaches the `voice` template's Whisper/Piper through `127.0.0.1`.
 
-1. HA Voice PE (or any `wyoming-satellite` client) connects, streams `AudioStart` + `AudioChunk*` + `AudioStop`.
-2. The gatekeeper calls the in-pod Whisper container (Wyoming, `tcp://127.0.0.1:10300`) for STT.
-3. *Phase 0:* `uid = DEFAULT_UID`. *Phase 2:* SpeechBrain ECAPA-TDNN extracts a 256-d voice embedding; lookup against `voice_embeddings` in OSCAR's SQLite (3–10 vectors per family — brute-force cosine in Python) resolves to an LLDAP `uid`.
-4. The gatekeeper POSTs `(text, uid, endpoint, trace_id)` to Hermes' API at `HERMES_URL`.
-5. Hermes' response → Piper (`tcp://127.0.0.1:10200`) → audio back to the satellite.
+One inbound satellite connection = one half-duplex pipeline turn:
+
+1. HA Voice PE (or any `wyoming-satellite` client) connects on `<host>:<GATEKEEPER_PORT>`, streams `AudioStart` + `AudioChunk*` + `AudioStop`.
+2. The gatekeeper calls Whisper at `tcp://127.0.0.1:10300` (provided by ServiceBay's `voice` template) for STT.
+3. *Phase 0/1:* `uid = DEFAULT_UID`. *Phase 2:* SpeechBrain ECAPA-TDNN extracts a 256-d voice embedding; lookup against `voice_embeddings` in OSCAR's SQLite (3–10 vectors per family — brute-force cosine in Python) resolves to an LLDAP `uid`.
+4. The gatekeeper POSTs `(text, uid, endpoint, trace_id)` to Hermes at `HERMES_URL` (default `http://127.0.0.1:8642`).
+5. Hermes' response → Piper at `tcp://127.0.0.1:10200` → audio back to the satellite.
 6. Outbound `POST /push {endpoint: "voice-pe:<name>", text}` lets Hermes' cron and proactive deliveries address a specific Voice PE device by name.
 
-The gatekeeper is published as an image (`ghcr.io/mdopp/oscar-gatekeeper`). ServiceBay's extended `voice` template references it via an optional `GATEKEEPER_IMAGE` variable. We don't ship `oscar-voice` as a separate template.
+The gatekeeper is published as an image (`ghcr.io/mdopp/oscar-gatekeeper`); `oscar-household`'s `template.yml` references it via the `GATEKEEPER_IMAGE` variable. ServiceBay's `voice` template stays unchanged ([reasoning](https://github.com/mdopp/servicebay/issues/541): the previously proposed `voice`-sidecar would have hidden two mutually-exclusive deploy shapes behind one variable and forced a schema-version bump).
 
-Long term, the Phase-0 pass-through path (steps 1, 2, 4, 5) is upstream work for Hermes (`hermes gateway voice`). Phase 2+ logic (speaker ID, multi-room routing, voice-tone analysis) stays here.
+Long term, the Phase-0/1 pass-through path (steps 1, 2, 4, 5) is upstream work for Hermes (`hermes gateway voice`). Phase 2+ logic (speaker ID, multi-room routing, voice-tone analysis) stays in `oscar-household`.
 
 ## Memory and identity
 
@@ -105,12 +109,14 @@ Voice embeddings are **never** in LLDAP. Biometric PII goes in OSCAR's SQLite on
 
 - **Debug mode** is a single global flag in `system_settings.debug_mode`. Voice toggle via `oscar-debug-set` (admin-only). TTL via `verbose_until`. Components re-query on every audit event (no caching > 5 s). No component-specific verbose flags.
 - **Audit policy.** Every cloud-LLM call writes a row to `cloud_audit`. Family-readable via `oscar-audit-query` ("Was hat der Cloud-Connector heute gemacht?"). The audit *mechanic* is upstream-able as a separate `mcp-audit-proxy` package; OSCAR keeps the *policy* (every call is family-visible) and the schema.
-- **Logging.** Operational logs → container stdout JSON → journald → ServiceBay-MCP (`get_container_logs`). Domain audit → SQLite → `oscar-audit-query`. Conversation logs → Hermes-native. `trace_id` correlates the three.
+- **Logging.** Emit one JSON line per event to stdout matching ServiceBay's logger contract: `{ts, level, tag, message, args}`. The platform's own `src/lib/logger.ts` is SQLite-backed and queryable via `/api/logs/query`. Contract doc tracked in [`mdopp/servicebay#542`](https://github.com/mdopp/servicebay/issues/542).
+- **Health checks.** Outside-in — declare what should be probed (via ServiceBay-MCP `create_health_check`), don't expose `/health` endpoints. The 16 check types in ServiceBay's `src/lib/health/types.ts` cover the cases. OSCAR's `oscar-status` calls `get_health_checks` / `diagnose` rather than running its own probes. Contract doc tracked in [`mdopp/servicebay#543`](https://github.com/mdopp/servicebay/issues/543).
+- **No `podman exec` operator instructions.** Hermes setup, `hermes gateway setup signal`, and `hermes mcp add` must all land as non-interactive post-deploy hooks (ServiceBay's `UX_PHILOSOPHY.md §2` lists "run `podman exec …` once the pod is up" as an anti-pattern). `oscar-household`'s `post-deploy.py` drives Hermes' HTTP API directly.
 
 ## Phase plan (digest)
 
 - **Phase 0 — Chat on Hermes + lights.** Prereqs: ServiceBay v3.16+ with full-stack; `mdopp/servicebay#443` merged (registry sync); the new ServiceBay `ai-stack` templates (`ollama`, `hermes`). Deploy `ai-stack` + `oscar-household` (the latter ships its own SQLite). Pair Signal via `hermes gateway setup signal`. Add HA-MCP via `hermes mcp add`. First household skill: `smart-home/home-assistant` (upstreamed to Hermes Skills Hub, consumed via `hermes skill add`).
-- **Phase 1 — Voice path.** Prereqs: `mdopp/servicebay#348` merged (HA without bundled Wyoming); extended `voice` template with `GATEKEEPER_IMAGE` variable. Deploy `voice` template with `GATEKEEPER_IMAGE=ghcr.io/mdopp/oscar-gatekeeper`. HA Voice PE points its Wyoming endpoint at the host. Gatekeeper in pass-through mode (`DEFAULT_UID`).
+- **Phase 1 — Voice path.** Prereqs: `mdopp/servicebay#348` merged (HA without bundled Wyoming); ServiceBay's unchanged `voice` template deployed alongside `oscar-household`. The gatekeeper container in `oscar-household` reaches Whisper/Piper via host loopback (both pods are `hostNetwork: true`). HA Voice PE points its Wyoming endpoint at `<host>:<GATEKEEPER_PORT>`. Gatekeeper in pass-through mode (`DEFAULT_UID`).
 - **Phase 2 — Speaker ID + harnesses.** SpeechBrain ECAPA-TDNN in the gatekeeper, `voice_embeddings` table, enrolment wizard, harness YAML schema, `system.yaml` + `michael.yaml` + `guest.yaml`. Harness `uid` flows from the gatekeeper into Hermes per turn.
 - **Phase 3a — Streaming ingestion.** Build the ingestion pipeline + enrichment connectors (Open Library, MusicBrainz, Discogs). Roll-out per material type.
 - **Phase 3b — Bulk import + MCP wrappers.** `immich-search`, `radicale-cal`, `audiobookshelf-list`. Signal/Telegram history import.
@@ -120,7 +126,7 @@ Voice embeddings are **never** in LLDAP. Biometric PII goes in OSCAR's SQLite on
 
 These are not OSCAR tickets — they live in the projects they're filed against, with OSCAR's tracking issue linking to them:
 
-- `mdopp/servicebay`: `ollama`, `hermes` templates for Phase 0; `ai-stack` walkthrough; `voice` template extension with `GATEKEEPER_IMAGE` for Phase 1; structured-logging + health-probe contracts. `postgres` + `qdrant` are Phase-3a-conditional and only if we decide to migrate off SQLite.
+- `mdopp/servicebay`: `ollama` ([#538](https://github.com/mdopp/servicebay/issues/538)), `hermes` ([#539](https://github.com/mdopp/servicebay/issues/539)) templates and `ai-stack` walkthrough ([#540](https://github.com/mdopp/servicebay/issues/540)) for Phase 0. Doc-only tickets for the existing logging contract ([#542](https://github.com/mdopp/servicebay/issues/542)) and health-check system ([#543](https://github.com/mdopp/servicebay/issues/543)). `postgres` + `qdrant` are Phase-3a-conditional and only if we decide to migrate off SQLite. The `voice` template stays unchanged — gatekeeper moved into `oscar-household` ([#541](https://github.com/mdopp/servicebay/issues/541) closed as superseded).
 - `NousResearch/hermes-agent`: voice-gateway PR (Phase-0 pass-through path of the gatekeeper)
 - Hermes Skills Hub / agentskills.io: `smart-home/home-assistant` skill (from current `oscar-light`)
 - New separate repo: `mcp-audit-proxy` — the generic cloud-LLM auditing MCP

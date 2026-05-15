@@ -5,21 +5,34 @@ metadata:
   labels:
     app: oscar-household
   annotations:
-    servicebay.label: "OSCAR Household (schema init + skill mount + MCP wiring)"
+    servicebay.label: "OSCAR Household (schema init + skill mount + MCP wiring + voice gatekeeper)"
     servicebay.schema-version: "1"
-    # No host ports — this template is purely a sidecar overlay for an
-    # already-deployed ServiceBay `hermes` template. Health is observed
-    # via the migration container's exit code and the post-deploy hook.
-    servicebay.ports: ""
+    # Wyoming endpoint for satellites (HA Voice PE, wyoming-satellite CLI).
+    # The gatekeeper container is the only consumer that exposes a host
+    # port; the schema-init sidecar exits immediately, and the post-deploy
+    # hook talks to Hermes over the shared host loopback.
+    servicebay.ports: "{{GATEKEEPER_PORT}}/tcp"
+    # Deploy order: hermes must exist first (post-deploy talks to its
+    # HTTP API); voice (Whisper/Piper) reached via host loopback at
+    # 127.0.0.1:10300 / 10200, so it must be running too if the gatekeeper
+    # should actually do something.
+    servicebay.dependencies: "hermes,voice"
 spec:
-  # hostNetwork so the post-deploy hook can reach Hermes' API on
-  # 127.0.0.1, and so the skills mounted into Hermes can reach
-  # oscar.db on a shared local path.
+  # hostNetwork so:
+  #   - the gatekeeper reaches the ServiceBay `voice` template's Wyoming
+  #     services at 127.0.0.1:10300/10200 (two hostNetwork pods share
+  #     the host netns)
+  #   - the gatekeeper reaches Hermes at 127.0.0.1:8642 (same reason)
+  #   - HA Voice PE satellites on the LAN reach the gatekeeper at
+  #     <host-ip>:<GATEKEEPER_PORT>
   hostNetwork: true
-  restartPolicy: OnFailure
+  restartPolicy: Always
   containers:
-  # 1. oscar-household-init — one-shot Alembic against the local
-  #    SQLite file. Idempotent on every pod start.
+  # 1. oscar-household-init — one-shot Alembic against the local SQLite
+  #    file. Idempotent on every pod start; exits cleanly when migrations
+  #    are at head. The restartPolicy: Always above re-runs it on pod
+  #    restart, which is fine (idempotent) and gives us migration
+  #    convergence after image updates.
   - name: oscar-household-init
     image: ghcr.io/mdopp/oscar-household-init:latest
     env:
@@ -33,12 +46,61 @@ spec:
     - mountPath: /var/lib/oscar
       name: oscar-data
 
+  # 2. gatekeeper — OSCAR-published Wyoming-to-Hermes bridge. Phase 0/1
+  #    runs pass-through with uid = DEFAULT_UID; Phase 2 reads
+  #    voice_embeddings from oscar.db and resolves uid per turn.
+  - name: gatekeeper
+    image: "{{GATEKEEPER_IMAGE}}"
+    env:
+    - name: OSCAR_COMPONENT
+      value: "gatekeeper"
+    - name: GATEKEEPER_URI
+      value: "tcp://0.0.0.0:10700"
+    - name: WHISPER_URI
+      value: "{{WHISPER_URI}}"
+    - name: PIPER_URI
+      value: "{{PIPER_URI}}"
+    - name: OPENWAKEWORD_URI
+      value: "{{OPENWAKEWORD_URI}}"
+    - name: HERMES_URL
+      value: "{{HERMES_API_URL}}"
+    - name: HERMES_TOKEN
+      value: "{{HERMES_TOKEN}}"
+    - name: DEFAULT_UID
+      value: "{{DEFAULT_UID}}"
+    # Push endpoint — Hermes calls POST /push for cron-fire / proactive
+    # deliveries. Pod-internal listener, not exposed via hostPort.
+    - name: PUSH_HOST
+      value: "0.0.0.0"
+    - name: PUSH_PORT
+      value: "10750"
+    - name: PUSH_TOKEN
+      value: "{{PUSH_TOKEN}}"
+    # JSON map of `<device-name> -> <wyoming-uri>` for push-to-device.
+    # Empty by default; populated per household once devices are paired.
+    - name: VOICE_PE_DEVICES
+      value: '{{VOICE_PE_DEVICES}}'
+    # Path to oscar.db so Phase 2 speaker-ID can read voice_embeddings.
+    - name: OSCAR_DB_PATH
+      value: "/var/lib/oscar/oscar.db"
+    - name: OSCAR_DEBUG_MODE
+      value: "{{OSCAR_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/oscar
+      name: oscar-data
+    ports:
+    - containerPort: 10700
+      hostPort: {{GATEKEEPER_PORT}}
+
   volumes:
   # The OSCAR data volume holds:
-  #   - oscar.db   (SQLite, populated by the init container)
+  #   - oscar.db   (SQLite, populated by the init container, read by the
+  #                 gatekeeper for Phase 2 voice_embeddings)
   #   - skills/    (read-mounted into the Hermes container by the
-  #                 ServiceBay `hermes` template via a shared
-  #                 hostPath; cloned by ServiceBay's registry sync)
+  #                 ServiceBay `hermes` template via a shared hostPath;
+  #                 cloned by ServiceBay's registry sync)
   - name: oscar-data
     hostPath:
       path: {{DATA_DIR}}/oscar-household
@@ -46,6 +108,6 @@ spec:
 
 # Post-deploy: ./post-deploy.py
 #
-# Calls `hermes mcp add ...` for HA-MCP and ServiceBay-MCP using the
-# tokens collected by the wizard, and points Hermes at the cloud-LLM
-# audit proxy if configured. See post-deploy.py for the flow.
+# Drives Hermes setup non-interactively from the wizard variables, then
+# registers HA-MCP and ServiceBay-MCP via Hermes' HTTP API. See
+# post-deploy.py for the flow.
