@@ -43,21 +43,19 @@ Anything in OSCAR that *isn't* specifically about *this household* either gets c
  │  HA-MCP  │    │ ServiceBay-MCP │                  │  oscar-household │
  │ (devices,│    │ (services,     │                  │     (OSCAR)      │
  │  scenes) │    │  health, logs) │                  │                  │
- └──────────┘    └────────────────┘                  │  • schema init   │
-                                                     │  • skill mount   │
-                          ┌──────── persists to ─────│  • MCP wiring    │
-                          ▼                          │  • audit hook    │
-              ┌──────────────────────┐               └──────────────────┘
-              │  ai-stack            │
-              │  (ServiceBay)        │
-              │  postgres + ollama   │
-              │  + qdrant (P3a) +    │
-              │  hermes (the runtime │
-              │   referenced above)  │
+ └──────────┘    └────────────────┘                  │  • SQLite +      │
+                                                     │    Alembic       │
+                          ┌────── points provider to ┤    (oscar.db)    │
+                          ▼                          │  • skill mount   │
+              ┌──────────────────────┐               │  • MCP wiring    │
+              │  ollama              │               │  • audit hook    │
+              │  (ServiceBay,        │               └──────────────────┘
+              │   ai-stack)          │
+              │  local Gemma         │
               └──────────────────────┘
 ```
 
-One OSCAR template (`oscar-household`), one OSCAR-published image (`gatekeeper`), three OSCAR skills (`oscar-status`, `oscar-audit-query`, `oscar-debug-set`), a small Postgres schema for our tables. Everything else is upstream.
+One OSCAR template (`oscar-household`), one OSCAR-published image (`gatekeeper`), three OSCAR skills (`oscar-status`, `oscar-audit-query`, `oscar-debug-set`), a small SQLite database for our tables. Everything else is upstream.
 
 ## What works today
 
@@ -107,7 +105,7 @@ OSCAR is intentionally small. Anything bigger has either moved upstream or hasn'
 OSCAR ships as a **ServiceBay external registry** — no install script. The walkthrough is in two steps:
 
 1. **Prereqs**: ServiceBay v3.16+ with the full-stack deployed; [mdopp/servicebay#348](https://github.com/mdopp/servicebay/issues/348) merged (needed only once you add voice); [mdopp/servicebay#443](https://github.com/mdopp/servicebay/issues/443) merged (so the OSCAR registry can be cloned).
-2. **Two stacks**: walk through ServiceBay's `ai-stack` first (Postgres + Ollama + Hermes, optionally Qdrant), then OSCAR's stack (just `oscar-household`). Optional: ServiceBay's extended `voice` template with `GATEKEEPER_IMAGE=ghcr.io/mdopp/oscar-gatekeeper` to add voice.
+2. **Two stacks**: walk through ServiceBay's `ai-stack` first (Ollama + Hermes), then OSCAR's stack (just `oscar-household` — it ships its own SQLite). Optional: ServiceBay's extended `voice` template with `GATEKEEPER_IMAGE=ghcr.io/mdopp/oscar-gatekeeper` to add voice. (Phase 3a may add Postgres + Qdrant to `ai-stack` if the domain-collection scale calls for it — for Phase 0–2 the SQLite in `oscar-household` is enough.)
 
 Full walkthrough: [`stacks/oscar/README.md`](stacks/oscar/README.md).
 
@@ -117,7 +115,7 @@ The repo ships a [`.mcp.json`](.mcp.json) wiring three MCP servers into Claude C
 
 | Server | Reads | When useful |
 |---|---|---|
-| `oscar-postgres` | `cloud_audit`, `system_settings` (read-only role recommended) | "Why was last night's cloud call so expensive?" |
+| `oscar-sqlite` | `cloud_audit`, `system_settings` (read-only over `oscar.db`) | "Why was last night's cloud call so expensive?" |
 | `oscar-servicebay` | container logs, health, services, diagnostics | "Why did the voice pod crash-loop after the last deploy?" |
 | `oscar-ha` | Home Assistant entities, areas, services | "Did the office light actually turn on after that voice command?" |
 
@@ -138,7 +136,7 @@ Conversation with the maintainer is German. **All versioned artefacts — docs, 
 
 Most of the open work is **not in this repo** — by design. The architecture pushes capabilities into ServiceBay and Hermes where they belong. Active upstream candidates are tracked from OSCAR's [tracking issue](https://github.com/mdopp/oscar/issues), with cross-links to:
 
-- `mdopp/servicebay` — new `postgres`, `ollama`, `qdrant`, `hermes` templates; `ai-stack` walkthrough; `voice` template extension; structured-logging and health-probe contracts
+- `mdopp/servicebay` — new `ollama` and `hermes` templates for Phase 0, `ai-stack` walkthrough, `voice` template extension, structured-logging and health-probe contracts. (`postgres` and `qdrant` are Phase-3a-conditional.)
 - `NousResearch/hermes-agent` — voice-gateway PR (the gatekeeper's Phase-0 pass-through path)
 - Hermes Skills Hub — `smart-home/home-assistant` skill
 
