@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from oscar_logging import log
+from gatekeeper.logging import log
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncClient

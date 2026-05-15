@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-schema"
+version = "0.1.0"
+description = "Alembic migrations for OSCAR's SQLite schema (cloud_audit, system_settings, voice_embeddings)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "alembic>=1.13",
+  "sqlalchemy>=2.0",
+]
+
+[tool.setuptools]
+# No installable Python package — this project is migrations only.
+packages = []

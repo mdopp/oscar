@@ -22,7 +22,7 @@ The architectural constitution is [`oscar-architecture.md`](oscar-architecture.m
 - **No data leaves the house by default.** Cloud LLM calls are opt-in per harness, every call writes to `cloud_audit`, every audit row is family-readable via the `oscar-audit-query` skill.
 - **Identity = LLDAP, SSO = Authelia.** Both ship in ServiceBay's `auth` pod. OSCAR services reference LLDAP `uid`s and groups; OSCAR services with a web UI register OIDC clients via the `oidcClient` block in their `variables.json`.
 - **Voice ↔ uid is OSCAR's job, not Hermes'.** The gatekeeper does speaker embedding + LLDAP-uid lookup + passes uid as a request parameter to Hermes. Voice embeddings live in OSCAR's SQLite, **never** in LLDAP — biometric PII.
-- **Harness = configuration, not code.** Phase 2 onward. When OSCAR behaves wrongly, the fix usually goes into `harnesses/*.yaml` (guides or sensors), not into application code.
+- **Harness = configuration, not code.** Phase 2 onward. When OSCAR behaves wrongly, the fix usually goes into a harness YAML (guides or sensors), not into application code.
 - **Documentation and code are English.** Maintainer conversation is German; every versioned artefact (docs, READMEs, identifiers, comments, issue bodies, commit messages) is English.
 
 ## Repo structure
@@ -44,7 +44,6 @@ schema/                       # Alembic migrations for cloud_audit,
 skills/                       # household-specific Hermes skills:
                               #   oscar-status, oscar-audit-query, oscar-debug-set
 stacks/oscar/                 # ServiceBay stack walkthrough
-docs/                         # rationale and design notes
 ```
 
 What is **not** in this repo:
@@ -113,7 +112,7 @@ Voice embeddings are **never** in LLDAP. Biometric PII goes in OSCAR's SQLite on
 - **Phase 0 — Chat on Hermes + lights.** Prereqs: ServiceBay v3.16+ with full-stack; `mdopp/servicebay#443` merged (registry sync); the new ServiceBay `ai-stack` templates (`ollama`, `hermes`). Deploy `ai-stack` + `oscar-household` (the latter ships its own SQLite). Pair Signal via `hermes gateway setup signal`. Add HA-MCP via `hermes mcp add`. First household skill: `smart-home/home-assistant` (upstreamed to Hermes Skills Hub, consumed via `hermes skill add`).
 - **Phase 1 — Voice path.** Prereqs: `mdopp/servicebay#348` merged (HA without bundled Wyoming); extended `voice` template with `GATEKEEPER_IMAGE` variable. Deploy `voice` template with `GATEKEEPER_IMAGE=ghcr.io/mdopp/oscar-gatekeeper`. HA Voice PE points its Wyoming endpoint at the host. Gatekeeper in pass-through mode (`DEFAULT_UID`).
 - **Phase 2 — Speaker ID + harnesses.** SpeechBrain ECAPA-TDNN in the gatekeeper, `voice_embeddings` table, enrolment wizard, harness YAML schema, `system.yaml` + `michael.yaml` + `guest.yaml`. Harness `uid` flows from the gatekeeper into Hermes per turn.
-- **Phase 3a — Streaming ingestion.** Build `ingestion/` into a real pipeline + enrichment connectors (Open Library, MusicBrainz, Discogs). Roll-out per material type.
+- **Phase 3a — Streaming ingestion.** Build the ingestion pipeline + enrichment connectors (Open Library, MusicBrainz, Discogs). Roll-out per material type.
 - **Phase 3b — Bulk import + MCP wrappers.** `immich-search`, `radicale-cal`, `audiobookshelf-list`. Signal/Telegram history import.
 - **Phase 4 — Active extensions.** Voice-tone analysis, multi-room voice routing, custom "Oscar" wakeword, proactive memos, TuneIn / internet-radio MCP.
 

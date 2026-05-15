@@ -95,7 +95,6 @@ schema/                       # Alembic migrations for the OSCAR tables
 skills/                       # household-specific Hermes skills:
                               #   oscar-status, oscar-audit-query, oscar-debug-set
 stacks/oscar/                 # ServiceBay stack walkthrough
-docs/                         # rationale documents
 ```
 
 OSCAR is intentionally small. Anything bigger has either moved upstream or hasn't been built yet — see [`oscar-architecture.md`](oscar-architecture.md) for the boundary.

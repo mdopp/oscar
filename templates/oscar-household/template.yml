@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-household
+  labels:
+    app: oscar-household
+  annotations:
+    servicebay.label: "OSCAR Household (schema init + skill mount + MCP wiring)"
+    servicebay.schema-version: "1"
+    # No host ports — this template is purely a sidecar overlay for an
+    # already-deployed ServiceBay `hermes` template. Health is observed
+    # via the migration container's exit code and the post-deploy hook.
+    servicebay.ports: ""
+spec:
+  # hostNetwork so the post-deploy hook can reach Hermes' API on
+  # 127.0.0.1, and so the skills mounted into Hermes can reach
+  # oscar.db on a shared local path.
+  hostNetwork: true
+  restartPolicy: OnFailure
+  containers:
+  # 1. oscar-household-init — one-shot Alembic against the local
+  #    SQLite file. Idempotent on every pod start.
+  - name: oscar-household-init
+    image: ghcr.io/mdopp/oscar-household-init:latest
+    env:
+    - name: OSCAR_DB_URL
+      value: "sqlite:////var/lib/oscar/oscar.db"
+    - name: OSCAR_DEBUG_MODE_DEFAULT
+      value: "{{OSCAR_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/oscar
+      name: oscar-data
+
+  volumes:
+  # The OSCAR data volume holds:
+  #   - oscar.db   (SQLite, populated by the init container)
+  #   - skills/    (read-mounted into the Hermes container by the
+  #                 ServiceBay `hermes` template via a shared
+  #                 hostPath; cloned by ServiceBay's registry sync)
+  - name: oscar-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-household
+      type: DirectoryOrCreate
+
+# Post-deploy: ./post-deploy.py
+#
+# Calls `hermes mcp add ...` for HA-MCP and ServiceBay-MCP using the
+# tokens collected by the wizard, and points Hermes at the cloud-LLM
+# audit proxy if configured. See post-deploy.py for the flow.

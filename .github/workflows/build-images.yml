@@ -17,14 +17,12 @@ on:
     tags: ['v*']
     paths:
       - 'gatekeeper/**'
-      - 'connectors/**'
-      - 'shared/**'
+      - 'schema/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'gatekeeper/**'
-      - 'connectors/**'
-      - 'shared/**'
+      - 'schema/**'
       - '.github/workflows/build-images.yml'
 
 permissions:
@@ -41,16 +39,10 @@ jobs:
         include:
           - image: oscar-gatekeeper
             dockerfile: gatekeeper/Dockerfile
-            description: "OSCAR voice-pipeline orchestrator — Wyoming server that drives Whisper/Piper and hands off conversation to Hermes."
-          - image: oscar-connector-weather
-            dockerfile: connectors/weather/Dockerfile
-            description: "OSCAR weather connector — OpenWeatherMap-backed MCP server (current weather + 5-day forecast)."
-          - image: oscar-connector-cloud-llm
-            dockerfile: connectors/cloud-llm/Dockerfile
-            description: "OSCAR cloud-LLM connector — per-request escalation to Anthropic Claude or Google Gemini, writes to cloud_audit."
-          - image: oscar-db-migrate
-            dockerfile: shared/oscar_db/Dockerfile
-            description: "OSCAR DB migrate sidecar — runs alembic upgrade head against the oscar-brain Postgres on pod start."
+            description: "OSCAR Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Consumed as a sidecar by ServiceBay's extended voice template via GATEKEEPER_IMAGE."
+          - image: oscar-household-init
+            dockerfile: schema/Dockerfile
+            description: "OSCAR schema-init sidecar — runs alembic upgrade head against oscar-household's local SQLite (oscar.db) on every pod start. Idempotent."
     steps:
       - name: Checkout
         uses: actions/checkout@v4

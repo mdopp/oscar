@@ -9,7 +9,7 @@ instance.
 from __future__ import annotations
 
 import httpx
-from oscar_logging import log
+from gatekeeper.logging import log
 
 
 class HermesClient:

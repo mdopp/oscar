@@ -2,35 +2,28 @@
 
 Household-specific skills consumed by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Hermes provides the agent loop, skill registry, cron, messaging gateways, and the self-improvement loop natively. OSCAR contributes only the **household-specific** procedures that aren't in Hermes' bundled Skills Hub — anything tied to *our* data plane (oscar-brain Postgres, oscar-connectors MCP servers) or *our* hardware (HA-MCP for lights, voice-PE for audio).
+Hermes provides the agent loop, skill registry, cron, messaging gateways, and the self-improvement loop natively. OSCAR contributes only the **household-specific** procedures tied to *our* SQLite schema (`oscar.db`) or *our* policy choices (cloud audit).
 
-The install path (`scripts/install.sh`) symlinks this directory into `~/.hermes/skills/oscar` so Hermes loads everything here on next restart.
+The `oscar-household` ServiceBay template bind-mounts this directory into the Hermes container at `/opt/data/skills/oscar`, alongside the path to `oscar.db`. Hermes loads everything here on startup.
 
 ## Currently registered skills
 
 | Directory | `name:` | Phase | One-liner |
 |---|---|---|---|
-| `light/` | `oscar-light` | 0 | Lights on/off/dim via HA-MCP. Tool-name-agnostic — Hermes picks the right HA tool from `tools/list` at boot. |
-| `status/` | `oscar-status` | 1 | `python -m oscar_health doctor` — pings every OSCAR dependency, returns per-component status. Read-only. |
-| `audit-query/` | `oscar-audit-query` | 1 | Read-only query over `cloud_audit` (and future Phase-3 household-domain tables). |
-| `debug-set/` | `oscar-debug-set` | 1 | Admin: toggle `system_settings.debug_mode` in oscar-brain's Postgres (verbose logging on demand). |
+| `status/` | `oscar-status` | 0 | Pings every OSCAR dependency (`oscar.db`, Hermes, Ollama, HA-MCP, ServiceBay-MCP; voice probes once Phase 1 voice is deployed) and returns per-component status. Read-only. |
+| `audit-query/` | `oscar-audit-query` | 0 | Read-only query over `cloud_audit` (and future Phase-3a household-domain tables) in `oscar.db`. |
+| `debug-set/` | `oscar-debug-set` | 0 | Admin: toggle `system_settings.debug_mode` row in `oscar.db` (verbose logging on demand, TTL-bounded). |
 
-## Adding a new skill
+> **TODO.** All three skill specs were written against the pre-lean-reset world (shared `oscar_db`/`oscar_audit`/`oscar_health` libraries + Postgres backend). The skills carry a `TODO (rewrite)` banner pointing at the inline-SQLite implementation that needs to land. The agentskills.io frontmatter and the operating-sequence prose have been updated for the SQLite world; the actual Python tool calls inside each skill are the follow-up.
 
-1. `mkdir skills/<short>/` and write `SKILL.md` with the standard frontmatter (`name`, `description`, `version`, `author`, `license`).
-2. If the skill needs a CLI, put the code under `shared/oscar_<short>/` and have Hermes shell out via `python -m oscar_<short> …`. For Hermes to pick up the Python, install the OSCAR shared libs into Hermes' venv (or rely on the symlinked workspace).
-3. Add a row to the table above.
-4. Restart Hermes to pick up the new skill.
+## What's *not* a skill in OSCAR
 
-## What's *not* a skill
-
-Removed during the May 2026 architecture reset because Hermes does it natively:
-
-| Removed | Hermes equivalent |
+| Capability | Lives in |
 |---|---|
-| `oscar-help` | `/skills` |
-| `oscar-timer` / `oscar-alarm` | Hermes cron |
-| `oscar-skill-author` / `-reviewer` / `-revert` | Hermes' built-in skill management + self-improvement loop |
-| `oscar-identity-link` | Hermes' messaging-gateway pairing |
+| Lights / heating / scenes | Hermes Skills Hub — `smart-home/home-assistant` skill (PR'd from OSCAR's removed `light/`) |
+| Help (`/skills`, `/help`) | Hermes native |
+| Timers / alarms / reminders / recurring tasks | Hermes cron |
+| Skill management, authorship, review, revert | Hermes' built-in skill management + self-improvement loop |
+| Messaging-gateway pairing, identity-link | Hermes' messaging-gateway pairing |
 
-Context: [`../docs/architecture/oscar-on-hermes.md`](../docs/architecture/oscar-on-hermes.md).
+Context: [`../oscar-architecture.md`](../oscar-architecture.md).
