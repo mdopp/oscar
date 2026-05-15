@@ -7,13 +7,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY shared/oscar_logging /tmp/oscar_logging
 COPY gatekeeper/pyproject.toml gatekeeper/README.md /app/
 COPY gatekeeper/src /app/src
 
-RUN pip install --no-cache-dir /tmp/oscar_logging \
- && pip install --no-cache-dir /app \
- && rm -rf /tmp/oscar_logging
+RUN pip install --no-cache-dir /app
 
 ENV PYTHONUNBUFFERED=1 \
     OSCAR_COMPONENT=gatekeeper
