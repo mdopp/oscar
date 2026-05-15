@@ -22,40 +22,35 @@ Anything in OSCAR that *isn't* specifically about *this household* either gets c
 ## How it's put together today
 
 ```
-              SIGNAL / TELEGRAM / DISCORD / …          HA Voice PE  (Phase 1)
-                          │                                  │ Wyoming
-                          │ Hermes-native gateway            │
-                          ▼                                  ▼
-                ┌─────────────────────┐            ┌────────────────────┐
-                │   hermes            │            │   voice            │
-                │   (ServiceBay)      │◄──HTTP─────│   (ServiceBay)     │
-                │                     │            │   whisper + piper  │
-                │  • skill registry   │            │   + openwakeword + │
-                │  • cron / reminders │            │   gatekeeper       │
-                │  • Honcho memory    │            │   (OSCAR sidecar)  │
-                │  • MCP client       │            └────────────────────┘
-                │  • self-improvement │
-                └────────┬────────────┘
-                         │ MCP
-       ┌─────────────────┼─────────────────────────────────────┐
-       ▼                 ▼                                     ▼
- ┌──────────┐    ┌────────────────┐                  ┌──────────────────┐
- │  HA-MCP  │    │ ServiceBay-MCP │                  │  oscar-household │
- │ (devices,│    │ (services,     │                  │     (OSCAR)      │
- │  scenes) │    │  health, logs) │                  │                  │
- └──────────┘    └────────────────┘                  │  • SQLite +      │
-                                                     │    Alembic       │
-                          ┌────── points provider to ┤    (oscar.db)    │
-                          ▼                          │  • skill mount   │
-              ┌──────────────────────┐               │  • MCP wiring    │
-              │  ollama              │               │  • audit hook    │
-              │  (ServiceBay,        │               └──────────────────┘
-              │   ai-stack)          │
-              │  local Gemma         │
-              └──────────────────────┘
+   SIGNAL / TELEGRAM / DISCORD / …                                HA Voice PE (Phase 1)
+              │                                                          │ Wyoming
+              │  Hermes-native gateway                                   ▼ <host>:10700
+              ▼                                                 ┌──────────────────┐
+   ┌──────────────────────────┐                                 │  oscar-household │
+   │   hermes                 │                                 │  (OSCAR)         │
+   │   (ServiceBay)           │◄────HTTP /converse──────────────┤                  │
+   │                          │                                 │  • gatekeeper    │ Wyoming
+   │   • skill registry       │                                 │    container     │◄── host
+   │   • cron / reminders     │                                 │    (Wyoming↔HTTP)│   loop-
+   │   • Honcho memory        │                                 │  • SQLite +      │   back
+   │   • MCP client           │                                 │    Alembic       │  ┌──────────────────┐
+   │   • self-improvement     │                                 │    (oscar.db)    │  │ voice            │
+   └──┬──────┬────────────────┘                                 │  • mounts OSCAR  │  │ (ServiceBay)     │
+      │      │ MCP                                              │    skills        │  │ whisper + piper +│
+      │      ▼                                                  │  • non-interact. │  │ openwakeword     │
+      │  ┌───────────────┐  ┌─────────────────────────┐         │    post-deploy   │  └──────────────────┘
+      │  │   HA-MCP      │  │  ServiceBay-MCP         │         │    registers MCPs│
+      │  │  (devices,    │  │  (services, health,     │         └──────────────────┘
+      │  │   scenes)     │  │   logs, diagnostics)    │
+      │  └───────────────┘  └─────────────────────────┘
+      ▼ Hermes LLM-provider URL
+   ┌─────────────────────────────────┐
+   │  ollama (ServiceBay, ai-stack)  │
+   │  local Gemma                    │
+   └─────────────────────────────────┘
 ```
 
-One OSCAR template (`oscar-household`), one OSCAR-published image (`gatekeeper`), three OSCAR skills (`oscar-status`, `oscar-audit-query`, `oscar-debug-set`), a small SQLite database for our tables. Everything else is upstream.
+One OSCAR template (`oscar-household` — schema init + skill mount + gatekeeper container + non-interactive MCP wiring), one OSCAR-published image (`gatekeeper`), three OSCAR skills (`oscar-status`, `oscar-audit-query`, `oscar-debug-set`), a small SQLite database for our tables. The voice path uses ServiceBay's unchanged `voice` template alongside `oscar-household` — both pods are `hostNetwork: true`, the gatekeeper reaches Whisper/Piper via host loopback. Everything else is upstream.
 
 ## What works today
 
@@ -69,14 +64,14 @@ One OSCAR template (`oscar-household`), one OSCAR-published image (`gatekeeper`)
 | Health check ("Is OSCAR alive?") | `oscar-status` skill runs structured probes | 0 |
 | Cloud-LLM audit ("Was kostete der gestrige Call?") | `oscar-audit-query` skill reads `cloud_audit` | 0 |
 | Debug-mode toggle ("Verboser Log für eine Stunde") | `oscar-debug-set` skill flips `system_settings.debug_mode` | 0 |
-| Voice in the house (Wyoming + HA Voice PE) | ServiceBay's extended `voice` template + OSCAR's `gatekeeper` sidecar | 1 |
+| Voice in the house (Wyoming + HA Voice PE) | ServiceBay's unchanged `voice` template + OSCAR's `gatekeeper` container inside `oscar-household` (both pods `hostNetwork: true`) | 1 |
 
 ## Phase plan
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Chat on Hermes + lights via HA-MCP. Family talks to the assistant in Signal; the assistant turns on the lights. | code design complete; deploy pending the new ServiceBay `ai-stack` templates ([tracking](https://github.com/mdopp/oscar/issues)) |
-| **1** | Voice path. HA Voice PE → ServiceBay's extended `voice` template → Hermes. Single uid. | designed |
+| **1** | Voice path. HA Voice PE → gatekeeper (in `oscar-household`) → Whisper/Piper (ServiceBay's unchanged `voice` template) → Hermes. Single uid. | designed |
 | 2 | Speaker ID (SpeechBrain) → LLDAP-uid → per-resident memory namespace and tool scope. | designed |
 | 3a | Ingestion pipeline. Books → records → audiobooks → documents → experience notes. | designed |
 | 3b | Bulk import + MCP wrappers for Immich/Radicale/Audiobookshelf. | sketched |
@@ -90,7 +85,8 @@ templates/
 └── oscar-household/          # the one OSCAR ServiceBay template
 gatekeeper/                   # Python source for the gatekeeper image
                               #   (published as ghcr.io/mdopp/oscar-gatekeeper,
-                              #    consumed by ServiceBay's extended voice template)
+                              #    runs as a container inside oscar-household;
+                              #    reaches ServiceBay's voice template via host loopback)
 schema/                       # Alembic migrations for the OSCAR tables
 skills/                       # household-specific Hermes skills:
                               #   oscar-status, oscar-audit-query, oscar-debug-set
@@ -104,7 +100,7 @@ OSCAR is intentionally small. Anything bigger has either moved upstream or hasn'
 OSCAR ships as a **ServiceBay external registry** — no install script. The walkthrough is in two steps:
 
 1. **Prereqs**: ServiceBay v3.16+ with the full-stack deployed; [mdopp/servicebay#348](https://github.com/mdopp/servicebay/issues/348) merged (needed only once you add voice); [mdopp/servicebay#443](https://github.com/mdopp/servicebay/issues/443) merged (so the OSCAR registry can be cloned).
-2. **Two stacks**: walk through ServiceBay's `ai-stack` first (Ollama + Hermes), then OSCAR's stack (just `oscar-household` — it ships its own SQLite). Optional: ServiceBay's extended `voice` template with `GATEKEEPER_IMAGE=ghcr.io/mdopp/oscar-gatekeeper` to add voice. (Phase 3a may add Postgres + Qdrant to `ai-stack` if the domain-collection scale calls for it — for Phase 0–2 the SQLite in `oscar-household` is enough.)
+2. **Two stacks**: walk through ServiceBay's `ai-stack` first (Ollama + Hermes), then OSCAR's stack (just `oscar-household` — it ships its own SQLite and runs the gatekeeper container inside the same pod). Optional, for the voice path: deploy ServiceBay's unchanged `voice` template alongside — the gatekeeper in `oscar-household` reaches it via host loopback. (Phase 3a may add Postgres + Qdrant to `ai-stack` if the domain-collection scale calls for it — for Phase 0–2 the SQLite in `oscar-household` is enough.)
 
 Full walkthrough: [`stacks/oscar/README.md`](stacks/oscar/README.md).
 
@@ -135,7 +131,7 @@ Conversation with the maintainer is German. **All versioned artefacts — docs, 
 
 Most of the open work is **not in this repo** — by design. The architecture pushes capabilities into ServiceBay and Hermes where they belong. Active upstream candidates are tracked from OSCAR's [tracking issue](https://github.com/mdopp/oscar/issues), with cross-links to:
 
-- `mdopp/servicebay` — new `ollama` and `hermes` templates for Phase 0, `ai-stack` walkthrough, `voice` template extension, structured-logging and health-probe contracts. (`postgres` and `qdrant` are Phase-3a-conditional.)
+- `mdopp/servicebay` — new `ollama` ([#538](https://github.com/mdopp/servicebay/issues/538)) and `hermes` ([#539](https://github.com/mdopp/servicebay/issues/539)) templates for Phase 0, `ai-stack` walkthrough ([#540](https://github.com/mdopp/servicebay/issues/540)), plus documentation tickets for the existing logging contract ([#542](https://github.com/mdopp/servicebay/issues/542)) and health-check system ([#543](https://github.com/mdopp/servicebay/issues/543)). (`postgres` and `qdrant` are Phase-3a-conditional. The `voice` template stays unchanged — gatekeeper moved into `oscar-household` instead.)
 - `NousResearch/hermes-agent` — voice-gateway PR (the gatekeeper's Phase-0 pass-through path)
 - Hermes Skills Hub — `smart-home/home-assistant` skill
 

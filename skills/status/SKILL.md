@@ -12,7 +12,7 @@ license: MIT
 
 Quick "is everything OK?" probe across every OSCAR dependency. Read-only — no state changes.
 
-> **TODO (rewrite).** This skill was written against the deleted `shared/oscar_health` library + Postgres backend. The intent below is correct; the Python implementation needs to land as inline probes in this skill or as a small companion script in `oscar-household` once that template is wired against ServiceBay's future `hermes` template. The dependency list has been updated for the SQLite world but the "Operating sequence" still describes the pre-lean-reset shape.
+> **TODO (rewrite).** The implementation needs to call ServiceBay-MCP's `get_health_checks` and `diagnose` tools, **not** run inline probes. ServiceBay shipped a 16-check-type health system in v3.35–v3.37 — templates declare what should be probed (via `create_health_check` at deploy time, registered by `oscar-household`'s `post-deploy.py`), the platform polls outside-in, this skill just reads the aggregated state. Contract doc tracked in [`mdopp/servicebay#543`](https://github.com/mdopp/servicebay/issues/543). The env-var probe table below is vestigial from before the platform's health system was discovered — once the rewrite lands, this skill becomes ~10 lines that call two MCP tools and summarise.
 
 ## When to use
 
@@ -24,56 +24,57 @@ Quick "is everything OK?" probe across every OSCAR dependency. Read-only — no 
 
 ## Operating sequence
 
-1. Probe each configured dependency (inline; see "What gets probed" below).
-2. Collect results as:
+1. Call ServiceBay-MCP `get_health_checks` to retrieve the platform's aggregated health state.
+2. For each result, the platform returns the canonical shape:
    ```json
    {
      "ok": false,
      "results": [
-       {"name": "oscar.db", "ok": true, "latency_ms": 1},
-       {"name": "hermes", "ok": true, "latency_ms": 12},
-       {"name": "ollama", "ok": true, "latency_ms": 8},
-       {"name": "ha-mcp", "ok": false, "latency_ms": 3000, "detail": "ConnectError: ..."}
+       {"name": "ollama", "ok": true, "latency_ms": 8, "type": "http"},
+       {"name": "hermes-api", "ok": true, "latency_ms": 12, "type": "http"},
+       {"name": "ha-mcp", "ok": false, "latency_ms": 3000, "type": "http", "detail": "ConnectError: ..."},
+       {"name": "oscar.db", "ok": true, "latency_ms": 1, "type": "script"}
      ]
    }
    ```
-3. Summarise verbally:
+3. If a result needs deeper context (specific error chain, last successful run, history), call `diagnose <check-id>` for that one check.
+4. Summarise verbally:
    - **All green** → "Alles ok." or "Alles grün."
    - **One red** → name it: "HA-MCP antwortet nicht — ich erreiche Home Assistant gerade nicht."
-   - **Multiple red** → group by impact: "Hermes und ollama sind beide down — das ist ernst."
+   - **Multiple red** → group by impact: "Hermes und Ollama sind beide down — das ist ernst."
 
 ## What gets probed
 
-Discovered from env vars in the skill's environment:
+This skill **does not** define what gets probed. The set of health checks is **declared at deploy time** by each template's `post-deploy.py` via `create_health_check` against ServiceBay-MCP. `oscar-household` registers:
 
-| Env var | Probe | Failure means |
+| Check | Type | Purpose |
 |---|---|---|
-| `OSCAR_DB_PATH` | `SELECT 1` on the SQLite file | OSCAR can't read/write its own audit state |
-| `HERMES_API_URL` | HTTP GET `/health` with `HERMES_TOKEN` | Agent runtime offline |
-| `OSCAR_OLLAMA_URL` | HTTP GET `/api/tags` | Local LLM offline → cloud or local-only fallback |
-| `OSCAR_HA_MCP_URL` | HTTP GET | Home control broken |
-| `OSCAR_SERVICEBAY_MCP_URL` | HTTP GET | Platform-control broken |
-| `OSCAR_WHISPER_HOST` *(Phase 1)* | TCP open | Voice STT broken — only probed once voice is deployed |
-| `OSCAR_PIPER_HOST` *(Phase 1)* | TCP open | Voice TTS broken — only probed once voice is deployed |
-| `OSCAR_GATEKEEPER_URL` *(Phase 1)* | HTTP GET `/push/health` | Voice bridge broken |
+| `oscar.db` | `script` | SQLite open + `SELECT 1` on `cloud_audit` — OSCAR's audit state readable |
+| `hermes-api` | `http` | Hermes' `/health` endpoint reachable with the token |
+| `ollama` | `http` | Local LLM responding to `/api/tags` |
+| `ha-mcp` | `http` | HA's native MCP server reachable |
+| `servicebay-mcp` | `http` | Platform control surface reachable |
+| `gatekeeper` *(Phase 1)* | `http` | Gatekeeper container's internal `/push/health` |
+| `voice-whisper` *(Phase 1)* | `podman` | Whisper container running |
+| `voice-piper` *(Phase 1)* | `podman` | Piper container running |
 
-Missing env vars are silently skipped — that's the "this OSCAR install doesn't have voice wired yet" case, not a failure.
+ServiceBay's existing templates (`home-assistant`, `media`, …) register their own checks the same way. The full check set lives in ServiceBay's HealthStore.
 
 ## What this does NOT cover
 
 - **Skill correctness** — we know Hermes is reachable, not that a specific skill behaves. For that, `oscar-audit-query` over `cloud_audit` and the relevant SKILL events.
-- **Voice latency** — TCP-open says the port is alive, not that it's fast. For latency hunting, `oscar-debug-set` + the gatekeeper's `gatekeeper.transcript` / `gatekeeper.response` timestamps.
+- **Voice latency** — `podman`/`http` checks say the service is up, not that it's fast. For latency hunting, `oscar-debug-set` + the gatekeeper's `gatekeeper.transcript` / `gatekeeper.response` timestamps.
 - **HA device state** — "is the office light actually on?" is an HA-MCP query, not a status probe.
 
 ## Failure paths
 
-- The probe itself crashes → respond "Ich kann das gerade selbst nicht prüfen, sieh mal in ServiceBay nach." Points at something fundamentally broken (skill misconfigured, env vars missing, etc.).
+- ServiceBay-MCP unreachable → respond "Ich kann das gerade selbst nicht prüfen — ServiceBay antwortet nicht." Points at something fundamentally broken at the platform level (network, auth, ServiceBay itself).
 
 ## Phase mapping
 
-| Phase | Probes covered |
+| Phase | Checks registered by oscar-household's post-deploy |
 |---|---|
-| **0 (now)** | oscar.db, hermes, ollama, ha-mcp, servicebay-mcp |
-| **1** | + whisper, piper, gatekeeper |
-| **2** | + speaker-ID model loaded? (gatekeeper local check) |
+| **0 (now)** | oscar.db, hermes-api, ollama, ha-mcp, servicebay-mcp |
+| **1** | + gatekeeper, voice-whisper, voice-piper |
+| **2** | + gatekeeper-speaker-id (model loaded? embeddings table populated?) |
 | **3a** | + ingestion-pipeline backlog (rows in incoming state) |

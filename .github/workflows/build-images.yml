@@ -39,7 +39,7 @@ jobs:
         include:
           - image: oscar-gatekeeper
             dockerfile: gatekeeper/Dockerfile
-            description: "OSCAR Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Consumed as a sidecar by ServiceBay's extended voice template via GATEKEEPER_IMAGE."
+            description: "OSCAR Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside oscar-household; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
           - image: oscar-household-init
             dockerfile: schema/Dockerfile
             description: "OSCAR schema-init sidecar — runs alembic upgrade head against oscar-household's local SQLite (oscar.db) on every pod start. Idempotent."
