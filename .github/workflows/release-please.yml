@@ -18,10 +18,30 @@ name: release-please
 # squashes it in without human intervention. The resulting tag fires
 # build-images.yml on the v* trigger and the cycle closes.
 #
-# Pre-requisite: Settings → General → Pull Requests → "Allow auto-merge"
-# is enabled at the repo level (set once via
-#   gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true
-# ).
+# Pre-requisites:
+#
+# 1. Settings → General → Pull Requests → "Allow auto-merge" is enabled
+#    at the repo level (set once via
+#      gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true).
+#
+# 2. A `RELEASE_PLEASE_TOKEN` secret with a fine-grained PAT scoped to
+#    `contents: write` + `pull_requests: write` on this repo. Without
+#    it the action uses GITHUB_TOKEN, which has a known issue creating
+#    GitHub Release objects (Resource not accessible by integration on
+#    POST /repos/<owner>/<repo>/releases — even with contents:write
+#    declared on the workflow). See the chronic failure on PR #49.
+#    Setup:
+#      - github.com → Settings → Developer settings → Personal access
+#        tokens → Fine-grained tokens → Generate new
+#      - Scope: Only select repositories → mdopp/oscar
+#      - Repository permissions: Contents (Read+Write),
+#        Pull requests (Read+Write), Workflows (Read+Write — only
+#        needed if release-please should ever edit workflow files)
+#      - Add to mdopp/oscar → Settings → Secrets and variables →
+#        Actions as `RELEASE_PLEASE_TOKEN`.
+#    Workflow falls back to GITHUB_TOKEN if the secret is absent so
+#    nothing blows up on a fresh clone — just don't expect release
+#    creation to land.
 
 on:
   push:
@@ -39,7 +59,10 @@ jobs:
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer the PAT (see header for why); fall back to GITHUB_TOKEN
+          # so the workflow doesn't error on a fresh-clone setup where the
+          # secret isn't configured yet.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
