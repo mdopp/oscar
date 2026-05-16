@@ -198,7 +198,7 @@ def render_mcp_block(servers: list[tuple[str, str, str]]) -> str:
     for name, url, token in servers:
         parts.append(f"  {name}:\n")
         parts.append(f'    url: "{url}"\n')
-        parts.append(f"    headers:\n")
+        parts.append("    headers:\n")
         parts.append(f'      Authorization: "Bearer {token}"\n')
     return "".join(parts)
 
@@ -260,7 +260,7 @@ def wait_for_hermes() -> None:
 
 
 def restart_hermes_via_sb_api() -> bool:
-    status = sb_post(f"/api/services/hermes/action", {"action": "restart"})
+    status = sb_post("/api/services/hermes/action", {"action": "restart"})
     if status == 200:
         jlog(
             "info",
