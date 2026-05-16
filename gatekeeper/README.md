@@ -39,7 +39,7 @@ Long-term target: contribute the Phase 0/1 pass-through path to Hermes as a gene
 | `PIPER_URI` | `tcp://127.0.0.1:10200` | Wyoming Piper service (same pod) |
 | `OPENWAKEWORD_URI` | `tcp://127.0.0.1:10400` | openWakeWord (advertised in Info; Phase 0 lets the satellite do wakeword on-device) |
 | `HERMES_URL` | `http://127.0.0.1:8642` | Base URL of Hermes' HTTP API (matches ServiceBay `hermes` template default; both pods use hostNetwork) |
-| `HERMES_TOKEN` | empty | Bearer for Hermes (matches its `API_SERVER_KEY`) |
+| `HERMES_TOKEN` | empty | Bearer for Hermes (matches its `API_SERVER_KEY` / surfaced by ServiceBay's `hermes` template as `HERMES_API_KEY`) |
 | `DEFAULT_UID` | `michael` | Hardcoded uid until Phase 2 speaker ID lands |
 | `OSCAR_DB_PATH` | `/var/lib/oscar/oscar.db` | SQLite file (Phase 2: `voice_embeddings` lookup) |
 | `OSCAR_DEBUG_MODE` | `false` | Initial verbose-mode default (runtime override comes from `system_settings.debug_mode` in `oscar.db`) |

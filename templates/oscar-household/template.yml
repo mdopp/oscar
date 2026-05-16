@@ -22,7 +22,8 @@ spec:
   #   - the gatekeeper reaches the ServiceBay `voice` template's Wyoming
   #     services at 127.0.0.1:10300/10200 (two hostNetwork pods share
   #     the host netns)
-  #   - the gatekeeper reaches Hermes at 127.0.0.1:8642 (same reason)
+  #   - the gatekeeper reaches Hermes at 127.0.0.1:{{HERMES_API_PORT}}
+  #     (same reason)
   #   - HA Voice PE satellites on the LAN reach the gatekeeper at
   #     <host-ip>:<GATEKEEPER_PORT>
   hostNetwork: true
@@ -63,9 +64,9 @@ spec:
     - name: OPENWAKEWORD_URI
       value: "{{OPENWAKEWORD_URI}}"
     - name: HERMES_URL
-      value: "{{HERMES_API_URL}}"
+      value: "http://127.0.0.1:{{HERMES_API_PORT}}"
     - name: HERMES_TOKEN
-      value: "{{HERMES_TOKEN}}"
+      value: "{{HERMES_API_KEY}}"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
     # Push endpoint — Hermes calls POST /push for cron-fire / proactive

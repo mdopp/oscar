@@ -34,14 +34,14 @@
     "description": "JSON map from short device name to Wyoming URI, e.g. `{\"office\": \"tcp://192.168.1.10:10700\", \"bedroom\": \"tcp://192.168.1.11:10700\"}`. The gatekeeper's `POST /push` endpoint resolves `voice-pe:<name>` against this map. Leave as `{}` until you've paired at least one device.",
     "default": "{}"
   },
-  "HERMES_API_URL": {
+  "HERMES_API_PORT": {
     "type": "text",
-    "description": "Base URL of Hermes' HTTP API. Both pods use hostNetwork; default works for same-host setups.",
-    "default": "http://127.0.0.1:8642"
+    "description": "Port the ServiceBay `hermes` template's API server listens on (its `HERMES_API_PORT`). Default `8642` matches that template's default. The gatekeeper and post-deploy reach Hermes at `http://127.0.0.1:<this>` via host loopback (both pods are hostNetwork).",
+    "default": "8642"
   },
-  "HERMES_TOKEN": {
+  "HERMES_API_KEY": {
     "type": "secret",
-    "description": "Bearer token oscar-household and the gatekeeper present when calling Hermes (matches Hermes' API_SERVER_KEY, set during the ServiceBay `hermes` template's deploy)."
+    "description": "Bearer token oscar-household and the gatekeeper present when calling Hermes. Surfaced as `__SB_CREDENTIAL__` by the ServiceBay `hermes` template's post-deploy; paste that value here (same name on both sides to avoid lookup confusion)."
   },
   "PUSH_TOKEN": {
     "type": "secret",
