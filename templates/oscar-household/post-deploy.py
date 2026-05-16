@@ -130,7 +130,9 @@ def sb_post(path: str, payload: dict[str, object], timeout: float = 30.0) -> int
     same shape ServiceBay's own post-deploys use)."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{SB_API_URL}{path}", data=body, method="POST",
+        f"{SB_API_URL}{path}",
+        data=body,
+        method="POST",
     )
     req.add_header("Content-Type", "application/json")
     if SB_API_TOKEN:
@@ -164,10 +166,7 @@ def strip_mcp_servers_block(content: str) -> str:
         if not in_block:
             stripped = line.lstrip()
             # Match `mcp_servers:` at column 0 (no leading whitespace).
-            if (
-                line[:1] not in (" ", "\t")
-                and stripped.startswith("mcp_servers:")
-            ):
+            if line[:1] not in (" ", "\t") and stripped.startswith("mcp_servers:"):
                 in_block = True
                 continue  # drop this line
             out.append(line)
@@ -198,9 +197,9 @@ def render_mcp_block(servers: list[tuple[str, str, str]]) -> str:
     parts: list[str] = ["mcp_servers:\n"]
     for name, url, token in servers:
         parts.append(f"  {name}:\n")
-        parts.append(f"    url: \"{url}\"\n")
+        parts.append(f'    url: "{url}"\n')
         parts.append(f"    headers:\n")
-        parts.append(f"      Authorization: \"Bearer {token}\"\n")
+        parts.append(f'      Authorization: "Bearer {token}"\n')
     return "".join(parts)
 
 
@@ -209,7 +208,9 @@ def merge_config_yaml(servers: list[tuple[str, str, str]]) -> bool:
     rendered one. Returns True on write, False if config.yaml doesn't
     exist yet (caller decides whether that's fatal)."""
     if not os.path.exists(CONFIG_PATH):
-        jlog("warn", "oscar-household:config", "config.yaml not found", path=CONFIG_PATH)
+        jlog(
+            "warn", "oscar-household:config", "config.yaml not found", path=CONFIG_PATH
+        )
         return False
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         existing = f.read()
@@ -261,7 +262,11 @@ def wait_for_hermes() -> None:
 def restart_hermes_via_sb_api() -> bool:
     status = sb_post(f"/api/services/hermes/action", {"action": "restart"})
     if status == 200:
-        jlog("info", "oscar-household:restart", "hermes restart requested via ServiceBay API")
+        jlog(
+            "info",
+            "oscar-household:restart",
+            "hermes restart requested via ServiceBay API",
+        )
         return True
     jlog(
         "warn",
@@ -278,11 +283,21 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
     if HA_MCP_URL and HA_MCP_TOKEN:
         servers.append(("ha-mcp", HA_MCP_URL, HA_MCP_TOKEN))
     else:
-        jlog("info", "oscar-household:mcp", "ha-mcp skipped", reason="missing url or token")
+        jlog(
+            "info",
+            "oscar-household:mcp",
+            "ha-mcp skipped",
+            reason="missing url or token",
+        )
     if SERVICEBAY_MCP_URL and SERVICEBAY_MCP_TOKEN:
         servers.append(("servicebay-mcp", SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN))
     else:
-        jlog("info", "oscar-household:mcp", "servicebay-mcp skipped", reason="missing url or token")
+        jlog(
+            "info",
+            "oscar-household:mcp",
+            "servicebay-mcp skipped",
+            reason="missing url or token",
+        )
     return servers
 
 
