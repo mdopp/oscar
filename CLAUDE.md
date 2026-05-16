@@ -131,6 +131,19 @@ These are not OSCAR tickets — they live in the projects they're filed against,
 - Hermes Skills Hub / agentskills.io: `smart-home/home-assistant` skill (from current `oscar-light`)
 - New separate repo: `mcp-audit-proxy` — the generic cloud-LLM auditing MCP
 
+## Local dev setup (one-time, per clone)
+
+`.pre-commit-config.yaml` defines the hooks CI enforces (ruff lint + format, trailing-whitespace, end-of-file-fixer, JSON/TOML/YAML validation). **CI is the only enforcement layer unless you install the hook locally.** First clone:
+
+```bash
+pip install --user pre-commit       # or: pipx install pre-commit
+pre-commit install                  # writes .git/hooks/pre-commit
+```
+
+Without `pre-commit install`, ruff failures only surface in CI after the push. The `tests` and `build-images` workflows pass the failing change through, but `pre-commit` goes red — which means PRs sit in a half-broken state until you push the formatting fix.
+
+If you can't install `pre-commit` (sandboxed dev env, no pip available), the next-best alternative is to run `ruff check .` and `ruff format --check .` manually before every commit — they're the bite-y hooks. The other hooks are line-level cleanups that rarely catch real problems.
+
 ## When you start a task in OSCAR
 
 Default questions to ask, before writing code:

@@ -137,6 +137,17 @@ Most of the open work is **not in this repo** — by design. The architecture pu
 
 Inside OSCAR proper, the open follow-ups are the speaker-ID enrolment wizard (Phase 2), the ingestion pipeline (Phase 3a), and the material-store encryption decision. Issues with reproductions or design suggestions are welcome at [github.com/mdopp/oscar/issues](https://github.com/mdopp/oscar/issues).
 
+### Local dev setup
+
+Before editing, install the pre-commit hook so CI's `pre-commit` workflow doesn't catch what should have been caught locally:
+
+```bash
+pip install --user pre-commit
+pre-commit install
+```
+
+`.pre-commit-config.yaml` runs ruff (lint + format), trailing-whitespace, end-of-file-fixer, JSON/TOML/YAML validation. CI runs the same set — without the local install, dirty commits sail through and turn the next `pre-commit` workflow run red.
+
 ## License
 
 [MIT](LICENSE). Same intent declared in every OSCAR-owned `pyproject.toml`.
