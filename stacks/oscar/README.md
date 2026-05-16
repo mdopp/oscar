@@ -41,17 +41,34 @@ The end-state walkthrough:
 
 ## Step 2 — Pair the messaging gateway
 
-Hermes' messaging gateways (Signal, Telegram, Discord, Slack, WhatsApp, Email) need an interactive pairing because the underlying messenger protocols require it (e.g. Signal pairs as a linked device, Telegram needs a Bot API key, etc.). This is genuine human-input territory, not a `podman exec` anti-pattern — ServiceBay's `hermes` template will surface it as a `diagnose` probe with structured `actions[]` once paired credentials are missing.
+Hermes' messaging gateways (Signal, Telegram, Discord, Slack, WhatsApp, Email) need an **interactive** pairing because the underlying messenger protocols require it. ServiceBay's deploy-time hooks are non-interactive by contract (`docs/UX_PHILOSOPHY.md` §2) — pairing therefore happens as a **one-off post-install operator step**, then env-var wiring becomes scriptable.
 
-For Phase-0 testing, walk the operator through it in `hermes`'s setup UI. The exact flow depends on `mdopp/servicebay#539` shipping.
+### Signal (the OSCAR-recommended channel)
+
+Source: [Hermes Signal setup](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal).
+
+```bash
+ssh <oscar-host>
+podman exec -it hermes signal-cli link -n "HermesAgent"
+# A QR code is printed. Scan it with your phone's Signal app:
+#   Settings → Linked devices → Link new device → scan QR
+```
+
+After the link is established, the rest is env-driven — `SIGNAL_HTTP_URL`, `SIGNAL_ACCOUNT`, `SIGNAL_ALLOWED_USERS`, etc. land in `${DATA_DIR}/hermes/.env`. A future iteration can drive those writes from this stack; for now the operator pastes them into Hermes' wizard or into the `.env` file directly, then restarts the `hermes` service.
+
+### Telegram / Discord / Slack / WhatsApp / Email
+
+Same pattern — Hermes' docs ([Messaging gateways](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/)) cover the per-channel setup. All boil down to: get a token / scan a QR / pair once, then env-vars in `.env`, then restart.
+
+> ServiceBay's `hermes` template plans to surface "channel not paired" as a `diagnose` probe with a structured `actions[]` button that pops the link command. Until that lands, the manual step above is the path.
 
 ## Step 3 — Deploy OSCAR's `oscar-household`
 
 ServiceBay wizard → `oscar-household` → fill in:
 
 - `DEFAULT_UID` — household admin's LLDAP uid (default `michael`)
-- `HERMES_API_URL` — defaults to `http://127.0.0.1:8642` (both pods hostNetwork)
-- `HERMES_TOKEN` — Hermes' `API_SERVER_KEY` from Step 1
+- `HERMES_API_PORT` — defaults to `8642` (matches the ServiceBay `hermes` template's default; reached via host loopback)
+- `HERMES_API_KEY` — paste the value the `hermes` template surfaced as `__SB_CREDENTIAL__` (Step 1 surfaces it in the SAVE-THESE-NOW banner)
 - `HA_MCP_URL` + `HA_MCP_TOKEN` — Home Assistant's MCP endpoint and access token
 - `SERVICEBAY_MCP_URL` + `SERVICEBAY_MCP_TOKEN` — ServiceBay-MCP bearer
 - `GATEKEEPER_PORT` — default `10700`, host port for HA Voice PE
@@ -66,9 +83,10 @@ The template doesn't ask for a database DSN — it ships its own SQLite (`oscar.
 Deploy. The template:
 
 - Runs Alembic against the local `oscar.db`, creating `cloud_audit`, `system_settings`, `voice_embeddings` (idempotent)
-- Bind-mounts OSCAR's `skills/` and `oscar.db` into the Hermes container at `/opt/data/skills/oscar` and `/opt/data/oscar/oscar.db` so the skills can read both
 - Starts the gatekeeper container (long-running, idle until you point a Voice PE at it)
-- Non-interactive post-deploy: calls Hermes' HTTP API to register HA-MCP and ServiceBay-MCP using the tokens you provided. No `podman exec` needed.
+- Non-interactive post-deploy: reads `${DATA_DIR}/hermes/config.yaml`, splices in an `mcp_servers:` block referencing HA-MCP and ServiceBay-MCP, writes back, then `POST /api/services/hermes/action {action: "restart"}` so Hermes picks up the new config. **No `podman exec` needed.** Sources: [Hermes MCP Config Reference](https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference), [Hermes Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration).
+
+> **Caveat.** Re-deploying the ServiceBay `hermes` template rewrites `config.yaml` with just its `model:` block. Re-deploy `oscar-household` afterwards to restore the `mcp_servers:` block.
 
 ## Step 4 — Smoke-test
 
