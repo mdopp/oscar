@@ -22,6 +22,8 @@ from solaris_chat.engine.ingest.paperless import (
     push_companion,
     push_uploads,
 )
+from solaris_chat.engine.ingest import paperless_client
+from solaris_chat.engine.ingest.paperless_client import RestPaperlessClient
 from solaris_chat.engine.ingest.runner import _run_paperless
 from solaris_chat.engine.ingest.upload_extract import EXTRACTED_MARKER
 
@@ -182,6 +184,64 @@ def test_companion_failure_logs_exception_type_and_traceback(tmp_path, monkeypat
     assert len(failed) == 1
     assert failed[0]["error"] == "TimeoutError()"  # repr keeps the type
     assert "TimeoutError" in failed[0]["traceback"]
+
+
+class _FakeGet:
+    """Stand-in for `session.get(...)` async-context returning canned JSON."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def __aenter__(self):
+        payload = self._payload
+
+        class _Resp:
+            status = 200
+
+            async def json(self):
+                return payload
+
+        return _Resp()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def get(self, *_a, **_k):
+        return _FakeGet(self._payload)
+
+
+def _resolve(payload, monkeypatch):
+    client = RestPaperlessClient("http://127.0.0.1:8000", "tok")
+
+    async def _no_sleep(_):  # the poll backoff would otherwise stall the test.
+        return None
+
+    monkeypatch.setattr(paperless_client.asyncio, "sleep", _no_sleep)
+    return asyncio.run(client._resolve_document_id(_FakeSession(payload), "task-uuid"))
+
+
+def test_resolve_document_id_reads_drf_paginated_dict(monkeypatch):
+    # #1048: paperless-ngx :beta (API v10+) wraps GET /api/tasks/?task_id=… in DRF
+    # pagination — a dict, not a list. Indexing tasks[0] on the dict raised
+    # KeyError(0) on every push. The client must read `results`.
+    payload = {
+        "count": 1,
+        "next": None,
+        "previous": None,
+        "results": [{"status": "SUCCESS", "related_document": 314}],
+    }
+    assert _resolve(payload, monkeypatch) == 314
+
+
+def test_resolve_document_id_reads_bare_list_pre_v10(monkeypatch):
+    # pre-v10 paperless returned a bare list; keep that path working.
+    payload = [{"status": "SUCCESS", "related_document": 7}]
+    assert _resolve(payload, monkeypatch) == 7
 
 
 def test_run_paperless_no_op_when_unconfigured(monkeypatch):

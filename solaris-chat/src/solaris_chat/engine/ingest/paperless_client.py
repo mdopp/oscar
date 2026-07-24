@@ -98,7 +98,10 @@ class RestPaperlessClient:
                 headers=self._headers,
             ) as resp:
                 await _raise_for_status(resp)
-                tasks = await resp.json()
+                payload = await resp.json()
+            # paperless-ngx API v10+ wraps the tasks endpoint in DRF pagination
+            # ({"count":…, "results":[…]}); pre-v10 returned a bare list.
+            tasks = payload["results"] if isinstance(payload, dict) else payload
             task = tasks[0] if tasks else {}
             status = task.get("status")
             if status == "SUCCESS":
