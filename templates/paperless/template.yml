@@ -136,6 +136,15 @@ spec:
       value: "{{PAPERLESS_ADMIN_PASSWORD}}"
     - name: PAPERLESS_TIME_ZONE
       value: "{{TZ}}"
+    # AI suggestions (#1050): paperless's on-demand classifier
+    # (get_ai_document_classification) builds correspondent/doc-type/tag
+    # suggestions from document.content[:4000] — the exact field #931/#1033
+    # PATCHes with clean gemma4 text, so it works on the pushed text without
+    # paperless's own (disabled) OCR. Off unless enabled; the #931 push adapter
+    # calls GET /api/documents/{id}/ai_suggestions/ after each push so the
+    # suggestions surface for human review in paperless's UI.
+    - name: PAPERLESS_AI_ENABLED
+      value: "{{PAPERLESS_AI_ENABLED}}"
     ports:
     - containerPort: {{PAPERLESS_PORT}}
     volumeMounts:

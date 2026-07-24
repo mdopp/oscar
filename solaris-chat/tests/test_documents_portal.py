@@ -109,6 +109,51 @@ def test_category_view_excludes_other_residents(tmp_path):
     assert titles == {"ERGO Rechtsschutz"}
 
 
+def test_category_view_carries_normalized_vorgang_key(tmp_path):
+    db = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    # Two documents of one policy (spaced/cased variants of the number) + one
+    # unrelated document that carries no policy number.
+    _doc(
+        conn,
+        "d-pol1",
+        "Police",
+        "household",
+        [
+            ("category", "insurance", 0.6, "documents"),
+            ("policy_number", "KR 74536202", 0.6, "documents"),
+        ],
+    )
+    _doc(
+        conn,
+        "d-pol2",
+        "Rechnung",
+        "household",
+        [
+            ("category", "insurance", 0.6, "documents"),
+            ("policy_number", "kr74536202", 0.6, "documents"),
+        ],
+    )
+    _doc(
+        conn,
+        "d-solo",
+        "Hausrat",
+        "household",
+        [("category", "insurance", 0.6, "documents")],
+    )
+    conn.commit()
+    conn.close()
+    rows = {
+        r["title"]: r["vorgang"]
+        for r in documents_portal_db.category_view(db, "mdopp", "insurance")
+    }
+    # The two policy documents normalize to the same Vorgang key; the solo one
+    # gets an empty key so it stays standalone.
+    assert rows["Police"] == rows["Rechnung"] == "kr74536202"
+    assert rows["Hausrat"] == ""
+
+
 def _org(conn, eid, name, resident, facts):
     conn.execute(
         "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"

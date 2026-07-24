@@ -22,8 +22,37 @@ from ...logging import log
 
 # post_documents is async on paperless: the POST returns a consume-task UUID, the
 # document id only exists once the worker finishes. Poll the task a bounded number
-# of times before giving up (a huge scan can take a few seconds to consume).
-_TASK_POLL_BACKOFF = (0.5, 1.0, 2.0, 3.0, 5.0)  # seconds — ~11.5s total.
+# of times before giving up. Real-box OCR (ocrmypdf under load) was measured at
+# 95-145s per document (#1053), ~10x the old 11.5s budget, so every push timed out
+# to None. This schedule ramps to a ~4.5 min ceiling to cover realistic OCR
+# durations; the push runs cron-only off the request path (see paperless.py), so a
+# multi-minute wait blocks nothing user-facing.
+_TASK_POLL_BACKOFF = (
+    0.5,
+    1.0,
+    2.0,
+    3.0,
+    5.0,
+    10.0,
+    15.0,
+    15.0,
+    15.0,
+    15.0,
+    30.0,
+    30.0,
+    30.0,
+    30.0,
+    30.0,
+    30.0,
+)  # seconds — ~4.6 min total.
+
+
+class PaperlessTaskTimeout(Exception):
+    """The consume task didn't reach SUCCESS/FAILURE within the poll budget.
+
+    Distinct from a resolved `None` (paperless deduped the upload to an existing
+    doc): a timeout means the doc id is unknown *yet*, so the caller must NOT mark
+    the companion done — it should be retried on the next ingest pass (#1053)."""
 
 
 async def _raise_for_status(resp: aiohttp.ClientResponse) -> None:
@@ -48,12 +77,18 @@ class PaperlessClient(Protocol):
     """The paperless write path the adapter needs. Injectable for tests."""
 
     async def post_document(self, file_bytes: bytes, filename: str) -> int | None:
-        """Consume a file OCR-skipped; return the created document id (or None
-        if paperless dropped it as a duplicate / the task didn't finish)."""
+        """Consume a file OCR-skipped; return the created document id (or None if
+        paperless dropped it as a duplicate). Raises `PaperlessTaskTimeout` if the
+        consume task doesn't finish within the poll budget."""
         ...
 
     async def patch_content(self, document_id: int, content: str) -> None:
         """Replace the document's full-text `content` so search re-indexes it."""
+        ...
+
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        """Fire paperless's on-demand AI classifier (#1050) so it surfaces
+        correspondent/doc-type/tag suggestions for human review in its UI."""
         ...
 
 
@@ -89,7 +124,9 @@ class RestPaperlessClient:
         """Poll the consume task until it reports the created document id.
 
         Returns None when the task finishes without one (paperless dedups a
-        re-upload to an existing doc) or never completes in the poll budget."""
+        re-upload to an existing doc). Raises `PaperlessTaskTimeout` when the task
+        never completes within the poll budget — distinct from that dedup None so
+        the caller can retry instead of marking the companion done (#1053)."""
         for delay in _TASK_POLL_BACKOFF:
             await asyncio.sleep(delay)
             async with client.get(
@@ -111,7 +148,7 @@ class RestPaperlessClient:
                 log.error("engine.ingest.paperless_task_failed", task=task_id)
                 return None
         log.info("engine.ingest.paperless_task_pending", task=task_id)
-        return None
+        raise PaperlessTaskTimeout(task_id)
 
     async def patch_content(self, document_id: int, content: str) -> None:
         body: dict[str, Any] = {"content": content}
@@ -119,6 +156,17 @@ class RestPaperlessClient:
             async with client.patch(
                 f"{self._base_url}/api/documents/{document_id}/",
                 json=body,
+                headers=self._headers,
+            ) as resp:
+                await _raise_for_status(resp)
+
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        # Synchronous DRF action (no Celery signal fires it on add/update, #1050):
+        # the GET runs get_ai_document_classification over content[:4000] and
+        # paperless caches the result for the doc's UI review pane.
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(
+                f"{self._base_url}/api/documents/{document_id}/ai_suggestions/",
                 headers=self._headers,
             ) as resp:
                 await _raise_for_status(resp)

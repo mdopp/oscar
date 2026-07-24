@@ -29,6 +29,11 @@
     "description": "IANA timezone for paperless (PAPERLESS_TIME_ZONE).",
     "default": "Europe/Berlin"
   },
+  "PAPERLESS_AI_ENABLED": {
+    "type": "text",
+    "description": "Enable paperless's on-demand AI classifier (#1050). Its get_ai_document_classification() builds correspondent/doc-type/tag suggestions from document.content[:4000] — the exact field the #931/#1033 push adapter PATCHes with clean gemma4:12b text — so it works on the pushed text without paperless's own (disabled) OCR. Suggestions are on-demand: the push adapter calls GET /api/documents/<id>/ai_suggestions/ right after patch_content() so they surface for human review in paperless's own UI. Default true.",
+    "default": "true"
+  },
   "PAPERLESS_UID": {
     "type": "text",
     "description": "Host uid paperless runs its worker + owns the consume/media/data files as. Default 1000 matches the file-share Syncthing share owner so scans dropped into the shared consume dir are readable.",

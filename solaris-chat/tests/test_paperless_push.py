@@ -23,7 +23,10 @@ from solaris_chat.engine.ingest.paperless import (
     push_uploads,
 )
 from solaris_chat.engine.ingest import paperless_client
-from solaris_chat.engine.ingest.paperless_client import RestPaperlessClient
+from solaris_chat.engine.ingest.paperless_client import (
+    RestPaperlessClient,
+    PaperlessTaskTimeout,
+)
 from solaris_chat.engine.ingest.runner import _run_paperless
 from solaris_chat.engine.ingest.upload_extract import EXTRACTED_MARKER
 
@@ -35,6 +38,7 @@ class FakePaperlessClient:
         self._doc_id = doc_id
         self.posted: list[tuple[bytes, str]] = []
         self.patched: list[tuple[int, str]] = []
+        self.suggested: list[int] = []
 
     async def post_document(self, file_bytes: bytes, filename: str) -> int | None:
         self.posted.append((file_bytes, filename))
@@ -42,6 +46,9 @@ class FakePaperlessClient:
 
     async def patch_content(self, document_id: int, content: str) -> None:
         self.patched.append((document_id, content))
+
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        self.suggested.append(document_id)
 
 
 class FakeOllama:
@@ -94,6 +101,30 @@ def test_handoff_posts_file_then_patches_vision_text(tmp_path):
     assert client.posted == [(b"%PDF-1.4 fake", "scan.pdf")]
     # PATCH the created doc's content with the vision text so search re-indexes it.
     assert client.patched == [(7, "Klarer deutscher Text")]
+    # …then fire paperless's AI classifier so suggestions surface for review (#1050).
+    assert client.suggested == [7]
+
+
+def test_ai_suggestions_failure_degrades_but_still_marks(tmp_path, monkeypatch):
+    # #1050: the suggestion trigger is advisory — if it raises, the doc is already
+    # stored + PATCHed, so the companion must still be marked (not re-pushed).
+    md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
+
+    class SuggestBoom(FakePaperlessClient):
+        async def trigger_ai_suggestions(self, document_id):
+            raise RuntimeError("classifier down")
+
+    records: list[dict] = []
+    monkeypatch.setattr(
+        paperless.log, "error", lambda msg, **kw: records.append({"msg": msg, **kw})
+    )
+    client = SuggestBoom(doc_id=9)
+    assert _push(md, tmp_path, FakeOllama(), client) is True
+    assert client.patched == [(9, "Sauberer Vision-Text")]
+    assert PAPERLESS_MARKER in md.read_text(encoding="utf-8")
+    assert any(
+        r["msg"] == "engine.ingest.paperless_ai_suggestions_failed" for r in records
+    )
 
 
 def test_vision_call_uses_think_false_and_the_downscaled_image(tmp_path):
@@ -215,6 +246,29 @@ class _FakeSession:
         return _FakeGet(self._payload)
 
 
+class _SlowSession:
+    """A session whose task stays PENDING for `pending_polls` polls, then SUCCEEDS.
+
+    Models the real box: OCR takes far longer than the first few polls, so the
+    client must keep polling into its (now much longer) budget before the task
+    reports the created document id (#1053)."""
+
+    def __init__(self, pending_polls: int, doc_id: int = 555):
+        self._pending = pending_polls
+        self._doc_id = doc_id
+        self.polls = 0
+
+    def get(self, *_a, **_k):
+        self.polls += 1
+        if self.polls <= self._pending:
+            payload = {"results": [{"status": "PENDING"}]}
+        else:
+            payload = {
+                "results": [{"status": "SUCCESS", "related_document": self._doc_id}]
+            }
+        return _FakeGet(payload)
+
+
 def _resolve(payload, monkeypatch):
     client = RestPaperlessClient("http://127.0.0.1:8000", "tok")
 
@@ -242,6 +296,55 @@ def test_resolve_document_id_reads_bare_list_pre_v10(monkeypatch):
     # pre-v10 paperless returned a bare list; keep that path working.
     payload = [{"status": "SUCCESS", "related_document": 7}]
     assert _resolve(payload, monkeypatch) == 7
+
+
+def test_resolve_document_id_waits_out_slow_ocr(monkeypatch):
+    # #1053: real-box OCR took 95-145s, far past the old 11.5s budget. The task
+    # stays PENDING well beyond the first polls, then succeeds — the (now longer)
+    # budget must keep polling and resolve it, not give up at None.
+    client = RestPaperlessClient("http://127.0.0.1:8000", "tok")
+
+    async def _no_sleep(_):  # don't actually wait out the ~4.6 min schedule.
+        return None
+
+    monkeypatch.setattr(paperless_client.asyncio, "sleep", _no_sleep)
+    session = _SlowSession(pending_polls=10, doc_id=555)
+    doc_id = asyncio.run(client._resolve_document_id(session, "task-uuid"))
+    assert doc_id == 555
+    assert session.polls == 11  # 10 PENDING then the SUCCESS poll
+
+
+def test_resolve_document_id_raises_timeout_past_budget(monkeypatch):
+    # #1053: if the task never finishes within the whole poll budget, resolution
+    # must RAISE PaperlessTaskTimeout (distinct from a resolved None dedup) so the
+    # caller knows the doc id is unknown *yet* and can retry later.
+    client = RestPaperlessClient("http://127.0.0.1:8000", "tok")
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr(paperless_client.asyncio, "sleep", _no_sleep)
+    session = _SlowSession(pending_polls=10_000)  # never succeeds in the budget
+    with pytest.raises(PaperlessTaskTimeout):
+        asyncio.run(client._resolve_document_id(session, "task-uuid"))
+    # It exhausted the whole schedule before giving up.
+    assert session.polls == len(paperless_client._TASK_POLL_BACKOFF)
+
+
+def test_push_timeout_does_not_mark_so_it_retries(tmp_path):
+    # #1053: when doc-id resolution times out, push_companion must NOT mark the
+    # companion done — marking would strand it with paperless's garbled OCR forever.
+    # Leaving it unmarked lets the next ingest pass retry it.
+    md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
+
+    class TimeoutClient(FakePaperlessClient):
+        async def post_document(self, file_bytes, filename):
+            raise PaperlessTaskTimeout("task-uuid")
+
+    client = TimeoutClient()
+    assert _push(md, tmp_path, FakeOllama(), client) is False
+    assert client.patched == []
+    assert PAPERLESS_MARKER not in md.read_text(encoding="utf-8")
 
 
 def test_run_paperless_no_op_when_unconfigured(monkeypatch):

@@ -39,7 +39,7 @@ from pathlib import Path
 from solaris_chat.logging import log
 
 from ..ollama import OllamaChat, OllamaError
-from .paperless_client import PaperlessClient
+from .paperless_client import PaperlessClient, PaperlessTaskTimeout
 from .upload_extract import (
     EXTRACTED_MARKER,
     companion_media,
@@ -104,9 +104,27 @@ async def push_companion(
     image_b64 = downscaled_vision_image(notes_dir, companion_rel)
     text = await _vision_text(ollama, image_b64) if image_b64 else ""
 
-    doc_id = await client.post_document(file_bytes, filename)
+    try:
+        doc_id = await client.post_document(file_bytes, filename)
+    except PaperlessTaskTimeout as e:
+        # The consume task didn't finish in the poll budget, so the doc id is
+        # unknown *yet* and patch_content() can't run. Leave the companion UNMARKED
+        # so the next ingest pass retries it — marking here would strand it with
+        # paperless's garbled OCR content forever (#1053).
+        log.info(
+            "engine.ingest.paperless_push_deferred", doc=companion_rel, task=str(e)
+        )
+        return False
     if doc_id is not None and text:
         await client.patch_content(doc_id, text)
+        # Surface paperless's own correspondent/doc-type/tag suggestions for human
+        # review (#1050). On-demand only — nothing triggers it on add/update — and
+        # it reads the same content[:4000] we just PATCHed. Best-effort: a failure
+        # must not unmark or re-push the (already stored) doc.
+        try:
+            await client.trigger_ai_suggestions(doc_id)
+        except Exception as e:  # noqa: BLE001 — suggestions are advisory, not the store.
+            log.error("engine.ingest.paperless_ai_suggestions_failed", error=repr(e))
 
     try:
         companion_md.write_text(
