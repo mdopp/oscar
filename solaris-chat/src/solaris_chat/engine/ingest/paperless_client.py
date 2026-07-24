@@ -140,7 +140,10 @@ class RestPaperlessClient:
             # ({"count":…, "results":[…]}); pre-v10 returned a bare list.
             tasks = payload["results"] if isinstance(payload, dict) else payload
             task = tasks[0] if tasks else {}
-            status = task.get("status")
+            # paperless-ngx varies status casing across versions: the pre-beta
+            # image returned "SUCCESS"/"FAILURE", the :beta image returns
+            # lowercase "success"/"failure" — normalise so neither times out.
+            status = (task.get("status") or "").upper()
             if status == "SUCCESS":
                 doc_id = task.get("related_document")
                 return int(doc_id) if doc_id else None
