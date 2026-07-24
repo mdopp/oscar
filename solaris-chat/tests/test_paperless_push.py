@@ -35,6 +35,7 @@ class FakePaperlessClient:
         self._doc_id = doc_id
         self.posted: list[tuple[bytes, str]] = []
         self.patched: list[tuple[int, str]] = []
+        self.suggested: list[int] = []
 
     async def post_document(self, file_bytes: bytes, filename: str) -> int | None:
         self.posted.append((file_bytes, filename))
@@ -42,6 +43,9 @@ class FakePaperlessClient:
 
     async def patch_content(self, document_id: int, content: str) -> None:
         self.patched.append((document_id, content))
+
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        self.suggested.append(document_id)
 
 
 class FakeOllama:
@@ -94,6 +98,30 @@ def test_handoff_posts_file_then_patches_vision_text(tmp_path):
     assert client.posted == [(b"%PDF-1.4 fake", "scan.pdf")]
     # PATCH the created doc's content with the vision text so search re-indexes it.
     assert client.patched == [(7, "Klarer deutscher Text")]
+    # …then fire paperless's AI classifier so suggestions surface for review (#1050).
+    assert client.suggested == [7]
+
+
+def test_ai_suggestions_failure_degrades_but_still_marks(tmp_path, monkeypatch):
+    # #1050: the suggestion trigger is advisory — if it raises, the doc is already
+    # stored + PATCHed, so the companion must still be marked (not re-pushed).
+    md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
+
+    class SuggestBoom(FakePaperlessClient):
+        async def trigger_ai_suggestions(self, document_id):
+            raise RuntimeError("classifier down")
+
+    records: list[dict] = []
+    monkeypatch.setattr(
+        paperless.log, "error", lambda msg, **kw: records.append({"msg": msg, **kw})
+    )
+    client = SuggestBoom(doc_id=9)
+    assert _push(md, tmp_path, FakeOllama(), client) is True
+    assert client.patched == [(9, "Sauberer Vision-Text")]
+    assert PAPERLESS_MARKER in md.read_text(encoding="utf-8")
+    assert any(
+        r["msg"] == "engine.ingest.paperless_ai_suggestions_failed" for r in records
+    )
 
 
 def test_vision_call_uses_think_false_and_the_downscaled_image(tmp_path):

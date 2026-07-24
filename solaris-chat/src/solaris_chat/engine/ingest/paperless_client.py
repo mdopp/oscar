@@ -56,6 +56,11 @@ class PaperlessClient(Protocol):
         """Replace the document's full-text `content` so search re-indexes it."""
         ...
 
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        """Fire paperless's on-demand AI classifier (#1050) so it surfaces
+        correspondent/doc-type/tag suggestions for human review in its UI."""
+        ...
+
 
 class RestPaperlessClient:
     """aiohttp wrapper over the paperless-ngx REST API (token auth)."""
@@ -119,6 +124,17 @@ class RestPaperlessClient:
             async with client.patch(
                 f"{self._base_url}/api/documents/{document_id}/",
                 json=body,
+                headers=self._headers,
+            ) as resp:
+                await _raise_for_status(resp)
+
+    async def trigger_ai_suggestions(self, document_id: int) -> None:
+        # Synchronous DRF action (no Celery signal fires it on add/update, #1050):
+        # the GET runs get_ai_document_classification over content[:4000] and
+        # paperless caches the result for the doc's UI review pane.
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(
+                f"{self._base_url}/api/documents/{document_id}/ai_suggestions/",
                 headers=self._headers,
             ) as resp:
                 await _raise_for_status(resp)

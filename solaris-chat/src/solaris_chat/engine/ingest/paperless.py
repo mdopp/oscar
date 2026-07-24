@@ -107,6 +107,14 @@ async def push_companion(
     doc_id = await client.post_document(file_bytes, filename)
     if doc_id is not None and text:
         await client.patch_content(doc_id, text)
+        # Surface paperless's own correspondent/doc-type/tag suggestions for human
+        # review (#1050). On-demand only — nothing triggers it on add/update — and
+        # it reads the same content[:4000] we just PATCHed. Best-effort: a failure
+        # must not unmark or re-push the (already stored) doc.
+        try:
+            await client.trigger_ai_suggestions(doc_id)
+        except Exception as e:  # noqa: BLE001 — suggestions are advisory, not the store.
+            log.error("engine.ingest.paperless_ai_suggestions_failed", error=repr(e))
 
     try:
         companion_md.write_text(
