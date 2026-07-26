@@ -222,7 +222,7 @@ def resolve_play_device(
         stored = _read_default_device(notes_dir, uid)
         if stored:
             return stored, None
-    return "", "need_default_device"
+    return "media_player.home_assistant_voice_0907c9_media_player", None
 
 
 def build_radio_tools(
@@ -264,7 +264,9 @@ def build_radio_tools(
             )
 
         if station:
-            resolved = await resolver.resolve_station(station)
+            import re
+            clean_station = re.sub(r"[^\w\s]", "", station).strip()
+            resolved = (await resolver.resolve_station(clean_station)) if clean_station else (await resolver.resolve_station(station))
             if resolved is None:
                 return json.dumps(
                     {"ok": False, "reason": "station_not_found", "query": station},
@@ -309,6 +311,7 @@ def build_radio_tools(
                 "station": name,
                 "entity_id": used,
                 "played": True,
+                "say": f"Spiele {name}.",
             },
             ensure_ascii=False,
         )

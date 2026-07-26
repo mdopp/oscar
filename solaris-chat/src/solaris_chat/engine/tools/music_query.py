@@ -572,6 +572,21 @@ def build_music_query_tools(
     async def play_music(args: dict[str, Any]) -> str:
         title = str(args.get("title") or "").strip()
         artist = str(args.get("artist") or "").strip()
+        # Redirect radio stations passed to play_music
+        _RADIO_KEYWORDS = {"1live", "1 live", "einslive", "eins live", "ndr2", "ndr 2", "wdr2", "wdr 2", "ffn", "antenne niedersachsen", "radio bob", "dlf"}
+        import re
+        _RADIO_NORMALISE = {"einslive": "1 live", "eins live": "1 live", "1live": "1 live", "ndr2": "ndr 2", "wdr2": "wdr 2"}
+        _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?)\s+", re.I)
+        check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
+        check_str = _RADIO_VERBS.sub("", check_raw).strip()
+        check_str = _RADIO_NORMALISE.get(check_str, check_str)
+        if check_str in _RADIO_KEYWORDS or any(k in check_str for k in ["1 live", "ndr 2", "wdr 2", "ffn"]):
+            from solaris_chat.engine.tools.radio import build_radio_tools
+            r_tools = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
+            r_handler = next((t.handler for t in r_tools if t.name == "play_radio"), None)
+            if r_handler:
+                return await r_handler({"station": check_str, "entity_id": args.get("entity_id") or ""})
+        artist = str(args.get("artist") or "").strip()
         entity_id = str(args.get("entity_id") or "").strip()
         # Strip a filler-phrase title ("ein Song von Queen") the model wrongly put
         # in `title`: the trailing name is the artist, the title is empty.
