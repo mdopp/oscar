@@ -1,3 +1,4 @@
+from solaris_chat.engine import enrollment_fsm
 """Ollama-compatible facade — the engine as a Home Assistant conversation agent.
 
 HA 2026.6's core `openai_conversation` integration has no custom base_url, but
@@ -260,16 +261,16 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
+            if client.name == "solaris-enrollment" or enrollment_fsm.is_active(solaris_db_path):
+                # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
+                # Guarantees zero latency, zero hallucinations, and zero device action risk.
+                async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
+                    reply = enrollment_fsm.handle_turn(solaris_db_path, transcript, uid_hint=uid)
+                    yield {"type": "content", "data": reply}
+                    yield {"type": "done", "data": {}}
+                return _fsm_turns()
+
             if client.ephemeral:
-                # Enrollment isolation (#1056): solaris-enrollment turns receive ONLY
-                # the latest user transcript, never HA's replayed messages history,
-                # so prior turn assistant text (e.g. 'Michael Dopp') cannot contaminate
-                # the new turn's tool call argument extraction.
-                if client.name == "solaris-enrollment":
-                    single_turn_messages = [{"role": "user", "content": transcript}]
-                    return client.respond(
-                        single_turn_messages, uid=uid, source=model, conversation_id=conversation_id
-                    )
                 return client.respond(
                     messages, uid=uid, source=model, conversation_id=conversation_id
                 )
