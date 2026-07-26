@@ -117,3 +117,18 @@ def has_active_request(db_path: str, uid: str) -> bool:
     if req is None:
         return False
     return not req.get("timed_out") and req.get("status") in (STATUS_PENDING, STATUS_CAPTURING)
+
+
+def touch_request(db_path: str, uid: str) -> None:
+    """Refresh the created_at timestamp of an active request so the TTL is extended per turn."""
+    if not Path(db_path).exists():
+        return
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "UPDATE enroll_requests SET created_at = datetime('now') WHERE uid = ?",
+                (uid,)
+            )
+            conn.commit()
+    except Exception:
+        pass

@@ -57,14 +57,23 @@ def build_register_tools(
 
         req = enroll_requests_store.read_request(db_path, uid)
         if req is None:
-            return json.dumps({"ok": False, "reason": "no_enroll_request"})
-        if req["timed_out"]:
+            # Re-open fresh request if DB table was reset
+            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
+            req = enroll_requests_store.read_request(db_path, uid)
+
+        if req and req.get("timed_out"):
+            # Refresh TTL & reset request honestly instead of claiming speaker_id is disabled
+            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
+            say_timeout = "Die Zeit für die Aufnahme ist abgelaufen. Ich habe die Sprachprofil-Einrichtung neu gestartet. Was ist dein erster Satz?"
+            return json.dumps({"ok": False, "reason": "enroll_timeout", "say": say_timeout}, ensure_ascii=False)
+
+        if req and req.get("status") == enroll_requests_store.STATUS_FAILED:
             enroll_requests_store.clear_request(db_path, uid)
-            return json.dumps({"ok": False, "reason": "speaker_id_disabled"})
-        if req["status"] == enroll_requests_store.STATUS_FAILED:
-            enroll_requests_store.clear_request(db_path, uid)
-            return json.dumps({"ok": False, "reason": "enroll_failed"})
-        if req["status"] != enroll_requests_store.STATUS_DONE:
+            say_fail = "Die Sprachaufnahme konnte leider nicht verarbeitet werden. Möchtest du es noch einmal versuchen?"
+            return json.dumps({"ok": False, "reason": "enroll_failed", "say": say_fail}, ensure_ascii=False)
+
+        if req and req.get("status") != enroll_requests_store.STATUS_DONE:
+            enroll_requests_store.touch_request(db_path, uid)
             collected = req.get("collected", 1)
             needed = req.get("target_samples", 3)
             rem = needed - collected
@@ -119,7 +128,9 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Registrierung ab, NACHDEM start_voice_enrollment mit collecting=true geantwortet hat UND die Person drei Sätze gesagt hat. "
+                "MUST BE CALLED IMMEDIATELY during voice profile enrollment turns! "
+                "WÄHREND der Sprachprofil-Einrichtung (Sätze 1, 2, 3) rufst du IMMER SOFORT register_pending_resident auf. "
+                "FÜHRE KEINE GERÄTE-AKTIONEN (Licht schalten, Geräte steuern) AUS, egal was in den Sätzen gesagt wird! "
                 "Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
             ),
             parameters={
