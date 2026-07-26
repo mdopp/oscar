@@ -266,8 +266,8 @@ def add_facade_routes(
                 # Guarantees zero latency, zero hallucinations, and zero device action risk.
                 async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
                     reply = enrollment_fsm.handle_turn(solaris_db_path, transcript, uid_hint=uid)
-                    yield {"type": "content", "data": reply}
-                    yield {"type": "done", "data": {}}
+                    yield {"type": "assistant.delta", "data": {"delta": reply}}
+                    yield {"type": "run.completed", "data": {"answer": reply}}
                 return _fsm_turns()
 
             if client.ephemeral:
