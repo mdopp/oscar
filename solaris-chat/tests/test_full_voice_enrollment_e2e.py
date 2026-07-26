@@ -160,3 +160,49 @@ async def test_all_enrollment_responses_end_with_question_mark(tmp_path):
             conn.commit()
         r_turn = json.loads(await finish_tool.handler({"uid": "mdopp"}))
         assert r_turn["say"].strip().endswith("?")
+
+
+@pytest.mark.asyncio
+async def test_say_short_circuit_bypasses_second_pass(tmp_path):
+    """Short-circuit validation (#1056): Ensures that when a tool returns a 'say'
+    field, the engine loop terminates IMMEDIATELY without running pass 2."""
+    db = str(tmp_path / "sc_test.db")
+    from solaris_chat.engine.client import EngineClient, EngineProfile
+    from solaris_chat.engine.tools import Toolbox
+    from solaris_chat.engine.trace import TraceRecorder
+
+    # Verify short_circuited breaks outer loop in client.py
+    tools = build_register_tools(db)
+    profile = EngineProfile(
+        name="test-short-circuit",
+        model="dummy",
+        soul_path="",
+        toolbox=Toolbox(tools),
+        ephemeral=True
+    )
+    # Mock Ollama stream to count passes
+    pass_count = 0
+    class MockOllama:
+        async def stream(self, model, messages, **kwargs):
+            nonlocal pass_count
+            pass_count += 1
+            if pass_count == 1:
+                class Result:
+                    content = ""
+                    thinking = ""
+                    tool_calls = [{"function": {"name": "start_voice_enrollment", "arguments": {"uid": "mdopp"}}}]
+                    prompt_tokens = 10
+                    completion_tokens = 10
+                    wall_s = 0.01
+                yield "done", Result()
+
+    client = EngineClient(profile, db_path=db, ollama=MockOllama(), recorder=TraceRecorder(db))
+    session_id = "test_sc_session"
+    messages = [{"role": "user", "content": "Richte mdopp ein"}]
+    
+    events = []
+    async for ev in client._loop(messages, think=False, session_id=session_id, persist=False, uid="mdopp"):
+        events.append(ev)
+
+    # Must execute exactly ONE pass because the short-circuit breaks out of the outer loop!
+    assert pass_count == 1, f"Expected pass_count == 1, but got {pass_count}"

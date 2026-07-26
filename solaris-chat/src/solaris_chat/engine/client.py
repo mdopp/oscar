@@ -862,6 +862,7 @@ class EngineClient:
         # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
         stored_fact = False
         corrected = False
+        short_circuited = False
         final_content = ""
         final_thinking = ""
         model = model_override or self._model()
@@ -1053,9 +1054,12 @@ class EngineClient:
                             store.append_message(
                                 self._db_path, session_id, "assistant", final_content
                             )
+                        short_circuited = True
                         break
                 except Exception:
                     pass
+            if short_circuited:
+                break
         else:
             # Pass budget exhausted mid-tool-chain: surface what we have.
             final_content = (
