@@ -142,18 +142,24 @@ def handle_turn(db_path: str, text: str, uid_hint: str = "", session_key: str = 
         spelled_uid = state_data.get("spelled_uid") or "M - D - O - P - P"
         target = state_data.get("target_samples") or 3
 
-        # Check DB sample count updated by Gatekeeper PCM capture
-        req = enroll_requests_store.read_request(db_path, uid)
-        collected = req.get("collected", 0) if req else (state_data.get("collected", 0) + 1)
-        enroll_requests_store.touch_request(db_path, uid)
+        # Increment sample count deterministically on each turn
+        current_collected = state_data.get("collected", 0) + 1
+        rem = target - current_collected
 
-        rem = target - collected
         with _connect(db_path) as conn:
             conn.execute(
                 "UPDATE enrollment_fsm SET collected = ?, updated_at = datetime('now') WHERE session_key = ?",
-                (collected, session_key)
+                (current_collected, session_key)
             )
             conn.commit()
+
+        # Update enroll_requests table
+        with _connect(db_path) as conn_req:
+            conn_req.execute(
+                "UPDATE enroll_requests SET collected = ? WHERE uid = ?",
+                (current_collected, uid)
+            )
+            conn_req.commit()
 
         if rem == 2:
             return f"Danke, {display_name}! Was ist dein zweiter Satz?"
