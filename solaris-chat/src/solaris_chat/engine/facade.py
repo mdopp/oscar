@@ -261,7 +261,7 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
-            if client.name == "solaris-enrollment" or enrollment_fsm.is_active(solaris_db_path):
+            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(solaris_db_path):
                 # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
                 # Guarantees zero latency, zero hallucinations, and zero device action risk.
                 async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
