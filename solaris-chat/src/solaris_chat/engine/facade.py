@@ -221,6 +221,21 @@ def add_facade_routes(
         guest = clients.get("solaris-guest")
         if uid == GUEST_UID and guest is not None:
             model, client = "solaris-guest", guest
+
+        # Enrollment routing (#1056): if ANY user has an active voice enrollment
+        # or wakeword request, route ALL voice turns to the isolated enrollment
+        # profile. This profile has no HA tools, no history, no context pollution.
+        enrollment = clients.get("solaris-enrollment")
+        if enrollment is not None:
+            try:
+                from solaris_chat import enroll_requests_store, wakeword_requests_store
+                if (
+                    enroll_requests_store.has_any_active_request(solaris_db_path)
+                    or wakeword_requests_store.has_any_active_request(solaris_db_path)
+                ):
+                    model, client = "solaris-enrollment", enrollment
+            except Exception:
+                pass
         log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
 
         # A voice turn lands in the resident's durable household session (#345):

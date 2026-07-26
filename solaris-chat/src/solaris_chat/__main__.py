@@ -27,7 +27,7 @@ async def _run() -> None:
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
-    household, deep, admin, guest, librarian, recorder, bus = build_engine_clients(
+    household, deep, admin, guest, librarian, enrollment, recorder, bus = build_engine_clients(
         db_path=settings.solaris_db_path,
         ollama_url=settings.ollama_url,
         fast_model=settings.fast_model,

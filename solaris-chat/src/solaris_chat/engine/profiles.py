@@ -355,4 +355,28 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    return household, deep, admin, guest, librarian, recorder, bus
+
+    # Enrollment profile (#1056): dedicated, isolated session for voice profile
+    # and wakeword setup. Ephemeral (no history persistence), no HA tools,
+    # no timers, no research — only register + wakeword tools. Prevents the
+    # household context from polluting the enrollment dialog with device states.
+    enrollment_tools: list[Tool] = []
+    enrollment_tools += build_register_tools(
+        db_path,
+        gatekeeper_url=gatekeeper_url,
+        gatekeeper_token=gatekeeper_token,
+    )
+    enrollment_tools += build_wakeword_tools(db_path, _current_uid)
+    enrollment = make(
+        EngineProfile(
+            name="solaris-enrollment",
+            model=fast_model or "gemma4:e4b",
+            soul_path=soul_path,
+            think_default=False,
+            temperature=0.1,
+            toolbox=Toolbox(enrollment_tools),
+            ephemeral=True,
+            default_uid=default_uid,
+        )
+    )
+    return household, deep, admin, guest, librarian, enrollment, recorder, bus
