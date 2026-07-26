@@ -261,10 +261,10 @@ class _SlowSession:
     def get(self, *_a, **_k):
         self.polls += 1
         if self.polls <= self._pending:
-            payload = {"results": [{"status": "PENDING"}]}
+            payload = {"results": [{"status": "pending"}]}
         else:
             payload = {
-                "results": [{"status": "SUCCESS", "related_document": self._doc_id}]
+                "results": [{"status": "success", "related_document": self._doc_id}]
             }
         return _FakeGet(payload)
 
@@ -283,19 +283,31 @@ def test_resolve_document_id_reads_drf_paginated_dict(monkeypatch):
     # #1048: paperless-ngx :beta (API v10+) wraps GET /api/tasks/?task_id=… in DRF
     # pagination — a dict, not a list. Indexing tasks[0] on the dict raised
     # KeyError(0) on every push. The client must read `results`.
+    # #1055: the :beta API returns LOWERCASE status ("success"), confirmed live —
+    # the client must normalise so it doesn't burn the whole poll budget then
+    # re-POST a duplicate on every retry.
     payload = {
         "count": 1,
         "next": None,
         "previous": None,
-        "results": [{"status": "SUCCESS", "related_document": 314}],
+        "results": [{"status": "success", "related_document": 314}],
     }
     assert _resolve(payload, monkeypatch) == 314
 
 
 def test_resolve_document_id_reads_bare_list_pre_v10(monkeypatch):
-    # pre-v10 paperless returned a bare list; keep that path working.
+    # pre-v10 paperless returned a bare list with UPPERCASE status; keep both the
+    # list path and the older casing working (#1055 — normalise, don't hardcode).
     payload = [{"status": "SUCCESS", "related_document": 7}]
     assert _resolve(payload, monkeypatch) == 7
+
+
+def test_resolve_document_id_reads_lowercase_failure(monkeypatch):
+    # #1055: the :beta API also reports failure lowercase ("failure"). A failed
+    # task must resolve to None (dedup-style), not time out — otherwise the caller
+    # retries forever and duplicates pile up in paperless.
+    payload = {"results": [{"status": "failure"}]}
+    assert _resolve(payload, monkeypatch) is None
 
 
 def test_resolve_document_id_waits_out_slow_ocr(monkeypatch):
