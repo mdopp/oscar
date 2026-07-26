@@ -113,9 +113,11 @@ def build_wakeword_tools(
         Tool(
             name="start_wakeword_enrollment",
             description=(
-                "Startet den interaktiven Aufnahme-Modus zum Verbessern des Aufweckworts „Solaris“ "
-                "(„Solaris, Wakeword verbessern“, „neues Wakeword trainieren“). "
-                "Sammelt N Sprachproben mit Live-Countdown."
+                "Startet den interaktiven Aufnahme-Modus zum Verbessern oder Trainieren des Aufweckworts „Solaris“. "
+                "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
+                "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
+                "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
+                "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
             ),
             parameters={
                 "type": "object",
