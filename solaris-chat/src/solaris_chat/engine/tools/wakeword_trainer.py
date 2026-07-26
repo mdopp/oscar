@@ -89,7 +89,7 @@ def build_wakeword_tools(
         say = (
             f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil ({uid}) sammeln. "
             f"Sprich bitte nach meiner Antwort nacheinander das Wort „Solaris“ — mal leise, "
-            f"mal gerufen, auf Deutsch oder Englisch. Los geht's mit Probe 1!"
+            f"mal gerufen. Bist du bereit für Probe 1?"
         )
         return json.dumps({
             "ok": True,
@@ -135,12 +135,13 @@ def build_wakeword_tools(
         )
 
         if rem > 0:
+            current_probe = target - rem + 1
             if rem == 1:
-                say = f"Sehr gut, {display_name}! Nur noch 1 Probe!" if uid != "household" else "Sehr gut! Nur noch 1 Probe!"
+                say = f"Sehr gut, {display_name}! Nur noch 1 Probe! Was ist deine letzte Probe?" if uid != "household" else "Sehr gut! Nur noch 1 Probe! Was ist deine letzte Probe?"
             elif rem in (8, 5, 3):
-                say = f"Klasse! Noch {rem} Mal (versuche es jetzt gerne mal geflüstert oder auf Englisch)."
+                say = f"Klasse! Noch {rem} Mal (versuche es jetzt gerne mal geflüstert). Was ist deine {current_probe}. Probe?"
             else:
-                say = f"Super! Noch {rem} Mal."
+                say = f"Super! Noch {rem} Mal. Was ist deine {current_probe}. Probe?"
             return json.dumps({
                 "ok": True,
                 "uid": uid,

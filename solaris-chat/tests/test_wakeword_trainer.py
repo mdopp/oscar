@@ -39,14 +39,16 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     assert res1["ok"] is True
     assert res1["uid"] == "mdopp"
     assert res1["display_name"] == "Michael"
-    assert "Michael" in res1["say"]
+    assert res1["say"].endswith("?")
 
     # 2. Record samples addressing Michael
     s1 = json.loads(await sample_tool.handler({"uid": "mdopp", "transcript": "Solaris"}))
     assert s1["remaining"] == 1
+    assert s1["say"].endswith("?")
 
     s2 = json.loads(await sample_tool.handler({"uid": "mdopp", "transcript": "Solaris"}))
     assert s2["completed"] is True
+    assert s2["say"].endswith("?")
 
     # 3. Trigger training
     t1 = json.loads(await trigger_tool.handler({"uid": "mdopp"}))

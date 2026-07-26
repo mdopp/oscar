@@ -92,14 +92,23 @@ def build_register_tools(
             enroll_requests_store.clear_request(db_path, uid)
             return json.dumps({"ok": False, "reason": "enroll_failed"})
         if req["status"] != enroll_requests_store.STATUS_DONE:
-            # Still capturing (fewer than N samples in) — the dialog should
-            # collect another utterance before confirming.
+            collected = req.get("collected", 1)
+            needed = req.get("target_samples", 3)
+            rem = needed - collected
+            if rem == 2:
+                say = "Danke! Was ist dein zweiter Satz?"
+            elif rem == 1:
+                say = "Sehr schön! Was ist dein dritter und letzter Satz?"
+            else:
+                say = f"Super! Noch {rem} Sätze. Was ist dein nächster Satz?"
+
             return json.dumps(
                 {
                     "ok": False,
                     "reason": "enroll_incomplete",
-                    "collected": req["collected"],
-                    "needed": req["target_samples"],
+                    "collected": collected,
+                    "needed": needed,
+                    "say": say,
                 },
                 ensure_ascii=False,
             )
