@@ -17,3 +17,11 @@ repos:
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
       - id: check-merge-conflict
+  - repo: local
+    hooks:
+      - id: pytest-solaris-chat
+        name: pytest (solaris-chat human utterances + E2E LLM)
+        entry: podman exec solaris-chat python3 -m pytest /usr/local/lib/python3.12/site-packages/solaris_chat/tests/test_human_utterances_500.py /usr/local/lib/python3.12/site-packages/solaris_chat/tests/test_e2e_llm_utterances.py
+        language: system
+        pass_filenames: false
+        always_run: true
