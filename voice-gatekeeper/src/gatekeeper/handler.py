@@ -392,7 +392,7 @@ class GatekeeperHandler(AsyncEventHandler):
     async def _transcribe(self) -> str:
         assert self._audio_start is not None
         async with AsyncClient.from_uri(settings.whisper_uri) as client:
-            await client.write_event(Transcribe(language=None).event())
+            await client.write_event(Transcribe(language="de").event())
             await client.write_event(self._audio_start.event())
             for chunk in self._audio_buffer:
                 await client.write_event(chunk.event())
