@@ -131,6 +131,7 @@ _TOOL_DISCIPLINE = (
     " Bei einer Wissensfrage rufst du research(query) auf und antwortest"
     " DIREKT aus den gelieferten Quellen MIT Quellenangabe — ohne vorher"
     " eine Rückfrage zu stellen."
+    " WENN ein Tool ein 'say'-Feld in seinem Ergebnis zurückgibt (z.B. bei start_voice_enrollment, register_pending_resident, start_wakeword_enrollment, record_wakeword_sample), MUSST du den Text aus 'say' EINS ZU EINS VERBATIM WORT FÜR WORT vorlesen. Erfinde KEINE eigenen Sätze, lasse das abschließende Fragezeichen NICHT weg und ändere den Text NICHT ab!"
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
