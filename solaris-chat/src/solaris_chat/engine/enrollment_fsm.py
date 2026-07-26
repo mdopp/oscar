@@ -85,6 +85,13 @@ def handle_turn(db_path: str, text: str, uid_hint: str = "", session_key: str = 
     state_data = get_fsm_state(db_path, session_key)
     state = state_data["state"] if state_data else STATE_IDLE
 
+    # Trigger phrase detection: if user requests setup/new enrollment, reset state to start fresh (#1056)
+    trigger_phrases = ("richte", "einrichten", "anlegen", "neuer benutzer", "neues profil", "neu starten", "neu anfangen")
+    if state != STATE_IDLE and any(p in clean_text for p in trigger_phrases):
+        reset_fsm(db_path, session_key)
+        enroll_requests_store.clear_request(db_path, uid_hint or "mdopp")
+        state = STATE_IDLE
+
     # STATE 0: Trigger turn ("Richte meinen Benutzer ein", "Sprachprofil anlegen")
     if state == STATE_IDLE:
         with _connect(db_path) as conn:
