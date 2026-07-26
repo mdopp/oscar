@@ -1,15 +1,15 @@
 """Wakeword Improvement Tools — interactive voice recording, quality audit & GPU training (#1056).
 
-Enables interactive voice enrollment dialogs & sample audit:
-- start_wakeword_enrollment(target_count): Starts interactive recording session.
-- record_wakeword_sample(): Increments voice sample count and gives spoken feedback.
+Enables bidirectional interactive voice enrollment dialogs & sample audit:
+- start_wakeword_enrollment(uid, target_count): Starts interactive recording session for user or household.
+- record_wakeword_sample(): Increments voice sample count and gives spoken feedback addressing the user.
 - audit_wakeword_samples(): Performs quality check over saved audio samples & flags outliers.
 - list_wakeword_samples(): Lists all saved audio samples across users for reuse.
 - delete_wakeword_sample(sample_id): Deletes a specific audio sample.
 - trigger_wakeword_training(): Triggers 2-hour background GPU training on RTX 2000 Ada.
 """
 
-from __future__ annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -24,6 +24,13 @@ from solaris_chat.engine.tools import Tool
 _ACCEPTED_PHONETICS = re.compile(r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I)
 
 
+def parse_spelled_uid(raw: str) -> str:
+    """Extract clean ASCII uid from spelled or spoken names (e.g. 'M - A - R - C - O' -> 'marco')."""
+    cleaned = raw.lower().replace("-", "").replace(" ", "").replace(",", "").replace(".", "")
+    cleaned = re.sub(r"[^a-z0-9]", "", cleaned)
+    return cleaned if len(cleaned) >= 2 else "household"
+
+
 def build_wakeword_tools(
     db_path: str,
     uid_getter: Callable[[], str],
@@ -32,27 +39,43 @@ def build_wakeword_tools(
     """Build the wakeword improvement tools."""
 
     async def _handle_start(args: dict[str, Any]) -> str:
-        uid = uid_getter()
+        current_uid = uid_getter()
+        raw_uid = str(args.get("uid") or "").strip()
+
+        if raw_uid:
+            uid = parse_spelled_uid(raw_uid)
+        elif current_uid and current_uid != "household":
+            uid = current_uid
+        else:
+            uid = "household"
+
         target_count = int(args.get("target_count", 10))
 
         req = wakeword_requests_store.start_request(db_path, uid, target_count)
         rem = req["target_count"] - req["collected_count"]
 
+        name_display = uid.capitalize() if uid != "household" else ""
+        greeting = f"Klar, {name_display}! " if name_display else "Klar! "
+
         say = (
-            f"Klar! Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ sammeln. "
+            f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil sammeln. "
             f"Sprich bitte nach meiner Antwort nacheinander das Wort „Solaris“ — mal leise, "
             f"mal gerufen, auf Deutsch oder Englisch. Los geht's mit Probe 1!"
         )
         return json.dumps({
             "ok": True,
             "uid": uid,
+            "display_name": name_display or "Haushalt",
             "target_count": target_count,
             "remaining": rem,
             "say": say
         }, ensure_ascii=False)
 
     async def _handle_sample(args: dict[str, Any]) -> str:
-        uid = uid_getter()
+        current_uid = uid_getter()
+        raw_uid = str(args.get("uid") or "").strip()
+        uid = parse_spelled_uid(raw_uid) if raw_uid else (current_uid or "household")
+
         req = wakeword_requests_store.record_sample(db_path, uid)
 
         collected = req["collected_count"]
@@ -60,7 +83,7 @@ def build_wakeword_tools(
         rem = max(0, target - collected)
 
         sample_id = f"sample_{uid}_{collected}"
-        sample_dir = "/workspace/solarisbay/templates/solaris/wakeword/user_samples/solaris"
+        sample_dir = f"/workspace/solarisbay/templates/solaris/wakeword/user_samples/{uid}"
         os.makedirs(sample_dir, exist_ok=True)
         filename = os.path.join(sample_dir, f"{sample_id}.wav")
 
@@ -78,15 +101,18 @@ def build_wakeword_tools(
             is_valid=is_valid
         )
 
+        name_display = uid.capitalize() if uid != "household" else ""
+
         if rem > 0:
             if rem == 1:
-                say = f"Sehr gut! Nur noch 1 Probe!"
+                say = f"Sehr gut, {name_display}! Nur noch 1 Probe!" if name_display else "Sehr gut! Nur noch 1 Probe!"
             elif rem in (8, 5, 3):
                 say = f"Klasse! Noch {rem} Mal (versuche es jetzt gerne mal geflüstert oder auf Englisch)."
             else:
                 say = f"Super! Noch {rem} Mal."
             return json.dumps({
                 "ok": True,
+                "uid": uid,
                 "collected": collected,
                 "target": target,
                 "remaining": rem,
@@ -97,20 +123,20 @@ def build_wakeword_tools(
             suspicious = wakeword_samples_store.get_suspicious_samples(db_path, "solaris")
             if suspicious:
                 bad_item = suspicious[0]
-                speaker_name = bad_item['resident_uid'] if bad_item['resident_uid'] != 'household' else 'deiner letzten Aufnahme'
                 say = (
-                    f"Perfekt, 10 Sprachproben gesammelt! Bei {speaker_name} habe ich allerdings "
+                    f"Perfekt, {name_display or '10'} Sprachproben gesammelt! Bei einer deiner Aufnahmen habe ich allerdings "
                     f"wörtlich „{bad_item['stt_transcript']}“ verstanden. "
                     f"Möchtest du diese Probe löschen und neu aufnehmen, oder soll sie als ungewöhnliche Aussprache behalten werden?"
                 )
             else:
                 say = (
-                    f"Perfekt, alle {target} Sprachproben wurden erfolgreich überprüft und gespeichert! "
-                    f"Möchtest du das 2-Stunden GPU-Training jetzt direkt auf deiner Grafikkarte starten oder noch weitere Proben sammeln?"
+                    f"Perfekt, {name_display or 'alle'} 10 Sprachproben wurden erfolgreich überprüft und gespeichert! "
+                    f"Möchtest du das 2-Stunden GPU-Training jetzt direkt auf deiner Grafikkarte starten oder noch weitere Proben für andere Personen sammeln?"
                 )
 
             return json.dumps({
                 "ok": True,
+                "uid": uid,
                 "collected": collected,
                 "target": target,
                 "remaining": 0,
@@ -125,7 +151,7 @@ def build_wakeword_tools(
 
         if suspicious:
             bad = suspicious[0]
-            speaker_name = bad['resident_uid'] if bad['resident_uid'] != 'household' else 'dir'
+            speaker_name = bad['resident_uid'].capitalize() if bad['resident_uid'] != 'household' else 'dir'
             say = (
                 f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_name} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
                 f"Soll ich diese Aufnahme löschen?"
@@ -169,9 +195,11 @@ def build_wakeword_tools(
         }, ensure_ascii=False)
 
     async def _handle_trigger(args: dict[str, Any]) -> str:
-        uid = uid_getter()
-        wakeword_requests_store.finish_request(db_path, uid)
+        current_uid = uid_getter()
+        raw_uid = str(args.get("uid") or "").strip()
+        uid = parse_spelled_uid(raw_uid) if raw_uid else (current_uid or "household")
 
+        wakeword_requests_store.finish_request(db_path, uid)
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
 
         cmd = ["python3", os.path.join(script_dir, "train-micro-wake-word.py")]
@@ -185,14 +213,18 @@ def build_wakeword_tools(
         except Exception:
             pass
 
+        name_display = uid.capitalize() if uid != "household" else ""
+        thanks = f"Danke, {name_display}! " if name_display else ""
+
         say = (
-            f"Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
+            f"{thanks}Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
             f"Die Grafikkarte berechnet jetzt mit deinen {len(samples)} Sprachproben und "
             f"Wohnzimmer-Nebengeräuschen über 15.000 Steps (~2 Stunden). "
             f"Ich gebe dir Bescheid, sobald das neue Modell fertig ist!"
         )
         return json.dumps({
             "ok": True,
+            "uid": uid,
             "samples_count": len(samples),
             "training_started": True,
             "say": say
@@ -206,11 +238,16 @@ def build_wakeword_tools(
                 "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
                 "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
                 "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
+                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco') entgegen. "
                 "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
             ),
             parameters={
                 "type": "object",
                 "properties": {
+                    "uid": {
+                        "type": "string",
+                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'marco', 'M-A-R-C-O')"
+                    },
                     "target_count": {
                         "type": "integer",
                         "description": "Anzahl der zu sammelnden Proben (Standard: 10)"
@@ -228,6 +265,10 @@ def build_wakeword_tools(
             parameters={
                 "type": "object",
                 "properties": {
+                    "uid": {
+                        "type": "string",
+                        "description": "Die User-ID des Sprechers"
+                    },
                     "transcript": {
                         "type": "string",
                         "description": "Das von Whisper STT erfasste Wort (z.B. 'Solaris', 'Cello')"
@@ -274,7 +315,15 @@ def build_wakeword_tools(
             description=(
                 "Startet das 2-Stunden GPU-Training für das neu verfeinerte Wakeword „Solaris“ auf der Grafikkarte unter Verwendung aller gespeicherten Proben."
             ),
-            parameters={"type": "object", "properties": {}},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "uid": {
+                        "type": "string",
+                        "description": "Optional: User-ID des Nutzers"
+                    }
+                }
+            },
             handler=_handle_trigger
         )
     ]
