@@ -761,15 +761,20 @@ class EngineClient:
 
         try:
             from solaris_chat import enroll_requests_store, wakeword_requests_store
-            if enroll_requests_store.has_active_request(self._db_path, uid) or wakeword_requests_store.has_active_request(self._db_path, uid):
+            _enrollment_active = (
+                enroll_requests_store.has_any_active_request(self._db_path)
+                or wakeword_requests_store.has_any_active_request(self._db_path)
+            )
+            if _enrollment_active:
+                _enrollment_tools = {
+                    "start_voice_enrollment", "register_pending_resident",
+                    "start_wakeword_enrollment", "record_wakeword_sample",
+                    "trigger_wakeword_training", "audit_wakeword_samples",
+                    "list_wakeword_samples", "delete_wakeword_sample",
+                }
                 tools = [
                     t for t in tools
-                    if (t.get("function") or {}).get("name") in (
-                        "start_voice_enrollment", "register_pending_resident",
-                        "start_wakeword_enrollment", "record_wakeword_sample",
-                        "trigger_wakeword_training", "audit_wakeword_samples",
-                        "list_wakeword_samples", "delete_wakeword_sample"
-                    )
+                    if (t.get("function") or {}).get("name") in _enrollment_tools
                 ]
         except Exception:
             pass

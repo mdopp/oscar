@@ -132,3 +132,19 @@ def touch_request(db_path: str, uid: str) -> None:
             conn.commit()
     except Exception:
         pass
+
+
+def has_any_active_request(db_path: str) -> bool:
+    """True if ANY uid has an active non-expired enrollment request."""
+    if not Path(db_path).exists():
+        return False
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM enroll_requests WHERE status NOT IN ('done','failed') "
+                "AND created_at > datetime('now', ?) LIMIT 1",
+                (f"-{ENROLL_TTL_SECONDS} seconds",)
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False

@@ -98,3 +98,17 @@ def has_active_request(db_path: str, uid: str) -> bool:
     if not req:
         return False
     return req.get("status") == "active"
+
+
+def has_any_active_request(db_path: str) -> bool:
+    """True if ANY uid has an active wakeword recording session."""
+    if not Path(db_path).exists():
+        return False
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM wakeword_requests WHERE status = 'active' LIMIT 1"
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
