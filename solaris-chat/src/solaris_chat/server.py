@@ -5251,7 +5251,7 @@ def build_app(
             _resolve_image_hook()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
-        ephemeral = bool(body.get("ephemeral"))
+        ephemeral_input = bool(body.get("ephemeral"))
         # The shared Zuhause is owned by default_uid but any resident may act in
         # it (#649): owner_uid drives session routing/scope; the real `uid` stays
         # the typed turn's identity (timers/facts) via turn_uid below.
@@ -5275,6 +5275,7 @@ def build_app(
             uid=owner_uid,
             topic_slug=topic_slug,
         )
+        ephemeral = ephemeral_input or client.ephemeral
         ensure_wartung_row(request, session_id)
         pin_admin_identity(request)
 
@@ -5354,7 +5355,7 @@ def build_app(
             _resolve_image_hook()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
-        ephemeral = bool(body.get("ephemeral"))
+        ephemeral_input = bool(body.get("ephemeral"))
         # The shared Zuhause is owned by default_uid but any resident may act in
         # it (#649): owner_uid drives session routing/scope; the real `uid` stays
         # the typed turn's identity (timers/facts) via turn_uid below.
@@ -5378,6 +5379,7 @@ def build_app(
             uid=owner_uid,
             topic_slug=topic_slug,
         )
+        ephemeral = ephemeral_input or client.ephemeral
         ensure_wartung_row(request, session_id)
         pin_admin_identity(request)
 
