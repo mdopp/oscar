@@ -9,12 +9,13 @@ Enables bidirectional interactive voice enrollment dialogs & sample audit:
 - trigger_wakeword_training(): Triggers 2-hour background GPU training on RTX 2000 Ada.
 """
 
-from __future__ import annotations
+from __future__ annotations
 
 import asyncio
 import json
 import os
 import re
+import sqlite3
 import subprocess
 from typing import Any, Callable
 
@@ -23,12 +24,41 @@ from solaris_chat.engine.tools import Tool
 
 _ACCEPTED_PHONETICS = re.compile(r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I)
 
+_RESIDENT_ALIASES = {
+    "michael": "mdopp",
+    "michaeldopp": "mdopp",
+    "mdopp": "mdopp",
+}
+
 
 def parse_spelled_uid(raw: str) -> str:
     """Extract clean ASCII uid from spelled or spoken names (e.g. 'M - A - R - C - O' -> 'marco')."""
     cleaned = raw.lower().replace("-", "").replace(" ", "").replace(",", "").replace(".", "")
     cleaned = re.sub(r"[^a-z0-9]", "", cleaned)
     return cleaned if len(cleaned) >= 2 else "household"
+
+
+def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, str]:
+    """Resolves spoken or spelled user names/aliases ('michael', 'mdopp') to system UID & Display Name."""
+    parsed = parse_spelled_uid(raw_input)
+    if parsed in _RESIDENT_ALIASES:
+        uid = _RESIDENT_ALIASES[parsed]
+        display_name = "Michael" if uid == "mdopp" else uid.capitalize()
+        return uid, display_name
+
+    if db_path and os.path.exists(db_path):
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT uid, display_name FROM pending_residents WHERE uid = ? OR LOWER(display_name) LIKE ?",
+                    (parsed, f"%{parsed}%")
+                ).fetchone()
+                if row:
+                    return row[0], row[1]
+        except Exception:
+            pass
+
+    return parsed, parsed.capitalize()
 
 
 def build_wakeword_tools(
@@ -43,29 +73,28 @@ def build_wakeword_tools(
         raw_uid = str(args.get("uid") or "").strip()
 
         if raw_uid:
-            uid = parse_spelled_uid(raw_uid)
+            uid, display_name = resolve_resident_identity(raw_uid, db_path)
         elif current_uid and current_uid != "household":
-            uid = current_uid
+            uid, display_name = resolve_resident_identity(current_uid, db_path)
         else:
-            uid = "household"
+            uid, display_name = "household", "Haushalt"
 
         target_count = int(args.get("target_count", 10))
 
         req = wakeword_requests_store.start_request(db_path, uid, target_count)
         rem = req["target_count"] - req["collected_count"]
 
-        name_display = uid.capitalize() if uid != "household" else ""
-        greeting = f"Klar, {name_display}! " if name_display else "Klar! "
+        greeting = f"Klar, {display_name}! " if uid != "household" else "Klar! "
 
         say = (
-            f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil sammeln. "
+            f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil ({uid}) sammeln. "
             f"Sprich bitte nach meiner Antwort nacheinander das Wort „Solaris“ — mal leise, "
             f"mal gerufen, auf Deutsch oder Englisch. Los geht's mit Probe 1!"
         )
         return json.dumps({
             "ok": True,
             "uid": uid,
-            "display_name": name_display or "Haushalt",
+            "display_name": display_name,
             "target_count": target_count,
             "remaining": rem,
             "say": say
@@ -74,7 +103,11 @@ def build_wakeword_tools(
     async def _handle_sample(args: dict[str, Any]) -> str:
         current_uid = uid_getter()
         raw_uid = str(args.get("uid") or "").strip()
-        uid = parse_spelled_uid(raw_uid) if raw_uid else (current_uid or "household")
+
+        if raw_uid:
+            uid, display_name = resolve_resident_identity(raw_uid, db_path)
+        else:
+            uid, display_name = resolve_resident_identity(current_uid or "household", db_path)
 
         req = wakeword_requests_store.record_sample(db_path, uid)
 
@@ -101,11 +134,9 @@ def build_wakeword_tools(
             is_valid=is_valid
         )
 
-        name_display = uid.capitalize() if uid != "household" else ""
-
         if rem > 0:
             if rem == 1:
-                say = f"Sehr gut, {name_display}! Nur noch 1 Probe!" if name_display else "Sehr gut! Nur noch 1 Probe!"
+                say = f"Sehr gut, {display_name}! Nur noch 1 Probe!" if uid != "household" else "Sehr gut! Nur noch 1 Probe!"
             elif rem in (8, 5, 3):
                 say = f"Klasse! Noch {rem} Mal (versuche es jetzt gerne mal geflüstert oder auf Englisch)."
             else:
@@ -113,6 +144,7 @@ def build_wakeword_tools(
             return json.dumps({
                 "ok": True,
                 "uid": uid,
+                "display_name": display_name,
                 "collected": collected,
                 "target": target,
                 "remaining": rem,
@@ -124,19 +156,20 @@ def build_wakeword_tools(
             if suspicious:
                 bad_item = suspicious[0]
                 say = (
-                    f"Perfekt, {name_display or '10'} Sprachproben gesammelt! Bei einer deiner Aufnahmen habe ich allerdings "
+                    f"Perfekt, {display_name if uid != 'household' else '10'} Sprachproben gesammelt! Bei einer deiner Aufnahmen habe ich allerdings "
                     f"wörtlich „{bad_item['stt_transcript']}“ verstanden. "
                     f"Möchtest du diese Probe löschen und neu aufnehmen, oder soll sie als ungewöhnliche Aussprache behalten werden?"
                 )
             else:
                 say = (
-                    f"Perfekt, {name_display or 'alle'} 10 Sprachproben wurden erfolgreich überprüft und gespeichert! "
+                    f"Perfekt, {display_name if uid != 'household' else 'alle'} 10 Sprachproben wurden erfolgreich überprüft und gespeichert! "
                     f"Möchtest du das 2-Stunden GPU-Training jetzt direkt auf deiner Grafikkarte starten oder noch weitere Proben für andere Personen sammeln?"
                 )
 
             return json.dumps({
                 "ok": True,
                 "uid": uid,
+                "display_name": display_name,
                 "collected": collected,
                 "target": target,
                 "remaining": 0,
@@ -151,9 +184,11 @@ def build_wakeword_tools(
 
         if suspicious:
             bad = suspicious[0]
-            speaker_name = bad['resident_uid'].capitalize() if bad['resident_uid'] != 'household' else 'dir'
+            speaker_uid = bad['resident_uid']
+            _, speaker_name = resolve_resident_identity(speaker_uid, db_path)
+            speaker_say = speaker_name if speaker_uid != 'household' else 'dir'
             say = (
-                f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_name} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
+                f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_say} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
                 f"Soll ich diese Aufnahme löschen?"
             )
         else:
@@ -197,7 +232,10 @@ def build_wakeword_tools(
     async def _handle_trigger(args: dict[str, Any]) -> str:
         current_uid = uid_getter()
         raw_uid = str(args.get("uid") or "").strip()
-        uid = parse_spelled_uid(raw_uid) if raw_uid else (current_uid or "household")
+        if raw_uid:
+            uid, display_name = resolve_resident_identity(raw_uid, db_path)
+        else:
+            uid, display_name = resolve_resident_identity(current_uid or "household", db_path)
 
         wakeword_requests_store.finish_request(db_path, uid)
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
@@ -213,8 +251,7 @@ def build_wakeword_tools(
         except Exception:
             pass
 
-        name_display = uid.capitalize() if uid != "household" else ""
-        thanks = f"Danke, {name_display}! " if name_display else ""
+        thanks = f"Danke, {display_name}! " if uid != "household" else ""
 
         say = (
             f"{thanks}Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
@@ -225,6 +262,7 @@ def build_wakeword_tools(
         return json.dumps({
             "ok": True,
             "uid": uid,
+            "display_name": display_name,
             "samples_count": len(samples),
             "training_started": True,
             "say": say
@@ -238,7 +276,7 @@ def build_wakeword_tools(
                 "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
                 "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
                 "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
-                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco') entgegen. "
+                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco', 'Michael' -> 'mdopp') entgegen. "
                 "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
             ),
             parameters={
@@ -246,7 +284,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'marco', 'M-A-R-C-O')"
+                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'michael' -> 'mdopp', 'M-D-O-P-P')"
                     },
                     "target_count": {
                         "type": "integer",
@@ -267,7 +305,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Die User-ID des Sprechers"
+                        "description": "Die User-ID des Sprechers (z.B. 'mdopp')"
                     },
                     "transcript": {
                         "type": "string",

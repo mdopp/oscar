@@ -1,18 +1,28 @@
-"""Tests for Bidirectional Wakeword Trainer & Spelling Parser (#1056)."""
+"""Tests for Bidirectional Wakeword Trainer & System-UID Resident Resolver (#1056)."""
 
 from __future__ annotations
 
 import json
 import pytest
 
-from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools, parse_spelled_uid
+from solaris_chat.engine.tools.wakeword_trainer import (
+    build_wakeword_tools,
+    parse_spelled_uid,
+    resolve_resident_identity,
+)
 
 
-def test_spelled_uid_parser():
+def test_spelled_uid_and_identity_resolver():
     assert parse_spelled_uid("M - A - R - C - O") == "marco"
-    assert parse_spelled_uid("M, A, R, C, O") == "marco"
-    assert parse_spelled_uid("Michael") == "michael"
-    assert parse_spelled_uid("C - A - R - O - L - A") == "carola"
+    assert parse_spelled_uid("M - D - O - P - P") == "mdopp"
+
+    uid, display_name = resolve_resident_identity("Michael")
+    assert uid == "mdopp"
+    assert display_name == "Michael"
+
+    uid2, display_name2 = resolve_resident_identity("M - D - O - P - P")
+    assert uid2 == "mdopp"
+    assert display_name2 == "Michael"
 
 
 @pytest.mark.asyncio
@@ -24,20 +34,21 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     sample_tool = next(t for t in tools if t.name == "record_wakeword_sample")
     trigger_tool = next(t for t in tools if t.name == "trigger_wakeword_training")
 
-    # 1. Start enrollment with spelled UID 'M - A - R - C - O'
-    res1 = json.loads(await start_tool.handler({"uid": "M - A - R - C - O", "target_count": 2}))
+    # 1. Start enrollment for 'Michael' -> resolves to system UID 'mdopp'
+    res1 = json.loads(await start_tool.handler({"uid": "Michael", "target_count": 2}))
     assert res1["ok"] is True
-    assert res1["uid"] == "marco"
-    assert "Marco" in res1["say"]
+    assert res1["uid"] == "mdopp"
+    assert res1["display_name"] == "Michael"
+    assert "Michael" in res1["say"]
 
-    # 2. Record samples addressing Marco
-    s1 = json.loads(await sample_tool.handler({"uid": "marco", "transcript": "Solaris"}))
+    # 2. Record samples addressing Michael
+    s1 = json.loads(await sample_tool.handler({"uid": "mdopp", "transcript": "Solaris"}))
     assert s1["remaining"] == 1
 
-    s2 = json.loads(await sample_tool.handler({"uid": "marco", "transcript": "Solaris"}))
+    s2 = json.loads(await sample_tool.handler({"uid": "mdopp", "transcript": "Solaris"}))
     assert s2["completed"] is True
 
     # 3. Trigger training
-    t1 = json.loads(await trigger_tool.handler({"uid": "marco"}))
+    t1 = json.loads(await trigger_tool.handler({"uid": "mdopp"}))
     assert t1["training_started"] is True
-    assert "Danke, Marco" in t1["say"]
+    assert "Danke, Michael" in t1["say"]
