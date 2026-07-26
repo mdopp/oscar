@@ -580,6 +580,11 @@ def build_music_query_tools(
     async def play_music(args: dict[str, Any]) -> str:
         title = str(args.get("title") or "").strip()
         artist = str(args.get("artist") or "").strip()
+        # Treat generic filler words ('Musik', 'Spielermusik', 'Spiele Musik') as empty query
+        if title.casefold() in {"musik", "spielermusik", "spiele musik", "spiel musik", "etwas musik", "radio"}:
+            title = ""
+        if artist.casefold() in {"musik", "spielermusik", "spiele musik", "spiel musik", "etwas musik", "radio"}:
+            artist = ""
         # Redirect radio stations passed to play_music
         _RADIO_KEYWORDS = {"1live", "1 live", "einslive", "eins live", "ndr2", "ndr 2", "wdr2", "wdr 2", "ffn", "antenne niedersachsen", "radio bob", "dlf"}
         import re
