@@ -498,17 +498,25 @@ def build_music_query_tools(
         if band_id is None:
             return None
         okf_path = projection.entity_okf_path(conn, band_id)
-        if okf_path is None:
-            return None
-        value = _band_value(okf_path)
+        if okf_path is not None:
+            value = _band_value(okf_path)
+        else:
+            band_row = projection.entity_row(conn, band_id)
+            if band_row is None:
+                return None
+            from solaris_chat.engine.knowledge.okf import safe_slug
+            value = f"bands/{safe_slug(band_row['canonical_name'])}"
+        from solaris_chat.engine.knowledge.okf import safe_slug
+        band_name = band_row['canonical_name'] if okf_path is None else value
+        clean_slug = safe_slug(band_name.replace(', The', '').replace('The ', '').strip())
         rows = projection.fetch_all(
             conn,
             "SELECT e.id, e.canonical_name FROM facts f"
             " JOIN entities e ON e.id = f.subject_entity_id"
-            " WHERE f.predicate = 'by' AND f.value = ?"
+            " WHERE f.predicate = 'by' AND (f.value = ? OR f.value LIKE ?)"
             " AND e.type = 'song' AND e.resident_uid IN (?, ?)"
             " ORDER BY e.canonical_name",
-            (value, caller, projection.SHARED_UID),
+            (value, f'%{clean_slug}%', caller, projection.SHARED_UID),
         )
         for row in rows:
             audio_id = _song_audio_id(conn, row["id"], caller)
