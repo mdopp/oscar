@@ -728,6 +728,8 @@ async def call_service_scoped(
     arbitrary-code domains unreachable. `service` is dotted (`light.toggle`); its
     domain must match the entity's so a card can only act on its own entity.
     """
+    if entity_id == "media_player.wohnzimmer":
+        entity_id = "media_player.wohnzimmer_paar"
     if not _ENTITY_RE.match(entity_id):
         return {"ok": False, "error": "invalid entity_id"}
     domain, _, action = service.partition(".")
@@ -776,6 +778,8 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         domain = str(args.get("domain") or "")
         service = str(args.get("service") or "")
         entity_id = str(args.get("entity_id") or "")
+        if entity_id == "media_player.wohnzimmer":
+            entity_id = "media_player.wohnzimmer_paar"
         if not _NAME_RE.match(domain) or not _NAME_RE.match(service):
             return '{"error": "invalid domain or service name"}'
         if domain in _BLOCKED_DOMAINS:
