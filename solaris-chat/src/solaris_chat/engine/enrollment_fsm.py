@@ -90,7 +90,7 @@ def handle_turn(db_path: str, text: str, uid_hint: str = "", session_key: str = 
     # Cancel / Abort trigger
     if any(w in clean_text for w in ("abbrechen", "stopp", "stop", "abbruch", "nein danke", "keine lust")):
         reset_fsm(db_path, session_key)
-        enroll_requests_store.clear_request(db_path, uid_hint or "mdopp")
+        enroll_requests_store.clear_request(db_path, uid_hint or "user1")
         return "Die Einrichtung des Sprachprofils wurde abgebrochen. Kann ich dir sonst noch helfen?"
 
     state_data = get_fsm_state(db_path, session_key)
@@ -100,7 +100,7 @@ def handle_turn(db_path: str, text: str, uid_hint: str = "", session_key: str = 
     trigger_phrases = ("richte", "einrichten", "anlegen", "neuer benutzer", "neues profil", "neu starten", "neu anfangen")
     if state != STATE_IDLE and any(p in clean_text for p in trigger_phrases):
         reset_fsm(db_path, session_key)
-        enroll_requests_store.clear_request(db_path, uid_hint or "mdopp")
+        enroll_requests_store.clear_request(db_path, uid_hint or "user1")
         state = STATE_IDLE
 
     # STATE 0: Trigger turn ("Richte meinen Benutzer ein", "Sprachprofil anlegen")
@@ -155,9 +155,9 @@ def handle_turn(db_path: str, text: str, uid_hint: str = "", session_key: str = 
 
     # STATE 3: Sample recording (Sätze 1, 2, 3)
     if state == STATE_RECORDING:
-        uid = state_data.get("uid") or "mdopp"
-        display_name = state_data.get("display_name") or "Michael"
-        spelled_uid = state_data.get("spelled_uid") or "M - D - O - P - P"
+        uid = state_data.get("uid") or "user1"
+        display_name = state_data.get("display_name") or "Alex"
+        spelled_uid = state_data.get("spelled_uid") or "A - L - E - X"
         target = state_data.get("target_samples") or 3
 
         # Increment sample count deterministically on each turn

@@ -25,9 +25,8 @@ from solaris_chat.engine.tools import Tool
 _ACCEPTED_PHONETICS = re.compile(r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I)
 
 _RESIDENT_ALIASES = {
-    "michael": ("mdopp", "Michael Dopp"),
-    "michaeldopp": ("mdopp", "Michael Dopp"),
-    "mdopp": ("mdopp", "Michael Dopp"),
+    "alex": ("alex", "Alex Test"),
+    "max": ("max", "Max"),
     "carola": ("carola", "Carola"),
     "marco": ("marco", "Marco"),
 }

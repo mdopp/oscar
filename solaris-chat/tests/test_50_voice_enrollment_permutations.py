@@ -49,9 +49,9 @@ def test_cancellation_at_consent_resets_fsm(test_db, cancel_word):
 
 # --- 3. NAME FORMAT VARIATIONS (21-30) ---
 @pytest.mark.parametrize("name_input,expected_name", [
-    ("Michael", "Michael Dopp"),
-    ("mdopp", "Michael Dopp"),
-    ("M-D-O-P-P", "Michael Dopp"),
+    ("Alex", "Alex Test"),
+    ("user1", "Alex Test"),
+    ("A-L-E-X", "Alex Test"),
     ("Max", "Max"),
     ("M-A-X", "Max"),
     ("Anna", "Anna"),
@@ -71,7 +71,7 @@ def test_name_resolution_starts_sample_1(test_db, name_input, expected_name):
 def test_full_successful_voice_enrollment_3_sentences(test_db):
     t1 = enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     t2 = enrollment_fsm.handle_turn(test_db, "ja")
-    t3 = enrollment_fsm.handle_turn(test_db, "Michael")
+    t3 = enrollment_fsm.handle_turn(test_db, "Alex")
     assert "Was ist dein erster Satz?" in t3
 
     t4 = enrollment_fsm.handle_turn(test_db, "Heute ist ein schöner Tag.")
@@ -87,7 +87,7 @@ def test_full_successful_voice_enrollment_3_sentences(test_db):
 def test_cancellation_during_sentence_recording(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
-    enrollment_fsm.handle_turn(test_db, "Michael")
+    enrollment_fsm.handle_turn(test_db, "Alex")
     enrollment_fsm.handle_turn(test_db, "Satz 1")
     res = enrollment_fsm.handle_turn(test_db, "abbrechen")
     assert "abgebrochen" in res
@@ -95,7 +95,7 @@ def test_cancellation_during_sentence_recording(test_db):
 
 # --- 5. SPURIOUS STT INPUTS & NOISE AT CONSENT (36-40) ---
 @pytest.mark.parametrize("spurious_input", [
-    "mdopp", "hallo", "wer da", "wer bist du", "licht an"
+    "user1", "hallo", "wer da", "wer bist du", "licht an"
 ])
 def test_spurious_inputs_at_consent_keep_state_consent(test_db, spurious_input):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
@@ -106,28 +106,28 @@ def test_spurious_inputs_at_consent_keep_state_consent(test_db, spurious_input):
 
 # --- 6. WAKEWORD RECORDING & DELETION (41-50) ---
 def test_wakeword_sample_recording_counts_up_to_10(test_db):
-    req = wakeword_requests_store.start_request(test_db, "mdopp", target_count=10)
+    req = wakeword_requests_store.start_request(test_db, "user1", target_count=10)
     assert req["collected_count"] == 0
 
     for i in range(1, 10):
-        rec = wakeword_requests_store.record_sample(test_db, "mdopp")
+        rec = wakeword_requests_store.record_sample(test_db, "user1")
         assert rec["collected_count"] == i
         assert rec["status"] == "active"
 
-    rec10 = wakeword_requests_store.record_sample(test_db, "mdopp")
+    rec10 = wakeword_requests_store.record_sample(test_db, "user1")
     assert rec10["collected_count"] == 10
     assert rec10["status"] == "completed"
 
 def test_wakeword_sample_deletion_decrements_by_1(test_db):
-    wakeword_requests_store.start_request(test_db, "mdopp", 10)
+    wakeword_requests_store.start_request(test_db, "user1", 10)
     for _ in range(5):
-        wakeword_requests_store.record_sample(test_db, "mdopp")
+        wakeword_requests_store.record_sample(test_db, "user1")
 
-    req_before = wakeword_requests_store.get_request(test_db, "mdopp")
+    req_before = wakeword_requests_store.get_request(test_db, "user1")
     assert req_before["collected_count"] == 5
 
     # Decrement on sample deletion
-    req_after = wakeword_requests_store.decrement_sample(test_db, "mdopp")
+    req_after = wakeword_requests_store.decrement_sample(test_db, "user1")
     assert req_after["collected_count"] == 4
     assert req_after["status"] == "active"
 
@@ -167,11 +167,11 @@ def test_consecutive_multi_user_enrollments(test_db, user_name, spelled):
 # --- 8. WAKEWORD DIALOG PERMUTATIONS (56-65) ---
 @pytest.mark.parametrize("sample_index", list(range(1, 11)))
 def test_wakeword_individual_sample_indices(test_db, sample_index):
-    wakeword_requests_store.start_request(test_db, "mdopp", 10)
+    wakeword_requests_store.start_request(test_db, "user1", 10)
     for _ in range(sample_index - 1):
-        wakeword_requests_store.record_sample(test_db, "mdopp")
+        wakeword_requests_store.record_sample(test_db, "user1")
     
-    rec = wakeword_requests_store.record_sample(test_db, "mdopp")
+    rec = wakeword_requests_store.record_sample(test_db, "user1")
     assert rec["collected_count"] == sample_index
     if sample_index < 10:
         assert rec["status"] == "active"
