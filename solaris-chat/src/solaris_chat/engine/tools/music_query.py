@@ -594,7 +594,13 @@ def build_music_query_tools(
         # Redirect radio stations passed to play_music
         _RADIO_KEYWORDS = {"1live", "1 live", "einslive", "eins live", "ndr2", "ndr 2", "wdr2", "wdr 2", "ffn", "antenne niedersachsen", "radio bob", "dlf"}
         import re
-        _RADIO_NORMALISE = {"einslive": "1 live", "eins live": "1 live", "1live": "1 live", "ndr2": "ndr 2", "wdr2": "wdr 2"}
+        _RADIO_NORMALISE = {
+            "einslive": "1 live", "eins live": "1 live", "1live": "1 live", "1 live": "1 live",
+            "einsleif": "1 live", "eins leif": "1 live", "ein slive": "1 live", "eins lief": "1 live",
+            "da ins live": "1 live", "spiel da ins live": "1 live", "ins live": "1 live",
+            "eins life": "1 live", "1 life": "1 live", "einslaiv": "1 live", "1laiv": "1 live",
+            "ndr2": "ndr 2", "ndr 2": "ndr 2", "wdr2": "wdr 2", "wdr 2": "wdr 2"
+        }
         _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?|ich\s+möchte|kannst?\s+du(\s+bitte)?|lass|bitte)\s+", re.I)
         _ROOM_SUFFIXES = re.compile(r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b", re.I)
         _ACTION_PARTICLES = re.compile(r"\s+(an|ein|ab|laufen|spielen|bitte|jetzt)\b", re.I)

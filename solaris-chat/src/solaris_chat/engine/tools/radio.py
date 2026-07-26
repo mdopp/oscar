@@ -212,6 +212,8 @@ def resolve_play_device(
     named and the resident has no default yet, that first device is STORED as the
     default (the one-off case — a default already exists — never overwrites it).
     """
+    if entity_id == "media_player.wohnzimmer":
+        entity_id = "media_player.wohnzimmer_paar"
     if entity_id:
         if notes_dir and _read_default_device(notes_dir, uid) is None:
             _write_default_device(notes_dir, uid, entity_id)
