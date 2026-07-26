@@ -270,7 +270,9 @@ def build_radio_tools(
 
         if station:
             import re
+            _ROOM_SUFFIXES = re.compile(r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b", re.I)
             clean_station = re.sub(r"[^\w\s]", "", station).strip()
+            clean_station = _ROOM_SUFFIXES.sub("", clean_station).strip()
             resolved = (await resolver.resolve_station(clean_station)) if clean_station else (await resolver.resolve_station(station))
             if resolved is None:
                 return json.dumps(

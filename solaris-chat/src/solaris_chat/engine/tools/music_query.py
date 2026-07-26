@@ -590,8 +590,10 @@ def build_music_query_tools(
         import re
         _RADIO_NORMALISE = {"einslive": "1 live", "eins live": "1 live", "1live": "1 live", "ndr2": "ndr 2", "wdr2": "wdr 2"}
         _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?)\s+", re.I)
+        _ROOM_SUFFIXES = re.compile(r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b", re.I)
         check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
         check_str = _RADIO_VERBS.sub("", check_raw).strip()
+        check_str = _ROOM_SUFFIXES.sub("", check_str).strip()
         check_str = _RADIO_NORMALISE.get(check_str, check_str)
         is_radio_hint = "radio" in check_str or "fm" in check_str or "sender" in check_str or check_str in _RADIO_KEYWORDS or any(k in check_str for k in ["1 live", "ndr 2", "wdr 2", "ffn"])
         if is_radio_hint:
