@@ -176,6 +176,7 @@ async def _run() -> None:
         engine_admin=admin,
         engine_deep=deep,
         engine_guest=guest,
+        engine_enrollment=enrollment,
         remote_user_header=settings.remote_user_header,
         default_uid=settings.default_uid,
         remote_groups_header=settings.remote_groups_header,

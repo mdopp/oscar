@@ -1206,6 +1206,7 @@ def build_app(
     engine_admin: EngineClient | Any = None,
     engine_deep: EngineClient | Any = None,
     engine_guest: EngineClient | Any = None,
+    engine_enrollment: EngineClient | Any = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1282,6 +1283,7 @@ def build_app(
     # `solaris-deep` model (voice "Gründlich") and the night crons; chat turns no
     # longer route to it — thorough is the reasoning knob on the household model.
     deep_gw = engine_deep or engine
+    enrollment_gw = engine_enrollment or engine
     admin_sessions: set[str] = set()
     # Sessions pinned to the household (e4b) gateway — the pinned "Zuhause"
     # chat. Populated at create; the persisted primary topic is the
@@ -1355,6 +1357,15 @@ def build_app(
         known admin session_id — so the #209/#229 gate holds at the routing
         layer too.
         """
+        try:
+            from solaris_chat import enroll_requests_store, wakeword_requests_store
+            if (
+                enroll_requests_store.has_any_active_request(solaris_db_path)
+                or wakeword_requests_store.has_any_active_request(solaris_db_path)
+            ):
+                return enrollment_gw
+        except Exception:
+            pass
         if is_household_chat(uid, session_id, topic_slug):
             return household_gw
         sel = request.rel_url.query.get("persona") or persona
@@ -5276,7 +5287,7 @@ def build_app(
             # carry the same id back, so consecutive turns reuse one warm
             # engine session (and its KV prefix cache). A cold turn-2 TTFT is
             # therefore Ollama model eviction, not a per-turn session (#268).
-            if not session_id:
+            if not session_id or client.ephemeral:
                 session_id = await create_turn_session(
                     owner_uid,
                     topic_slug,
@@ -5397,7 +5408,7 @@ def build_app(
         cancelled = False
         try:
             compacted = False
-            if not session_id:
+            if not session_id or client.ephemeral:
                 session_id = await create_turn_session(
                     owner_uid,
                     topic_slug,
@@ -5937,6 +5948,7 @@ async def serve(
     engine_admin: EngineClient | None = None,
     engine_deep: EngineClient | None = None,
     engine_guest: EngineClient | None = None,
+    engine_enrollment: EngineClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -5999,6 +6011,7 @@ async def serve(
         engine_admin=engine_admin,
         engine_deep=engine_deep,
         engine_guest=engine_guest,
+        engine_enrollment=engine_enrollment,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
         remote_groups_header=remote_groups_header,
