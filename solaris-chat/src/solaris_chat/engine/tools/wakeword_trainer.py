@@ -203,7 +203,7 @@ def build_wakeword_tools(
                 f"Soll ich diese Aufnahme löschen?"
             )
         else:
-            say = f"Alle {len(samples)} Aufnahmen sind in bester Qualität und verifiziert!"
+            say = f"Alle {len(samples)} Aufnahmen sind in bester Qualität und verifiziert. Möchtest du noch etwas prüfen?"
 
         return json.dumps({
             "ok": True,
@@ -214,7 +214,7 @@ def build_wakeword_tools(
 
     async def _handle_list(args: dict[str, Any]) -> str:
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
-        say = f"Es sind {len(samples)} Sprachproben für das Wakeword „Solaris“ gespeichert."
+        say = f"Es sind {len(samples)} Sprachproben für das Wakeword „Solaris“ gespeichert. Möchtest du eine Probe anhören oder löschen?"
         return json.dumps({
             "ok": True,
             "samples": samples,
@@ -230,9 +230,9 @@ def build_wakeword_tools(
 
         if sample_id:
             wakeword_samples_store.delete_sample(db_path, sample_id)
-            say = f"Aufnahme {sample_id} wurde gelöscht. Du kannst sie jetzt neu einsprechen."
+            say = f"Aufnahme {sample_id} wurde gelöscht. Bist du bereit, sie neu einzusprechen?"
         else:
-            say = "Keine fehlerhaften Aufnahmen zum Löschen gefunden."
+            say = "Keine fehlerhaften Aufnahmen zum Löschen gefunden. Wollen wir weitermachen?"
 
         return json.dumps({
             "ok": True,

@@ -132,3 +132,31 @@ def test_tool_descriptions_contain_no_hardcoded_user_defaults():
         desc = tool.description.lower()
         assert "mdopp" not in desc, f"Hardcoded 'mdopp' found in tool {tool.name} description: {tool.description}"
         assert "michael" not in desc, f"Hardcoded 'michael' found in tool {tool.name} description: {tool.description}"
+
+
+@pytest.mark.asyncio
+async def test_all_enrollment_responses_end_with_question_mark(tmp_path):
+    """Voice-PE requirement (#1056): Every spoken response during enrollment
+    MUST end with '?' to keep the Home Assistant Voice PE microphone open."""
+    db = str(tmp_path / "qm_test.db")
+    tools = build_register_tools(db)
+
+    start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
+    finish_tool = next(t for t in tools if t.name == "register_pending_resident")
+
+    # 1. Missing username prompt
+    r_missing = json.loads(await start_tool.handler({}))
+    assert r_missing["say"].strip().endswith("?")
+
+    # 2. Start enrollment
+    r_start = json.loads(await start_tool.handler({"uid": "mdopp"}))
+    assert r_start["say"].strip().endswith("?")
+
+    # 3. Intermediate turns
+    for sample_count in (1, 2):
+        enroll_requests_store.touch_request(db, "mdopp")
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE enroll_requests SET collected = ? WHERE uid = 'mdopp'", (sample_count,))
+            conn.commit()
+        r_turn = json.loads(await finish_tool.handler({"uid": "mdopp"}))
+        assert r_turn["say"].strip().endswith("?")

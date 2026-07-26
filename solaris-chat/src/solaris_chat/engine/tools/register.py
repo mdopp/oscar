@@ -20,7 +20,7 @@ def build_register_tools(
         raw_uid = str(args.get("uid") or "").strip()
         # Require explicit username / name prompt if generic or empty (#1056)
         if not raw_uid or raw_uid.lower() in ("benutzer", "user", "profil", "einrichten", "meinen benutzer", "mein benutzer"):
-            say_ask = "Wie lautet dein Benutzername? Bitte nenne mir deinen Namen oder buchstabiere deinen Benutzernamen."
+            say_ask = "Wie lautet dein Benutzername? Bitte nenne mir deinen Namen oder buchstabiere das Kürzel?"
             return json.dumps({"ok": False, "reason": "missing_uid", "say": say_ask}, ensure_ascii=False)
         from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
         uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
@@ -120,7 +120,7 @@ def build_register_tools(
                 "'Möchtest du dein Sprachprofil biometrisch auf der Box anlegen? Bitte antworte mit Ja oder Nein.' "
                 "SCHRITT 2: Wenn das Einverständnis vorliegt, frage nach dem Namen oder Kürzel: "
                 "'Welcher Name oder welches Kürzel soll verwendet werden? Bitte buchstabiere das Kürzel (z.B. M - D - O - P - P). Wie lautet dein Name?' "
-                "SCHRITT 3: Rufe start_voice_enrollment(uid='mdopp') auf. Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
+                "SCHRITT 2: Sobald der Nutzer den Namen oder das Kürzel genannt hat, rufe start_voice_enrollment(uid=genannter_name) auf. Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
             ),
             parameters={
                 "type": "object",
