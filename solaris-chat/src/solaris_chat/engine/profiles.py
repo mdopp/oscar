@@ -46,6 +46,7 @@ from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.web import build_web_tools
+from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
 
 
@@ -140,6 +141,7 @@ def build_engine_clients(
 
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
+    household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += web_tools
     household_tools += research_tools
     household_tools += choice_tools
