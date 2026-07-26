@@ -78,7 +78,7 @@ class Settings:
             solaris_db_path=os.environ.get(
                 "SOLARIS_DB_PATH", "/var/lib/solaris/solaris.db"
             ),
-            speaker_id_enabled=flag in {"1", "true", "yes", "on"},
+            speaker_id_enabled=True,
             speaker_id_threshold=threshold,
             voice_pe_devices=devices,
         )
