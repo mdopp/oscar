@@ -110,3 +110,10 @@ def clear_request(db_path: str, uid: str) -> None:
             conn.commit()
     except sqlite3.OperationalError:
         return
+
+
+def has_active_request(db_path: str, uid: str) -> bool:
+    req = read_request(db_path, uid)
+    if req is None:
+        return False
+    return not req.get("timed_out") and req.get("status") in (STATUS_PENDING, STATUS_CAPTURING)

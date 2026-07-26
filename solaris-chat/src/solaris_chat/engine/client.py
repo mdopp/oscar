@@ -132,6 +132,7 @@ _TOOL_DISCIPLINE = (
     " DIREKT aus den gelieferten Quellen MIT Quellenangabe — ohne vorher"
     " eine Rückfrage zu stellen."
     " WENN ein Tool ein 'say'-Feld in seinem Ergebnis zurückgibt (z.B. bei start_voice_enrollment, register_pending_resident, start_wakeword_enrollment, record_wakeword_sample), MUSST du den Text aus 'say' EINS ZU EINS VERBATIM WORT FÜR WORT vorlesen. Erfinde KEINE eigenen Sätze, lasse das abschließende Fragezeichen NICHT weg und ändere den Text NICHT ab!"
+    " WÄHREND des Sprach-Enrollments oder Wakeword-Aufnahmeprozesses sind die Aussagen des Nutzers REINE Sprachproben. Führe in diesem Modus KEINE Geräte-Aktionen (Licht schalten, Schalter bedienen etc.) aus, sondern rufe direkt register_pending_resident bzw. record_wakeword_sample auf und lies das 'say'-Feld 1:1 unverändert vor."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
@@ -757,6 +758,21 @@ class EngineClient:
         admin_identity = current_admin_identity.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
+
+        try:
+            from solaris_chat import enroll_requests_store, wakeword_requests_store
+            if enroll_requests_store.has_active_request(self._db_path, uid) or wakeword_requests_store.has_active_request(self._db_path, uid):
+                tools = [
+                    t for t in tools
+                    if (t.get("function") or {}).get("name") in (
+                        "start_voice_enrollment", "register_pending_resident",
+                        "start_wakeword_enrollment", "record_wakeword_sample",
+                        "trigger_wakeword_training", "audit_wakeword_samples",
+                        "list_wakeword_samples", "delete_wakeword_sample"
+                    )
+                ]
+        except Exception:
+            pass
         # Per-turn sink the HA state tools fill with read-only card-specs (#475);
         # drained into a `ha_cards` event at turn end.
         ha_cards: list[dict[str, Any]] = []

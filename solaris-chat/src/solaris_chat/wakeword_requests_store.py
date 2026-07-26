@@ -91,3 +91,10 @@ def finish_request(db_path: str, uid: str) -> None:
             (uid,)
         )
         conn.commit()
+
+
+def has_active_request(db_path: str, uid: str) -> bool:
+    req = get_request(db_path, uid)
+    if not req:
+        return False
+    return req.get("status") == "active"
