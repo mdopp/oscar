@@ -216,6 +216,11 @@ def resolve_play_device(
         if notes_dir and _read_default_device(notes_dir, uid) is None:
             _write_default_device(notes_dir, uid, entity_id)
         return entity_id, None
+    if notes_dir and room:
+        room_prefs = _read_pref(notes_dir, uid, "room-devices", (room, room.lower(), room.capitalize(), room.title()))
+        for v in room_prefs.values():
+            if v.strip():
+                return v.strip(), None
     if room and resolved_room_device:
         return resolved_room_device, None
     if notes_dir:
