@@ -102,20 +102,33 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_enrollment_asks_for_username_when_missing(tmp_db):
-    tools = build_register_tools(tmp_db)
+async def test_enrollment_asks_for_username_when_missing(tmp_path):
+    db = str(tmp_path / "test.db")
+    tools = build_register_tools(db)
     start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
 
     # Generic or empty uid argument must return missing_uid and ask for username
-    res_generic = await start_tool.func({"uid": "benutzer"})
+    res_generic = await start_tool.handler({"uid": "benutzer"})
     data_generic = json.loads(res_generic)
     assert data_generic["ok"] is False
     assert data_generic["reason"] == "missing_uid"
     assert "Wie lautet dein Benutzername?" in data_generic["say"]
 
     # Explicit name provides enrollment
-    res_explicit = await start_tool.func({"uid": "mdopp"})
+    res_explicit = await start_tool.handler({"uid": "mdopp"})
     data_explicit = json.loads(res_explicit)
     assert data_explicit["ok"] is True
     assert data_explicit["uid"] == "mdopp"
     assert "M - D - O - P - P" in data_explicit["spelled_uid"]
+
+
+def test_tool_descriptions_contain_no_hardcoded_user_defaults():
+    """Schema validation test (#1056): Ensures no Tool.description contains
+    hardcoded 'mdopp', 'michael', or default instructions that mislead the LLM."""
+    reg_tools = build_register_tools("/tmp/dummy.db")
+    wake_tools = build_wakeword_tools("/tmp/dummy.db", lambda: "household")
+
+    for tool in reg_tools + wake_tools:
+        desc = tool.description.lower()
+        assert "mdopp" not in desc, f"Hardcoded 'mdopp' found in tool {tool.name} description: {tool.description}"
+        assert "michael" not in desc, f"Hardcoded 'michael' found in tool {tool.name} description: {tool.description}"
