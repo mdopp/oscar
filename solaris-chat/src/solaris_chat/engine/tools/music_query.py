@@ -588,12 +588,15 @@ def build_music_query_tools(
         check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
         check_str = _RADIO_VERBS.sub("", check_raw).strip()
         check_str = _RADIO_NORMALISE.get(check_str, check_str)
-        if check_str in _RADIO_KEYWORDS or any(k in check_str for k in ["1 live", "ndr 2", "wdr 2", "ffn"]):
+        is_radio_hint = "radio" in check_str or "fm" in check_str or "sender" in check_str or check_str in _RADIO_KEYWORDS or any(k in check_str for k in ["1 live", "ndr 2", "wdr 2", "ffn"])
+        if is_radio_hint:
             from solaris_chat.engine.tools.radio import build_radio_tools
             r_tools = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
             r_handler = next((t.handler for t in r_tools if t.name == "play_radio"), None)
             if r_handler:
-                return await r_handler({"station": check_str, "entity_id": args.get("entity_id") or ""})
+                res = await r_handler({"station": check_str, "entity_id": args.get("entity_id") or ""})
+                if json.loads(res).get("ok"):
+                    return res
         artist = str(args.get("artist") or "").strip()
         entity_id = str(args.get("entity_id") or "").strip()
         # Strip a filler-phrase title ("ein Song von Queen") the model wrongly put
@@ -651,6 +654,13 @@ def build_music_query_tools(
             elif artist:
                 hit = _band_first_castable(conn, artist, caller)
                 if hit is None:
+                    from solaris_chat.engine.tools.radio import build_radio_tools
+                    r_tools = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
+                    r_handler = next((t.handler for t in r_tools if t.name == "play_radio"), None)
+                    if r_handler:
+                        r_res = await r_handler({"station": check_str, "entity_id": args.get("entity_id") or ""})
+                        if json.loads(r_res).get("ok"):
+                            return r_res
                     return json.dumps({"ok": False, "reason": "artist_not_found"})
                 clean, audio_id = hit
             else:
