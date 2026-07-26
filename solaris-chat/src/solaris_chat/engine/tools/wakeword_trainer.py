@@ -97,8 +97,9 @@ def build_wakeword_tools(
             suspicious = wakeword_samples_store.get_suspicious_samples(db_path, "solaris")
             if suspicious:
                 bad_item = suspicious[0]
+                speaker_name = bad_item['resident_uid'] if bad_item['resident_uid'] != 'household' else 'deiner letzten Aufnahme'
                 say = (
-                    f"Perfekt, 10 Sprachproben gesammelt! Bei Probe {bad_item['id']} habe ich allerdings "
+                    f"Perfekt, 10 Sprachproben gesammelt! Bei {speaker_name} habe ich allerdings "
                     f"wörtlich „{bad_item['stt_transcript']}“ verstanden. "
                     f"Möchtest du diese Probe löschen und neu aufnehmen, oder soll sie als ungewöhnliche Aussprache behalten werden?"
                 )
@@ -124,8 +125,9 @@ def build_wakeword_tools(
 
         if suspicious:
             bad = suspicious[0]
+            speaker_name = bad['resident_uid'] if bad['resident_uid'] != 'household' else 'dir'
             say = (
-                f"Ich habe {len(samples)} gespeicherte Proben. Bei Probe {bad['id']} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
+                f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_name} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
                 f"Soll ich diese Aufnahme löschen?"
             )
         else:
