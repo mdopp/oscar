@@ -367,11 +367,21 @@ def build_engine_clients(
         gatekeeper_token=gatekeeper_token,
     )
     enrollment_tools += build_wakeword_tools(db_path, _current_uid)
+    # Write minimal enrollment soul file to avoid 24k token prefill latency
+    enroll_soul_path = "/tmp/ENROLLMENT_SOUL.md"
+    with open(enroll_soul_path, "w") as f_soul:
+        f_soul.write(
+            "Du bist Solaris. Du hilfst beim Einrichten von Sprachprofilen.\n"
+            "SCHRITT 1: Frage nach Einverständnis zur biometrischen Stimmaufnahme.\n"
+            "SCHRITT 2: Frage nach dem Namen oder Kürzel.\n"
+            "SCHRITT 3: Führe das Enrollment durch. Antworte stets kurz und präzise.\n"
+        )
+
     enrollment = make(
         EngineProfile(
             name="solaris-enrollment",
             model=fast_model or "gemma4:e4b",
-            soul_path=soul_path,
+            soul_path=enroll_soul_path,
             think_default=False,
             temperature=0.1,
             toolbox=Toolbox(enrollment_tools),
