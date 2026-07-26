@@ -108,11 +108,11 @@ async def test_enrollment_asks_for_username_when_missing(tmp_path):
     start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
 
     # Generic or empty uid argument must return missing_uid and ask for username
-    res_generic = await start_tool.handler({"uid": "benutzer"})
+    res_generic = await start_tool.handler({"uid": "ja"})
     data_generic = json.loads(res_generic)
     assert data_generic["ok"] is False
     assert data_generic["reason"] == "missing_uid"
-    assert "Wie lautet dein Benutzername?" in data_generic["say"]
+    assert "Wie lautet dein Name" in data_generic["say"]
 
     # Explicit name provides enrollment
     res_explicit = await start_tool.handler({"uid": "mdopp"})

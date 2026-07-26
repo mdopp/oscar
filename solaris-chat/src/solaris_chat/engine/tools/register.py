@@ -18,9 +18,10 @@ def build_register_tools(
 ) -> list[Tool]:
     async def start(args: dict[str, Any]) -> str:
         raw_uid = str(args.get("uid") or "").strip()
-        # Require explicit username / name prompt if generic or empty (#1056)
-        if not raw_uid or raw_uid.lower() in ("benutzer", "user", "profil", "einrichten", "meinen benutzer", "mein benutzer"):
-            say_ask = "Wie lautet dein Benutzername? Bitte nenne mir deinen Namen oder buchstabiere das Kürzel?"
+        # If the user only gave consent or generic setup without naming/spelling a user, ask for the name (#1056)
+        generic_inputs = {"", "benutzer", "user", "profil", "einrichten", "meinen benutzer", "mein benutzer", "ja", "ja.", "yes", "ok", "einverstanden", "zustimmung"}
+        if not raw_uid or raw_uid.lower() in generic_inputs:
+            say_ask = "Danke für deine Zustimmung! Wie lautet dein Name oder welches Kürzel möchtest du nutzen? Bitte buchstabiere das Kürzel?"
             return json.dumps({"ok": False, "reason": "missing_uid", "say": say_ask}, ensure_ascii=False)
         from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
         uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
