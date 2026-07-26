@@ -51,20 +51,32 @@ def build_register_tools(
     db_path: str, gatekeeper_url: str = "", gatekeeper_token: str = ""
 ) -> list[Tool]:
     async def start(args: dict[str, Any]) -> str:
-        uid = str(args.get("uid") or "").strip()
+        raw_uid = str(args.get("uid") or "").strip()
+        from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
+        uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
+
         if not _UID_RE.match(uid):
             return json.dumps({"ok": False, "reason": "invalid_uid"})
         try:
             enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
         except Exception:  # noqa: BLE001 — table/DB missing surfaces as not-ok
             return json.dumps({"ok": False, "reason": "enroll_store_unavailable"})
+
+        say_custom = (
+            f"{display_name} wurde als {spelled_uid} erkannt! Lass uns jetzt mit den 3 Sprachproben für dein Profil weitermachen. "
+            f"Sag mir bitte nacheinander drei ganz normale Sätze oder Befehle, wie du sonst auch mit mir sprichst. "
+            f"Der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Was ist dein erster Satz?"
+        )
+
         return json.dumps(
             {
                 "ok": True,
                 "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
                 "collecting": True,
                 "samples_needed": _TARGET_SAMPLES,
-                "say": _COLLECT_PROMPT,
+                "say": say_custom,
             },
             ensure_ascii=False,
         )

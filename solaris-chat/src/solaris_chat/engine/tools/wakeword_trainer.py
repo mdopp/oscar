@@ -25,9 +25,11 @@ from solaris_chat.engine.tools import Tool
 _ACCEPTED_PHONETICS = re.compile(r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I)
 
 _RESIDENT_ALIASES = {
-    "michael": "mdopp",
-    "michaeldopp": "mdopp",
-    "mdopp": "mdopp",
+    "michael": ("mdopp", "Michael Dopp"),
+    "michaeldopp": ("mdopp", "Michael Dopp"),
+    "mdopp": ("mdopp", "Michael Dopp"),
+    "carola": ("carola", "Carola"),
+    "marco": ("marco", "Marco"),
 }
 
 
@@ -38,13 +40,13 @@ def parse_spelled_uid(raw: str) -> str:
     return cleaned if len(cleaned) >= 2 else "household"
 
 
-def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, str]:
-    """Resolves spoken or spelled user names/aliases ('michael', 'mdopp') to system UID & Display Name."""
+def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, str, str]:
+    """Resolves spoken or spelled user names/aliases to (uid, display_name, spelled_uid)."""
     parsed = parse_spelled_uid(raw_input)
     if parsed in _RESIDENT_ALIASES:
-        uid = _RESIDENT_ALIASES[parsed]
-        display_name = "Michael" if uid == "mdopp" else uid.capitalize()
-        return uid, display_name
+        uid, display_name = _RESIDENT_ALIASES[parsed]
+        spelled = " - ".join(list(uid.upper()))
+        return uid, display_name, spelled
 
     if db_path and os.path.exists(db_path):
         try:
@@ -54,11 +56,13 @@ def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, s
                     (parsed, f"%{parsed}%")
                 ).fetchone()
                 if row:
-                    return row[0], row[1]
+                    spelled = " - ".join(list(row[0].upper()))
+                    return row[0], row[1], spelled
         except Exception:
             pass
 
-    return parsed, parsed.capitalize()
+    spelled = " - ".join(list(parsed.upper()))
+    return parsed, parsed.capitalize(), spelled
 
 
 def build_wakeword_tools(
@@ -73,21 +77,24 @@ def build_wakeword_tools(
         raw_uid = str(args.get("uid") or "").strip()
 
         if raw_uid:
-            uid, display_name = resolve_resident_identity(raw_uid, db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         elif current_uid and current_uid != "household":
-            uid, display_name = resolve_resident_identity(current_uid, db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(current_uid, db_path)
         else:
-            uid, display_name = "household", "Haushalt"
+            uid, display_name, spelled_uid = "household", "Haushalt", "H - A - U - S - H - A - L - T"
 
         target_count = int(args.get("target_count", 10))
 
         req = wakeword_requests_store.start_request(db_path, uid, target_count)
         rem = req["target_count"] - req["collected_count"]
 
-        greeting = f"Klar, {display_name}! " if uid != "household" else "Klar! "
+        if uid != "household":
+            greeting = f"{display_name} wurde als {spelled_uid} erkannt! "
+        else:
+            greeting = "Klar! "
 
         say = (
-            f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil ({uid}) sammeln. "
+            f"{greeting}Lass uns {target_count} Sprachproben für das Wakeword „Solaris“ für dein Profil ({spelled_uid}) sammeln. "
             f"Sprich bitte nach meiner Antwort nacheinander das Wort „Solaris“ — mal leise, "
             f"mal gerufen. Bist du bereit für Probe 1?"
         )
@@ -95,6 +102,7 @@ def build_wakeword_tools(
             "ok": True,
             "uid": uid,
             "display_name": display_name,
+            "spelled_uid": spelled_uid,
             "target_count": target_count,
             "remaining": rem,
             "say": say
@@ -105,9 +113,9 @@ def build_wakeword_tools(
         raw_uid = str(args.get("uid") or "").strip()
 
         if raw_uid:
-            uid, display_name = resolve_resident_identity(raw_uid, db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         else:
-            uid, display_name = resolve_resident_identity(current_uid or "household", db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(current_uid or "household", db_path)
 
         req = wakeword_requests_store.record_sample(db_path, uid)
 
@@ -134,8 +142,8 @@ def build_wakeword_tools(
             is_valid=is_valid
         )
 
+        current_probe = target - rem + 1
         if rem > 0:
-            current_probe = target - rem + 1
             if rem == 1:
                 say = f"Sehr gut, {display_name}! Nur noch 1 Probe! Was ist deine letzte Probe?" if uid != "household" else "Sehr gut! Nur noch 1 Probe! Was ist deine letzte Probe?"
             elif rem in (8, 5, 3):
@@ -146,6 +154,7 @@ def build_wakeword_tools(
                 "ok": True,
                 "uid": uid,
                 "display_name": display_name,
+                "spelled_uid": spelled_uid,
                 "collected": collected,
                 "target": target,
                 "remaining": rem,
@@ -171,6 +180,7 @@ def build_wakeword_tools(
                 "ok": True,
                 "uid": uid,
                 "display_name": display_name,
+                "spelled_uid": spelled_uid,
                 "collected": collected,
                 "target": target,
                 "remaining": 0,
@@ -186,7 +196,7 @@ def build_wakeword_tools(
         if suspicious:
             bad = suspicious[0]
             speaker_uid = bad['resident_uid']
-            _, speaker_name = resolve_resident_identity(speaker_uid, db_path)
+            _, speaker_name, _ = resolve_resident_identity(speaker_uid, db_path)
             speaker_say = speaker_name if speaker_uid != 'household' else 'dir'
             say = (
                 f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_say} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
@@ -234,9 +244,9 @@ def build_wakeword_tools(
         current_uid = uid_getter()
         raw_uid = str(args.get("uid") or "").strip()
         if raw_uid:
-            uid, display_name = resolve_resident_identity(raw_uid, db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         else:
-            uid, display_name = resolve_resident_identity(current_uid or "household", db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(current_uid or "household", db_path)
 
         wakeword_requests_store.finish_request(db_path, uid)
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
@@ -264,6 +274,7 @@ def build_wakeword_tools(
             "ok": True,
             "uid": uid,
             "display_name": display_name,
+            "spelled_uid": spelled_uid,
             "samples_count": len(samples),
             "training_started": True,
             "say": say
