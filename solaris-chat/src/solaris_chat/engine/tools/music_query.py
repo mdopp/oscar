@@ -595,7 +595,7 @@ def build_music_query_tools(
         _RADIO_KEYWORDS = {"1live", "1 live", "einslive", "eins live", "ndr2", "ndr 2", "wdr2", "wdr 2", "ffn", "antenne niedersachsen", "radio bob", "dlf"}
         import re
         _RADIO_NORMALISE = {"einslive": "1 live", "eins live": "1 live", "1live": "1 live", "ndr2": "ndr 2", "wdr2": "wdr 2"}
-        _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?)\s+", re.I)
+        _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?|ich\s+möchte|kannst?\s+du(\s+bitte)?|lass|bitte)\s+", re.I)
         _ROOM_SUFFIXES = re.compile(r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b", re.I)
         _ACTION_PARTICLES = re.compile(r"\s+(an|ein|ab|laufen|spielen|bitte|jetzt)\b", re.I)
         check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
