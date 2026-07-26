@@ -1,4 +1,3 @@
-from solaris_chat.engine import enrollment_fsm
 """Ollama-compatible facade — the engine as a Home Assistant conversation agent.
 
 HA 2026.6's core `openai_conversation` integration has no custom base_url, but
@@ -20,6 +19,7 @@ hardware.
 """
 
 from __future__ import annotations
+from solaris_chat.engine import enrollment_fsm
 
 import json
 import re
