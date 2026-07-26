@@ -47,10 +47,21 @@ def get_fsm_state(db_path: str, session_key: str = "default") -> dict[str, Any] 
         init_db(db_path)
         with _connect(db_path) as conn:
             row = conn.execute(
-                "SELECT * FROM enrollment_fsm WHERE session_key = ? AND state != 'idle'",
+                """SELECT *,
+                           CAST((julianday('now') - julianday(updated_at)) * 86400 AS INTEGER) as age_s
+                      FROM enrollment_fsm
+                     WHERE session_key = ? AND state != 'idle'""",
                 (session_key,)
             ).fetchone()
-            return dict(row) if row else None
+            if row:
+                data = dict(row)
+                # Auto-expiration (#1056): If FSM state is older than 180s (3 minutes), auto-reset it
+                if data.get("age_s") is not None and data["age_s"] > 180:
+                    conn.execute("DELETE FROM enrollment_fsm WHERE session_key = ?", (session_key,))
+                    conn.commit()
+                    return None
+                return data
+            return None
     except Exception:
         return None
 
