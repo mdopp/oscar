@@ -30,7 +30,7 @@ STATUS_FAILED = "failed"
 
 # Must stay >= the gatekeeper's capture window (enroll_stash.ENROLL_TTL_SECONDS)
 # so the engine doesn't declare a timeout while a capture is still in flight.
-ENROLL_TTL_SECONDS = 120
+ENROLL_TTL_SECONDS = 600
 
 
 def _connect(db_path: str) -> sqlite3.Connection:

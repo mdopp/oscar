@@ -4,7 +4,7 @@ Tracks active user wakeword recording requests (target count, collected count, s
 in solaris.db for interactive voice enrollment dialogs.
 """
 
-from __future__ annotations
+from __future__ import annotations
 
 import sqlite3
 import time

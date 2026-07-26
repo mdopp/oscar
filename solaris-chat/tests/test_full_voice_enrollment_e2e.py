@@ -7,7 +7,7 @@ Verifies the complete end-to-end multi-turn lifecycle:
 4. Wakeword enrollment (start_wakeword_enrollment -> 10 samples -> audit -> trigger_wakeword_training)
 """
 
-from __future__ annotations
+from __future__ import annotations
 
 import json
 import sqlite3
@@ -99,3 +99,23 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     ws2 = json.loads(await sample_wake.handler({"uid": "mdopp", "transcript": "Solaris"}))
     assert ws2["completed"] is True
     assert ws2["say"].endswith("?")
+
+
+@pytest.mark.asyncio
+async def test_enrollment_asks_for_username_when_missing(tmp_db):
+    tools = build_register_tools(tmp_db)
+    start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
+
+    # Generic or empty uid argument must return missing_uid and ask for username
+    res_generic = await start_tool.func({"uid": "benutzer"})
+    data_generic = json.loads(res_generic)
+    assert data_generic["ok"] is False
+    assert data_generic["reason"] == "missing_uid"
+    assert "Wie lautet dein Benutzername?" in data_generic["say"]
+
+    # Explicit name provides enrollment
+    res_explicit = await start_tool.func({"uid": "mdopp"})
+    data_explicit = json.loads(res_explicit)
+    assert data_explicit["ok"] is True
+    assert data_explicit["uid"] == "mdopp"
+    assert "M - D - O - P - P" in data_explicit["spelled_uid"]
