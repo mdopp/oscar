@@ -1030,6 +1030,27 @@ class EngineClient:
                 if persist:
                     store.append_message(self._db_path, session_id, "tool", output)
                 messages.append({"role": "tool", "content": output, "tool_name": name})
+                # SHORT-CIRCUIT: if the tool returned a 'say' field, emit it directly
+                # without a second LLM pass. This prevents 20-30s model stalls during
+                # voice enrollment and wakeword dialogs (#1056).
+                try:
+                    import json as _json
+                    _payload = _json.loads(output)
+                    _say = _payload.get("say") if isinstance(_payload, dict) else None
+                    if _say and name in (
+                        "start_voice_enrollment", "register_pending_resident",
+                        "start_wakeword_enrollment", "record_wakeword_sample",
+                        "trigger_wakeword_training", "audit_wakeword_samples",
+                        "delete_wakeword_sample",
+                    ):
+                        final_content = _say
+                        if persist:
+                            store.append_message(
+                                self._db_path, session_id, "assistant", final_content
+                            )
+                        break
+                except Exception:
+                    pass
         else:
             # Pass budget exhausted mid-tool-chain: surface what we have.
             final_content = (
