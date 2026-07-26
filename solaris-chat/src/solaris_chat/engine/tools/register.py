@@ -40,12 +40,10 @@ _TARGET_SAMPLES = 3
 # prior — #404). So the tool hands the model the exact line to echo: it speaks
 # this verbatim instead of inventing the next prompt from a weak instruction.
 _COLLECT_PROMPT = (
-    "Alles klar! Sag mir jetzt bitte drei ganz normale Sätze oder Befehle,"
-    " wie du sonst auch mit mir sprichst — zum Beispiel „Schalte das Licht"
-    " im Wohnzimmer an“, „Stell einen Timer auf zehn Minuten“ oder"
-    " „Wie wird das Wetter morgen?“. Sag NICHT einfach deinen Namen —"
-    " der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Leg einfach"
-    " mit dem ersten Satz los."
+    "Alles klar! Sag mir jetzt bitte nacheinander drei ganz normale Sätze oder Befehle, "
+    "wie du sonst auch mit mir sprichst — zum Beispiel „Schalte das Licht im Wohnzimmer an“ "
+    "oder „Stell einen Timer auf zehn Minuten“. Der Inhalt ist egal, es zählt nur der Klang deiner Stimme. "
+    "Was ist dein erster Satz?"
 )
 
 
@@ -122,12 +120,10 @@ def build_register_tools(
                 "Startet das Sprach-Enrollment, wenn sich jemand einrichten will"
                 " ('richte mich ein', 'merk dir meine Stimme'). Vorher: kurz"
                 " Einverständnis zur Stimmaufnahme einholen (biometrisch) und nach"
-                " dem NAMEN fragen — nie nach einer ID; uid selbst ableiten"
-                " (kleinbuchstaben, ASCII: 'Michael' ⇒ 'michael'). Gibt 'say'"
-                " zurück: sprich GENAU diese Zeile — bitte NIE, den Namen zu"
-                " wiederholen. Jede folgende Äußerung ist eine Probe; nach drei"
-                " Äußerungen register_pending_resident rufen. Braucht aktive"
-                " Sprechererkennung."
+                " dem Kürzel oder Vornamen fragen (z.B. 'mdopp', 'michael' oder 'carola') — "
+                "uid selbst ableiten (kleinbuchstaben, ASCII: 'mdopp' ⇒ 'mdopp', 'Michael' ⇒ 'michael'). "
+                "Gibt 'say' zurück: sprich GENAU diese Zeile — bitte NIE den Namen zu wiederholen. "
+                "Jede folgende Äußerung ist eine Probe; nach drei Äußerungen register_pending_resident rufen."
             ),
             parameters={
                 "type": "object",
