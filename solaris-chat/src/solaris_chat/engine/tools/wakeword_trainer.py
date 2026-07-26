@@ -9,7 +9,7 @@ Enables bidirectional interactive voice enrollment dialogs & sample audit:
 - trigger_wakeword_training(): Triggers 2-hour background GPU training on RTX 2000 Ada.
 """
 
-from __future__ annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -288,7 +288,7 @@ def build_wakeword_tools(
                 "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
                 "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
                 "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
-                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco', 'Michael' -> 'mdopp') entgegen. "
+                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco', 'Max' -> 'max') entgegen. "
                 "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
             ),
             parameters={
@@ -296,7 +296,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'michael' -> 'mdopp', 'M-D-O-P-P')"
+                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'max', 'M-A-X')"
                     },
                     "target_count": {
                         "type": "integer",
@@ -317,7 +317,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Die User-ID des Sprechers (z.B. 'mdopp')"
+                        "description": "Die User-ID des Sprechers (z.B. 'max')"
                     },
                     "transcript": {
                         "type": "string",
@@ -354,7 +354,7 @@ def build_wakeword_tools(
                 "properties": {
                     "sample_id": {
                         "type": "string",
-                        "description": "Die ID der zu löschenden Probe (z.B. 'sample_mdopp_4')"
+                        "description": "Die ID der zu löschenden Probe (z.B. 'sample_max_4')"
                     }
                 }
             },
