@@ -230,7 +230,9 @@ def build_wakeword_tools(
 
         if sample_id:
             wakeword_samples_store.delete_sample(db_path, sample_id)
-            say = f"Aufnahme {sample_id} wurde gelöscht. Bist du bereit, sie neu einzusprechen?"
+            current_uid = uid_getter()
+            wakeword_requests_store.decrement_sample(db_path, current_uid or "household")
+            say = f"Aufnahme {sample_id} wurde gelöscht. Es fehlt jetzt wieder 1 Probe. Bist du bereit, sie neu einzusprechen?"
         else:
             say = "Keine fehlerhaften Aufnahmen zum Löschen gefunden. Wollen wir weitermachen?"
 

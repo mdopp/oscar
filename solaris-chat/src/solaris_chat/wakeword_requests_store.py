@@ -112,3 +112,21 @@ def has_any_active_request(db_path: str) -> bool:
             return row is not None
     except Exception:
         return False
+
+
+def decrement_sample(db_path: str, uid: str) -> dict:
+    init_db(db_path)
+    req = get_request(db_path, uid)
+    if not req:
+        return {}
+
+    new_count = max(0, req["collected_count"] - 1)
+    with _connect(db_path) as conn:
+        conn.execute("""
+            UPDATE wakeword_requests
+            SET collected_count = ?, status = 'active', updated_at = datetime('now')
+            WHERE uid = ?
+        """, (new_count, uid))
+        conn.commit()
+
+    return get_request(db_path, uid) or {}
