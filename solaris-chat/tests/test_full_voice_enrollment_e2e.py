@@ -206,3 +206,13 @@ async def test_say_short_circuit_bypasses_second_pass(tmp_path):
 
     # Must execute exactly ONE pass because the short-circuit breaks out of the outer loop!
     assert pass_count == 1, f"Expected pass_count == 1, but got {pass_count}"
+
+
+def test_all_server_and_facade_modules_import_cleanly():
+    """Module import sanity test (#1056): Ensures solaris_chat.server and
+    solaris_chat.engine.facade import cleanly without SyntaxError."""
+    import importlib
+    facade_mod = importlib.import_module("solaris_chat.engine.facade")
+    assert facade_mod is not None
+    server_mod = importlib.import_module("solaris_chat.server")
+    assert server_mod is not None
