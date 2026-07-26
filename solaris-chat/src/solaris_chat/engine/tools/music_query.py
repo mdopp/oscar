@@ -173,6 +173,10 @@ def build_music_query_tools(
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
 
+    from solaris_chat.engine.tools.radio import build_radio_tools
+    r_tools = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
+    r_handler = next((t.handler for t in r_tools if t.name == "play_radio"), None)
+
     def _resolve_band_id(conn, artist: str, caller: str) -> str | None:
         # Prefer the shared exact resolver (id / exact canonical_name / alias),
         # but only accept it when it lands on a band — a person/place named the
@@ -250,11 +254,13 @@ def build_music_query_tools(
                     if _song_by_value(conn, sid, caller) == want_value:
                         return sid
             return ids[0]
+        query_first = title.split()[0] if title.split() else title
         candidates = conn.execute(
             "SELECT id, canonical_name FROM entities"
             " WHERE type = 'song' AND resident_uid IN (?, ?)"
+            " AND (canonical_name LIKE ? OR canonical_name LIKE ?)"
             " ORDER BY canonical_name",
-            (caller, projection.SHARED_UID),
+            (caller, projection.SHARED_UID, f'%{title}%', f'%{query_first}%'),
         ).fetchall()
         best_id: str | None = None
         best_score = 0.0
@@ -589,19 +595,22 @@ def build_music_query_tools(
         _RADIO_KEYWORDS = {"1live", "1 live", "einslive", "eins live", "ndr2", "ndr 2", "wdr2", "wdr 2", "ffn", "antenne niedersachsen", "radio bob", "dlf"}
         import re
         _RADIO_NORMALISE = {"einslive": "1 live", "eins live": "1 live", "1live": "1 live", "ndr2": "ndr 2", "wdr2": "wdr 2"}
-        _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?)\s+", re.I)
+        _RADIO_VERBS = re.compile(r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?)\s+", re.I)
         _ROOM_SUFFIXES = re.compile(r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b", re.I)
+        _ACTION_PARTICLES = re.compile(r"\s+(an|ein|ab|laufen|spielen|bitte|jetzt)\b", re.I)
         check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
         check_str = _RADIO_VERBS.sub("", check_raw).strip()
+        check_str = _ACTION_PARTICLES.sub("", check_str).strip()
         check_str = _ROOM_SUFFIXES.sub("", check_str).strip()
         check_str = _RADIO_NORMALISE.get(check_str, check_str)
-        is_radio_hint = "radio" in check_str or "fm" in check_str or "sender" in check_str or check_str in _RADIO_KEYWORDS or any(k in check_str for k in ["1 live", "ndr 2", "wdr 2", "ffn"])
+        _RADIO_PREFIXES = ["1 live", "ndr", "wdr", "swr", "hr", "br", "mdr", "rbb", "ffn", "antenne", "rock", "sunshine", "hit", "klassik", "schlager", "bigfm", "planet", "paloma", "brocken", "bob"]
+        is_radio_hint = "radio" in check_str or "fm" in check_str or "sender" in check_str or check_str in _RADIO_KEYWORDS or any(k in check_str for k in _RADIO_PREFIXES)
         if is_radio_hint:
             from solaris_chat.engine.tools.radio import build_radio_tools
-            r_tools = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
-            r_handler = next((t.handler for t in r_tools if t.name == "play_radio"), None)
-            if r_handler:
-                res = await r_handler({"station": check_str, "entity_id": args.get("entity_id") or ""})
+            r_tools_local = build_radio_tools(notes_dir, hass_url, hass_token, _caller, room_getter=room_getter, room_resolver=room_resolver, area_fallback=area_fallback)
+            r_handler_local = next((t.handler for t in r_tools_local if t.name == "play_radio"), None)
+            if r_handler_local:
+                res = await r_handler_local({"station": check_str, "entity_id": args.get("entity_id") or ""})
                 if json.loads(res).get("ok"):
                     return res
         artist = str(args.get("artist") or "").strip()
@@ -638,26 +647,32 @@ def build_music_query_tools(
         conn = projection.open_conn(db_path)
         try:
             if title:
-                song_id = _resolve_song_id(conn, title, artist, caller)
-                if song_id is not None:
-                    song = projection.entity_row(conn, song_id)
-                    clean = song["canonical_name"]
-                    audio_id = _song_audio_id(conn, song_id, caller)
-                elif artist:
-                    # An unresolved title with an artist falls back to that artist's
-                    # first castable track — never echo the unresolved title.
-                    hit = _band_first_castable(conn, artist, caller)
-                    if hit is None:
+                # Priority: check if title is actually an artist/band name
+                hit_artist = _band_first_castable(conn, check_str, caller)
+                if hit_artist is not None:
+                    clean, audio_id = hit_artist
+                    artist = check_str
+                else:
+                    song_id = _resolve_song_id(conn, title, artist, caller)
+                    if song_id is not None:
+                        song = projection.entity_row(conn, song_id)
+                        clean = song["canonical_name"]
+                        audio_id = _song_audio_id(conn, song_id, caller)
+                    elif artist:
+                        # An unresolved title with an artist falls back to that artist's
+                        # first castable track — never echo the unresolved title.
+                        hit = _band_first_castable(conn, artist, caller)
+                        if hit is None:
+                            return json.dumps(
+                                {"ok": False, "reason": "not_found", "query": title},
+                                ensure_ascii=False,
+                            )
+                        clean, audio_id = hit
+                    else:
                         return json.dumps(
                             {"ok": False, "reason": "not_found", "query": title},
                             ensure_ascii=False,
                         )
-                    clean, audio_id = hit
-                else:
-                    return json.dumps(
-                        {"ok": False, "reason": "not_found", "query": title},
-                        ensure_ascii=False,
-                    )
             elif artist:
                 hit = _band_first_castable(conn, artist, caller)
                 if hit is None:
