@@ -261,6 +261,15 @@ def add_facade_routes(
 
         def turns() -> AsyncIterator[dict[str, Any]]:
             if client.ephemeral:
+                # Enrollment isolation (#1056): solaris-enrollment turns receive ONLY
+                # the latest user transcript, never HA's replayed messages history,
+                # so prior turn assistant text (e.g. 'Michael Dopp') cannot contaminate
+                # the new turn's tool call argument extraction.
+                if client.name == "solaris-enrollment":
+                    single_turn_messages = [{"role": "user", "content": transcript}]
+                    return client.respond(
+                        single_turn_messages, uid=uid, source=model, conversation_id=conversation_id
+                    )
                 return client.respond(
                     messages, uid=uid, source=model, conversation_id=conversation_id
                 )
