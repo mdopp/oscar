@@ -164,6 +164,17 @@ def env(key: str, default: str = "") -> str:
     return val if val else default
 
 
+def system_language() -> str:
+    """The one language the voice stack runs in (#1057).
+
+    Whisper, the TTS bridge, the HA assist pipeline and the gatekeeper's
+    advertised languages all derived their own hardcoded "de"; this is the
+    single knob they now share. Per-component overrides still win where they
+    exist (WHISPER_LANGUAGE).
+    """
+    return env("SOLARIS_LANGUAGE", "de")
+
+
 def _truthy(val: str) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -394,7 +405,7 @@ def main():
         return 1
     sock.settimeout(30)
     try:
-        _send(sock, "transcribe", {"language": "de"})
+        _send(sock, "transcribe", {"language": system_language()})
         _send(
             sock,
             "audio-start",
@@ -563,7 +574,7 @@ def install_whisper_unit(data_dir: str) -> bool:
     model = env("WHISPER_MODEL", WHISPER_CPU_DEFAULT_MODEL)
     if gpu and model == WHISPER_CPU_DEFAULT_MODEL:
         model = WHISPER_GPU_DEFAULT_MODEL
-    language = env("WHISPER_LANGUAGE", "de")
+    language = env("WHISPER_LANGUAGE", system_language())
     volume_dir = os.path.join(data_dir, "voice", "whisper-gpu" if gpu else "whisper")
     try:
         os.makedirs(volume_dir, exist_ok=True)
@@ -2552,11 +2563,11 @@ def ensure_assist_pipeline(
                 {
                     "type": "assist_pipeline/pipeline/create",
                     "name": PIPELINE_NAME,
-                    "language": "de",
+                    "language": system_language(),
                     "conversation_engine": conversation_entity,
-                    "conversation_language": "de",
+                    "conversation_language": system_language(),
                     "stt_engine": stt_entity,
-                    "stt_language": "de",
+                    "stt_language": system_language(),
                     **tts_fields,
                     **wake_fields,
                 }
@@ -2569,12 +2580,18 @@ def ensure_assist_pipeline(
             # may have been wired with piper before the Martin units landed)
             # and onto the preferred STT (speaker-ID toggled on a redeploy
             # moves it from whisper to the gatekeeper, #350).
+            lang = system_language()
             if (
                 existing.get("tts_engine") != tts_entity
                 or existing.get("tts_voice") != tts_fields["tts_voice"]
                 or existing.get("stt_engine") != stt_entity
                 or existing.get("wake_word_entity") != wake_fields["wake_word_entity"]
                 or existing.get("wake_word_id") != wake_fields["wake_word_id"]
+                # Without this an existing pipeline kept whatever language it
+                # was created with, so changing the setting did nothing (#1057).
+                or existing.get("language") != lang
+                or existing.get("conversation_language") != lang
+                or existing.get("stt_language") != lang
             ):
                 upd = {
                     k: existing.get(k)
@@ -2595,6 +2612,9 @@ def ensure_assist_pipeline(
                 upd.update(tts_fields)
                 upd.update(wake_fields)
                 upd["stt_engine"] = stt_entity
+                upd["language"] = lang
+                upd["conversation_language"] = lang
+                upd["stt_language"] = lang
                 ws.cmd(
                     {
                         "type": "assist_pipeline/pipeline/update",

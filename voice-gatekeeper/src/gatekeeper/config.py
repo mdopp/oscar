@@ -17,6 +17,17 @@ from dataclasses import dataclass, field
 _SPEAKER_ID_DISABLED = {"0", "false", "no", "off"}
 
 
+def system_language_from_env() -> str:
+    """The language the voice stack runs in (#1057).
+
+    Whisper, the TTS bridge and the HA assist pipeline all take it from the
+    template's SOLARIS_LANGUAGE; the gatekeeper advertises the same value to
+    satellites instead of a hardcoded "de" that may no longer match what the
+    pipeline actually transcribes.
+    """
+    return (os.environ.get("SOLARIS_LANGUAGE", "").strip() or "de").lower()
+
+
 def speaker_id_enabled_from_env() -> bool:
     """Single source of truth for "is speaker-ID on": enabled unless
     SOLARIS_SPEAKER_ID_ENABLED is set to an explicit falsy value. Shared with

@@ -404,6 +404,8 @@ spec:
     # The ECAPA model is cached under /var/lib/solaris (the solaris-data
     # volume), so it downloads once. Biometric: stores per-resident voice
     # embeddings in solaris.db.voice_embeddings.
+    - name: SOLARIS_LANGUAGE
+      value: "{{SOLARIS_LANGUAGE}}"
     - name: SOLARIS_SPEAKER_ID_ENABLED
       value: "{{SOLARIS_SPEAKER_ID_ENABLED}}"
     - name: SOLARIS_SPEAKER_ID_THRESHOLD
@@ -459,7 +461,7 @@ spec:
     - --uri
     - tcp://0.0.0.0:10203
     - --languages
-    - de
+    - "{{SOLARIS_LANGUAGE}}"
     - --tts-openai-url
     - http://127.0.0.1:8881/v1
     - --tts-models
