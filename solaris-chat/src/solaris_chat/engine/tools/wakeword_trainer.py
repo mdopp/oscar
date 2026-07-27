@@ -6,7 +6,7 @@ Enables bidirectional interactive voice enrollment dialogs & sample audit:
 - audit_wakeword_samples(): Performs quality check over saved audio samples & flags outliers.
 - list_wakeword_samples(): Lists all saved audio samples across users for reuse.
 - delete_wakeword_sample(sample_id): Deletes a specific audio sample.
-- trigger_wakeword_training(): Triggers 2-hour background GPU training on RTX 2000 Ada.
+- trigger_wakeword_training(): Enqueues a GPU training run for the wakeword trainer companion.
 """
 
 from __future__ import annotations
@@ -15,10 +15,13 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 from typing import Any, Callable
 
-from solaris_chat import wakeword_requests_store, wakeword_samples_store
+from solaris_chat import (
+    wakeword_requests_store,
+    wakeword_samples_store,
+    wakeword_training_store,
+)
 from solaris_chat.engine.tools import Tool
 
 _ACCEPTED_PHONETICS = re.compile(
@@ -73,10 +76,6 @@ def resolve_resident_identity(
 def build_wakeword_tools(
     db_path: str,
     uid_getter: Callable[[], str],
-    # The training scripts are not in the chat image (slim, no torch/GPU), so
-    # this only resolves where an operator has mounted them; otherwise the
-    # trainer says so instead of claiming a run it never started.
-    script_dir: str = os.environ.get("WAKEWORD_SCRIPT_DIR", "/app/scripts"),
 ) -> list[Tool]:
     """Build the wakeword improvement tools."""
 
@@ -208,7 +207,7 @@ def build_wakeword_tools(
             else:
                 say = (
                     f"Perfekt, {display_name if uid != 'household' else 'alle'} 10 Sprachproben wurden erfolgreich überprüft und gespeichert! "
-                    f"Möchtest du das 2-Stunden GPU-Training jetzt direkt auf deiner Grafikkarte starten oder noch weitere Proben für andere Personen sammeln?"
+                    f"Möchtest du das GPU-Training jetzt einplanen oder noch weitere Proben für andere Personen sammeln?"
                 )
 
             return json.dumps(
@@ -322,35 +321,25 @@ def build_wakeword_tools(
             if s.get("resident_uid") == uid
         ]
 
-        script = os.path.join(script_dir, "train-micro-wake-word.py")
-        training_started = False
-        if os.path.exists(script):
-            try:
-                subprocess.Popen(
-                    ["python3", script],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setpgrp,
-                )
-                training_started = True
-            except Exception:
-                training_started = False
+        run_id = wakeword_training_store.enqueue_run(db_path, uid)
 
         thanks = f"Danke, {display_name}! " if uid != "household" else ""
 
-        if training_started:
+        if run_id is not None:
+            # No "ich melde mich": nothing notifies the resident when a run
+            # finishes yet, and a promise the box can't keep is the same bug
+            # this tool just stopped making about the start.
             say = (
-                f"{thanks}Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
-                f"Die Grafikkarte berechnet jetzt mit deinen {len(samples)} Sprachproben und "
-                f"Wohnzimmer-Nebengeräuschen über 15.000 Steps (~2 Stunden). "
-                f"Ich gebe dir Bescheid, sobald das neue Modell fertig ist!"
+                f"{thanks}Deine {len(samples)} Sprachproben für „Solaris“ sind gespeichert "
+                f"und das Training ist eingeplant. Die Grafikkarte rechnet daran ein paar "
+                f"Stunden. Kann ich sonst noch etwas für dich tun?"
             )
         else:
-            # Claiming a training run that never started would leave the
+            # Claiming a training run that was never queued would leave the
             # resident waiting for a model that is never built.
             say = (
                 f"{thanks}Deine {len(samples)} Sprachproben für „Solaris“ sind gespeichert. "
-                f"Das Training konnte ich hier aber nicht starten — darum muss sich noch "
+                f"Das Training konnte ich aber nicht einplanen — darum muss sich noch "
                 f"jemand von Hand kümmern. Kann ich dir sonst helfen?"
             )
         return json.dumps(
@@ -360,7 +349,8 @@ def build_wakeword_tools(
                 "display_name": display_name,
                 "spelled_uid": spelled_uid,
                 "samples_count": len(samples),
-                "training_started": training_started,
+                "training_queued": run_id is not None,
+                "run_id": run_id,
                 "say": say,
             },
             ensure_ascii=False,
@@ -449,7 +439,7 @@ def build_wakeword_tools(
         Tool(
             name="trigger_wakeword_training",
             description=(
-                "Startet das 2-Stunden GPU-Training für das neu verfeinerte Wakeword „Solaris“ auf der Grafikkarte unter Verwendung aller gespeicherten Proben."
+                "Plant das GPU-Training für das neu verfeinerte Wakeword „Solaris“ ein — der Trainings-Container auf der Grafikkarte übernimmt den Lauf und nutzt dabei alle gespeicherten Proben."
             ),
             parameters={
                 "type": "object",

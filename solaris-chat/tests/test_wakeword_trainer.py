@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+
 import pytest
 
 from solaris_chat.engine.tools.wakeword_trainer import (
@@ -27,11 +29,25 @@ def test_spelled_uid_and_identity_resolver():
     assert spelled2 == "A - L - E - X"
 
 
+def _create_queue_table(db_path: str) -> None:
+    """The `wakeword_training_runs` table as migration 0029 creates it — the
+    engine never creates it itself, so a test that wants the queue present has
+    to stand it up the way schema-init does."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wakeword_training_runs ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL,"
+            " status TEXT NOT NULL DEFAULT 'queued',"
+            " requested_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " started_at TEXT, finished_at TEXT, result TEXT, model_path TEXT)"
+        )
+        conn.commit()
+
+
 @pytest.mark.asyncio
 async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     db_path = str(tmp_path / "solaris_test.db")
-    (tmp_path / "train-micro-wake-word.py").write_text("import sys; sys.exit(0)\n")
-    tools = build_wakeword_tools(db_path, lambda: "household", script_dir=str(tmp_path))
+    tools = build_wakeword_tools(db_path, lambda: "household")
 
     start_tool = next(t for t in tools if t.name == "start_wakeword_enrollment")
     sample_tool = next(t for t in tools if t.name == "record_wakeword_sample")
@@ -53,27 +69,34 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     assert s2["completed"] is True
     assert s2["say"].endswith("?")
 
-    # 3. Trigger training
+    # 3. Trigger training — a queued row is the whole handshake; the engine
+    #    cannot run TensorFlow itself.
+    _create_queue_table(db_path)
     t1 = json.loads(await trigger_tool.handler({"uid": "alex"}))
-    assert t1["training_started"] is True
+    assert t1["training_queued"] is True
     assert "Danke, Alex" in t1["say"]
+    assert t1["say"].rstrip().endswith("?")
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT uid, status, started_at FROM wakeword_training_runs WHERE id = ?",
+            (t1["run_id"],),
+        ).fetchone() == ("alex", "queued", None)
 
 
 @pytest.mark.asyncio
-async def test_training_not_started_when_script_missing(tmp_path):
-    """The chat image ships no training scripts, so the launch usually fails.
-    Claiming a run that never started would leave the resident waiting for a
-    model nobody is building."""
+async def test_training_not_queued_when_table_missing(tmp_path):
+    """Without the 0029 queue table there is nothing for the GPU trainer to
+    claim. Claiming a run that was never queued would leave the resident
+    waiting for a model nobody is building."""
     db_path = str(tmp_path / "solaris_test.db")
-    tools = build_wakeword_tools(
-        db_path, lambda: "household", script_dir=str(tmp_path / "absent")
-    )
+    tools = build_wakeword_tools(db_path, lambda: "household")
     trigger_tool = next(t for t in tools if t.name == "trigger_wakeword_training")
 
     res = json.loads(await trigger_tool.handler({"uid": "alex"}))
-    assert res["training_started"] is False
-    assert "gestartet" not in res["say"]
-    assert "nicht starten" in res["say"]
+    assert res["training_queued"] is False
+    assert res["run_id"] is None
+    assert "eingeplant" not in res["say"]
+    assert "nicht einplanen" in res["say"]
     assert res["say"].rstrip().endswith("?")
 
 
@@ -99,7 +122,7 @@ async def test_delete_never_touches_another_residents_sample(tmp_path):
         is_valid=0,
     )
 
-    tools = build_wakeword_tools(db_path, lambda: "alex", script_dir=str(tmp_path))
+    tools = build_wakeword_tools(db_path, lambda: "alex")
     delete_tool = next(t for t in tools if t.name == "delete_wakeword_sample")
 
     # No sample of alex's own is suspicious -> nothing to delete, and the other
