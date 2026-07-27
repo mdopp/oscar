@@ -13,19 +13,32 @@ irreversible without care):
      normalized phone or email — the strongest cross-source person signal) AND
      compatible names. A name-only match is never offered: two distinct "Anna
      Meyer"s must not be auto-merged. False-merge = irreversible data loss, so
-     detection biases hard toward precision over recall.
-  2. **Per-resident isolation.** Detection is scoped to ONE resident's own ∪
-     shared-household persons (`resident_uid IN (uid, 'household')`), never
-     across residents. A person private to resident A can never be offered as a
-     merge target for resident B, so a merge can't leak A's person into B's
-     scope. Cross-resident merge is a deliberate non-goal here (follow-up):
-     mixing owners is the highest-risk case, so this slice is cross-SOURCE only.
+     detection biases hard toward precision over recall. The mutating
+     `merge_persons` re-checks that same predicate — a caller can't reach past
+     detection with a hand-built pair.
+  2. **Same-owner only.** Detection AND every mutation are scoped to persons the
+     caller owns (`resident_uid = uid`); the shared-household sentinel is
+     excluded on both sides. This is load-bearing, not tidiness: a merge
+     re-points aliases/facts onto the primary *without* rewriting
+     `facts.resident_uid`, and the people surfaces (`person_directory`) read an
+     entity's facts and aliases unscoped. A private↔household merge would
+     therefore publish one resident's private phone number and aliases to the
+     whole household; mirrored, it would delete the shared contact for everyone
+     unasked. Same-owner pairs make both impossible. Cross-resident and
+     private↔shared merges are a deliberate non-goal here.
 
 Merge itself is never automatic: `find_merge_candidates` surfaces pairs for the
 UI to confirm, `preview_merge` is a no-write dry-run, and only `merge_persons`
 (called on explicit confirmation) mutates. Every merge writes a `person_merges`
-row (the secondary's provenance + a snapshot of what moved) so it's auditable
-and `undo_merge` can restore the secondary.
+row recording the secondary's provenance, a snapshot of what moved, and exactly
+which aliases/event edges the merge ADDED to the primary — so `undo_merge`
+removes precisely those again and the merge really is reversible.
+
+Scope caveat: the secondary's DB teardown goes through
+`projection.delete_note_by_okf_path` (its `concepts` row + `okf_vectors`
+embedding + entity), so the merged-away duplicate leaves RAG and the DB
+projection. Its markdown file in the vault is deliberately left on disk — it is
+the human-editable artifact and unlinking it would make the undo a lie.
 """
 
 from __future__ import annotations
@@ -33,10 +46,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import unicodedata
 import uuid
 from typing import Any
 
 from solaris_chat.notes_search import SHARED_UID
+
+from . import projection
 
 
 # Contact facts that carry a person's identity across sources; a shared one of
@@ -46,11 +62,17 @@ _CONTACT_PREDICATES = ("phone", "email")
 
 
 def _normalize_name(name: str) -> str:
-    """A person's name comparison key: casefold, drop punctuation, collapse
-    whitespace. Empty when nothing alphanumeric survives — then names never
-    match (an unnamed contact isn't a name signal)."""
-    tokens = re.findall(r"[a-z0-9äöüß]+", name.casefold())
-    return " ".join(tokens)
+    """A person's name comparison key: casefold, fold diacritics, drop
+    punctuation, collapse whitespace. Empty when nothing alphanumeric survives —
+    then names never match (an unnamed contact isn't a name signal).
+
+    NFKD + dropping combining marks folds `ï`→`i` for EVERY script. A character
+    class that whitelists some diacritics instead would *split* the others, and
+    the fragment then satisfies the token-subset rule (`Ana Müller` reading as a
+    subset of `Anaïs Müller`)."""
+    folded = unicodedata.normalize("NFKD", name.casefold())
+    stripped = "".join(c for c in folded if not unicodedata.combining(c))
+    return " ".join(re.findall(r"[a-z0-9]+", stripped))
 
 
 def _normalize_phone(phone: str) -> str:
@@ -73,24 +95,46 @@ def _normalize_email(email: str) -> str:
 
 def _names_compatible(a: str, b: str) -> bool:
     """True when two normalized names could be the same person: equal, or one is
-    a token-subset of the other (e.g. "anna" ⊂ "anna meyer"). Two disjoint full
-    names ("anna meyer" vs "anna schmidt") are NOT compatible even sharing a
-    contact key — that's the false-merge trap, so we bias to precision. An empty
-    name is not a match on its own (needs the contact key AND a name signal)."""
+    a token-subset of the other sharing at least TWO tokens.
+
+    Two disjoint full names ("anna meyer" vs "anna schmidt") are not compatible
+    even sharing a contact key — that's the false-merge trap. Neither is a
+    one-token overlap: on a family landline "meyer" ⊂ "anna meyer" would make
+    the surname the only hurdle, so a single-token name has to match exactly. An
+    empty name is never a match (a pair needs the contact key AND a name
+    signal)."""
     if not a or not b:
         return False
     ta, tb = set(a.split()), set(b.split())
-    return ta == tb or ta <= tb or tb <= ta
+    if ta == tb:
+        return True
+    return (ta <= tb or tb <= ta) and len(ta & tb) >= 2
 
 
-def _person_keys(conn: sqlite3.Connection, entity_id: str) -> set[str]:
-    """The normalized contact keys (phone/email) recorded for a person, across
-    ALL sources — so a phone from `.contacts` and the same phone from CalDAV
-    collide even though they were written under different `source`s."""
+def _merge_reason(
+    name_a: str, keys_a: set[str], name_b: str, keys_b: set[str]
+) -> list[str]:
+    """The shared contact keys that justify merging two persons, or `[]` when the
+    conservative predicate fails. The single definition of "likely duplicate" —
+    detection and the mutating merge both go through it."""
+    shared = keys_a & keys_b
+    if not shared or not _names_compatible(
+        _normalize_name(name_a), _normalize_name(name_b)
+    ):
+        return []
+    return sorted(shared)
+
+
+def _person_keys(conn: sqlite3.Connection, entity_id: str, uid: str) -> set[str]:
+    """The normalized contact keys (phone/email) recorded for a person that the
+    caller may see, across ALL sources — so a phone from `.contacts` and the same
+    phone from CalDAV collide even though they were written under different
+    `source`s. Identity-scoped like `projection.entity_facts`."""
     keys: set[str] = set()
     for f in conn.execute(
-        "SELECT predicate, value FROM facts WHERE subject_entity_id = ?",
-        (entity_id,),
+        "SELECT predicate, value FROM facts"
+        " WHERE subject_entity_id = ? AND resident_uid IN (?, ?)",
+        (entity_id, uid, SHARED_UID),
     ).fetchall():
         if f["predicate"] == "phone":
             k = _normalize_phone(f["value"])
@@ -114,53 +158,46 @@ def _person_aliases(conn: sqlite3.Connection, entity_id: str) -> list[str]:
 
 
 def find_merge_candidates(conn: sqlite3.Connection, uid: str) -> list[dict[str, Any]]:
-    """Likely-duplicate person pairs for `uid` (own ∪ shared household), for the
-    UI to CONFIRM — never auto-merged.
+    """Likely-duplicate person pairs among the persons `uid` OWNS, for the UI to
+    CONFIRM — never auto-merged.
 
     A pair is offered only when the two persons share a normalized contact key
-    (phone/email) AND their names are compatible (`_names_compatible`). Scoped to
-    one resident's own ∪ shared persons, so no cross-resident pair is ever
-    surfaced. Each candidate is
-    `{primary, secondary, reason, primary_name, secondary_name}` — the older
-    entity id (lexicographically stable) is the primary (merge target)."""
+    (phone/email) AND their names are compatible (`_names_compatible`). Both
+    sides must have the same `resident_uid` — the shared-household sentinel is
+    excluded, so neither a cross-resident nor a private↔shared pair is ever
+    surfaced (module docstring, invariant 2). Each candidate is
+    `{primary, secondary, reason, primary_name, secondary_name}`; entity ids are
+    uuid4/content hashes, so `sorted()` only makes the pair stable across calls —
+    which side becomes the primary carries no meaning and is the resident's call
+    to confirm."""
     rows = conn.execute(
         "SELECT id, canonical_name, resident_uid FROM entities"
-        " WHERE type = 'person' AND resident_uid IN (?, ?)"
+        " WHERE type = 'person' AND resident_uid = ?"
         " ORDER BY id",
-        (uid, SHARED_UID),
+        (uid,),
     ).fetchall()
     persons = [
         {
             "id": r["id"],
             "name": r["canonical_name"],
-            "norm": _normalize_name(r["canonical_name"]),
-            "resident_uid": r["resident_uid"],
-            "keys": _person_keys(conn, r["id"]),
+            "keys": _person_keys(conn, r["id"], uid),
         }
         for r in rows
     ]
-    seen: set[tuple[str, str]] = set()
     out: list[dict[str, Any]] = []
     for i, a in enumerate(persons):
         for b in persons[i + 1 :]:
-            shared = a["keys"] & b["keys"]
-            if not shared:
+            reason = _merge_reason(a["name"], a["keys"], b["name"], b["keys"])
+            if not reason:
                 continue
-            if not _names_compatible(a["norm"], b["norm"]):
-                continue
-            # id order is the primary; keep the pair once.
             primary, secondary = sorted((a, b), key=lambda p: p["id"])
-            pair = (primary["id"], secondary["id"])
-            if pair in seen:
-                continue
-            seen.add(pair)
             out.append(
                 {
                     "primary": primary["id"],
                     "secondary": secondary["id"],
                     "primary_name": primary["name"],
                     "secondary_name": secondary["name"],
-                    "reason": sorted(shared),
+                    "reason": reason,
                 }
             )
     return out
@@ -169,22 +206,47 @@ def find_merge_candidates(conn: sqlite3.Connection, uid: str) -> list[dict[str, 
 def _owned_person(
     conn: sqlite3.Connection, entity_id: str, uid: str
 ) -> sqlite3.Row | None:
-    """The person row iff the caller may act on it (own ∪ shared household).
-    Owner-gates every mutation — the caller can never touch a person outside its
-    scope, so a merge can't reach across residents."""
+    """The person row iff `uid` OWNS it. The shared-household sentinel is
+    excluded on purpose — see the module docstring, invariant 2: "own ∪ shared"
+    is a common pot both residents write through, not a boundary between them."""
     return conn.execute(
         "SELECT id, canonical_name, resident_uid, source FROM entities"
-        " WHERE id = ? AND type = 'person' AND resident_uid IN (?, ?)",
-        (entity_id, uid, SHARED_UID),
+        " WHERE id = ? AND type = 'person' AND resident_uid = ?",
+        (entity_id, uid),
     ).fetchone()
+
+
+def merge_refusal(
+    conn: sqlite3.Connection, primary_id: str, secondary_id: str, uid: str
+) -> str | None:
+    """Why this pair may NOT be merged, or ``None`` when it may.
+
+    `"same_person"` (the two ids are equal), `"not_in_scope"` (the caller doesn't
+    own both persons) or `"not_a_duplicate"` (the pair fails the very predicate
+    `find_merge_candidates` uses, so it was never offered)."""
+    if primary_id == secondary_id:
+        return "same_person"
+    p = _owned_person(conn, primary_id, uid)
+    s = _owned_person(conn, secondary_id, uid)
+    if p is None or s is None:
+        return "not_in_scope"
+    if not _merge_reason(
+        p["canonical_name"],
+        _person_keys(conn, primary_id, uid),
+        s["canonical_name"],
+        _person_keys(conn, secondary_id, uid),
+    ):
+        return "not_a_duplicate"
+    return None
 
 
 def preview_merge(
     conn: sqlite3.Connection, primary_id: str, secondary_id: str, uid: str
 ) -> dict[str, Any] | None:
     """A no-write dry-run of merging `secondary` into `primary`: what the merged
-    person would carry. Owner-gated on BOTH persons (returns ``None`` if either
-    is out of the caller's scope, so cross-resident is refused here too).
+    person would carry. Owner-gated on BOTH persons (returns ``None`` if the
+    caller doesn't own both, so cross-resident and private↔shared are refused
+    here too).
 
     Returns `{primary, secondary, name, aliases, facts, keys}` — the union of the
     two persons' aliases and their combined contact keys — for the confirmation
@@ -197,13 +259,16 @@ def preview_merge(
         set(_person_aliases(conn, primary_id))
         | set(_person_aliases(conn, secondary_id))
     )
-    keys = sorted(_person_keys(conn, primary_id) | _person_keys(conn, secondary_id))
+    keys = sorted(
+        _person_keys(conn, primary_id, uid) | _person_keys(conn, secondary_id, uid)
+    )
     facts = [
         {"predicate": f["predicate"], "value": f["value"], "source": f["source"]}
         for f in conn.execute(
             "SELECT predicate, value, source FROM facts"
-            " WHERE subject_entity_id IN (?, ?) ORDER BY predicate, value",
-            (primary_id, secondary_id),
+            " WHERE subject_entity_id IN (?, ?) AND resident_uid IN (?, ?)"
+            " ORDER BY predicate, value",
+            (primary_id, secondary_id, uid, SHARED_UID),
         ).fetchall()
     ]
     return {
@@ -216,18 +281,18 @@ def preview_merge(
     }
 
 
-def _snapshot(conn: sqlite3.Connection, entity_id: str) -> dict[str, Any]:
+def _snapshot(conn: sqlite3.Connection, entity_id: str, uid: str) -> dict[str, Any]:
     """A restorable snapshot of the secondary before merge: its aliases, facts,
     and event edges. Stored in the undo trail so `undo_merge` can recreate the
-    entity and its rows."""
+    entity and its rows. Facts are identity-scoped like every other read here."""
     return {
         "aliases": _person_aliases(conn, entity_id),
         "facts": [
             dict(r)
             for r in conn.execute(
                 "SELECT id, resident_uid, predicate, value, confidence, source"
-                " FROM facts WHERE subject_entity_id = ?",
-                (entity_id,),
+                " FROM facts WHERE subject_entity_id = ? AND resident_uid IN (?, ?)",
+                (entity_id, uid, SHARED_UID),
             ).fetchall()
         ],
         "event_entities": [
@@ -240,6 +305,22 @@ def _snapshot(conn: sqlite3.Connection, entity_id: str) -> dict[str, Any]:
     }
 
 
+def _delete_person(conn: sqlite3.Connection, entity_id: str) -> None:
+    """Tear the merged-away person down through the projection's own full delete
+    so its `concepts` row and `okf_vectors` embedding go too — otherwise the
+    duplicate keeps surfacing in Notizen and RAG after the merge. A person with
+    no projected note has no `concepts` row; then the entity row is the whole
+    delete."""
+    row = conn.execute(
+        "SELECT okf_path FROM concepts WHERE ref_kind = 'entity' AND ref_id = ?",
+        (entity_id,),
+    ).fetchone()
+    if row is None:
+        conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+    else:
+        projection.delete_note_by_okf_path(conn, row["okf_path"])
+
+
 def merge_persons(
     conn: sqlite3.Connection,
     *,
@@ -249,21 +330,57 @@ def merge_persons(
 ) -> str | None:
     """Merge `secondary` into `primary` — call ONLY on explicit confirmation.
 
-    Owner-gated on both persons (own ∪ shared household), so it refuses a
-    cross-resident merge. Re-points the secondary's aliases, facts, and event
-    edges onto the primary, records a `person_merges` audit/undo row (the
-    secondary's provenance + a snapshot of what moved), then deletes the
-    secondary entity. Returns the merge-record id, or ``None`` if either person
-    is out of scope / the ids are equal.
+    Refuses unless `merge_refusal` clears the pair: the caller must OWN both
+    persons and the pair must still satisfy the same duplicate predicate
+    `find_merge_candidates` applies, so a hand-built pair can't reach past
+    detection. Re-points the secondary's aliases, facts, and event edges onto the
+    primary, records a `person_merges` audit/undo row (the secondary's
+    provenance, a snapshot of what moved, and exactly what was ADDED to the
+    primary), then tears the secondary down. Returns the merge-record id, or
+    ``None`` when refused.
 
-    The caller commits. It also owns the OKF-file + `concepts`/embedding cleanup
-    of the secondary (the projection here is rebuildable from the files)."""
-    p = _owned_person(conn, primary_id, uid)
+    The caller commits. The secondary's markdown file in the vault is left on
+    disk (module docstring)."""
     s = _owned_person(conn, secondary_id, uid)
-    if p is None or s is None or primary_id == secondary_id:
+    if s is None or merge_refusal(conn, primary_id, secondary_id, uid) is not None:
         return None
 
-    snapshot = _snapshot(conn, secondary_id)
+    snapshot = _snapshot(conn, secondary_id, uid)
+
+    # Aliases the primary already carried are NOT ours to remove on undo, so
+    # record only the ones this merge actually added (rowcount 0 = ignored dup),
+    # plus the secondary's canonical name so `@`-mentions of the old spelling
+    # still resolve.
+    added_aliases: list[str] = []
+    for alias in dict.fromkeys([s["canonical_name"], *snapshot["aliases"]]):
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
+            (primary_id, alias),
+        )
+        if cur.rowcount:
+            added_aliases.append(alias)
+    conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (secondary_id,))
+
+    conn.execute(
+        "UPDATE facts SET subject_entity_id = ? WHERE subject_entity_id = ?",
+        (primary_id, secondary_id),
+    )
+    # Event edges: point at the primary, but INSERT OR IGNORE can't dedup via an
+    # UPDATE, so delete-then-reinsert to respect the (event, entity, role) PK.
+    added_events: list[dict[str, Any]] = []
+    for e in snapshot["event_entities"]:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO event_entities (event_id, entity_id, role)"
+            " VALUES (?, ?, ?)",
+            (e["event_id"], primary_id, e["role"]),
+        )
+        if cur.rowcount:
+            added_events.append(e)
+    conn.execute("DELETE FROM event_entities WHERE entity_id = ?", (secondary_id,))
+    _delete_person(conn, secondary_id)
+
+    snapshot["added_aliases"] = added_aliases
+    snapshot["added_event_entities"] = added_events
     merge_id = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO person_merges"
@@ -281,49 +398,22 @@ def merge_persons(
             uid,
         ),
     )
-
-    # Re-point aliases (INSERT OR IGNORE dedups against the primary's own), plus
-    # the secondary's canonical name so `@`-mentions of the old spelling resolve.
-    for alias in [s["canonical_name"], *snapshot["aliases"]]:
-        conn.execute(
-            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
-            (primary_id, alias),
-        )
-    conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (secondary_id,))
-    conn.execute(
-        "UPDATE facts SET subject_entity_id = ? WHERE subject_entity_id = ?",
-        (primary_id, secondary_id),
-    )
-    # Event edges: point at the primary, but INSERT OR IGNORE can't dedup via an
-    # UPDATE, so delete-then-reinsert to respect the (event, entity, role) PK.
-    for e in snapshot["event_entities"]:
-        conn.execute(
-            "INSERT OR IGNORE INTO event_entities (event_id, entity_id, role)"
-            " VALUES (?, ?, ?)",
-            (e["event_id"], primary_id, e["role"]),
-        )
-    conn.execute("DELETE FROM event_entities WHERE entity_id = ?", (secondary_id,))
-    conn.execute("DELETE FROM entities WHERE id = ?", (secondary_id,))
     return merge_id
 
 
 def undo_merge(conn: sqlite3.Connection, merge_id: str, uid: str) -> bool:
-    """Reverse a merge from its audit row: recreate the secondary person and its
-    facts/event edges from the snapshot. Owner-gated (the caller must have made
-    the merge or share the secondary's scope). Returns ``False`` if the record is
-    missing, already undone, or out of scope.
+    """Reverse a merge from its audit row, restoring BOTH sides: the aliases and
+    event edges the merge added come back off the primary, the moved facts go
+    back, and the secondary person is recreated. Returns ``False`` if the record
+    is missing, already undone, or wasn't made by this caller.
 
-    This does NOT strip aliases/facts back off the primary (the merge folded them
-    in and a re-ingest would re-add them anyway); it restores the secondary as a
-    distinct entity so the false-merge is corrected. Aliases the secondary owned
-    are re-attached to it."""
+    Only `merged_by` may undo. Gating on the secondary's owner instead would let
+    any resident undo someone else's merge whenever the secondary was shared."""
     row = conn.execute(
         "SELECT * FROM person_merges WHERE id = ? AND undone_at IS NULL",
         (merge_id,),
     ).fetchone()
-    if row is None:
-        return False
-    if row["secondary_resident_uid"] not in (uid, SHARED_UID):
+    if row is None or row["merged_by"] != uid:
         return False
     if conn.execute(
         "SELECT 1 FROM entities WHERE id = ?", (row["secondary_entity_id"],)
@@ -341,6 +431,11 @@ def undo_merge(conn: sqlite3.Connection, merge_id: str, uid: str) -> bool:
             row["secondary_source"],
         ),
     )
+    for alias in snapshot["added_aliases"]:
+        conn.execute(
+            "DELETE FROM entity_aliases WHERE entity_id = ? AND alias = ?",
+            (row["primary_entity_id"], alias),
+        )
     for alias in dict.fromkeys([row["secondary_name"], *snapshot["aliases"]]):
         conn.execute(
             "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
@@ -369,6 +464,12 @@ def undo_merge(conn: sqlite3.Connection, merge_id: str, uid: str) -> bool:
                     f["source"],
                 ),
             )
+    for e in snapshot["added_event_entities"]:
+        conn.execute(
+            "DELETE FROM event_entities"
+            " WHERE event_id = ? AND entity_id = ? AND role = ?",
+            (e["event_id"], row["primary_entity_id"], e["role"]),
+        )
     for e in snapshot["event_entities"]:
         conn.execute(
             "INSERT OR IGNORE INTO event_entities (event_id, entity_id, role)"

@@ -4190,7 +4190,8 @@ def build_app(
             conn.close()
 
     async def person_merge_candidates(request: web.Request) -> web.Response:
-        """Likely-duplicate person pairs to CONFIRM (own ∪ shared, #994). Read-only
+        """Likely-duplicate person pairs to CONFIRM among the resident's OWN
+        persons (#994; shared-household persons are out of scope). Read-only
         — merging two humans is destructive, so the UI surfaces these for review
         and only commits on the resident's explicit confirmation."""
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
@@ -4217,31 +4218,36 @@ def build_app(
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         return web.json_response({"ok": True, "preview": prev})
 
-    def _do_merge(uid: str, primary: str, secondary: str) -> str | None:
+    def _do_merge(uid: str, primary: str, secondary: str) -> tuple[str | None, str]:
         conn = projection.open_conn(solaris_db_path)
         try:
+            refusal = person_dedup.merge_refusal(conn, primary, secondary, uid)
+            if refusal is not None:
+                return None, refusal
             mid = person_dedup.merge_persons(
                 conn, primary_id=primary, secondary_id=secondary, uid=uid
             )
-            if mid is not None:
-                conn.commit()
-            return mid
+            if mid is None:
+                return None, "refused"
+            conn.commit()
+            return mid, ""
         finally:
             conn.close()
 
     async def person_merge(request: web.Request) -> web.Response:
         """Commit a person merge on the resident's EXPLICIT confirmation (#994).
-        Owner-gated (own ∪ shared) so it can't reach across residents; records an
-        undo trail so a false-merge is recoverable."""
+        Refuses unless the resident OWNS both persons and the pair still looks
+        like a duplicate, so a hand-built pair can't reach past detection;
+        records an undo trail so a false-merge is recoverable."""
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         body = await request.json()
         p = str(body.get("primary") or "").strip()
         s = str(body.get("secondary") or "").strip()
         if not (p and s):
             return web.json_response({"ok": False, "reason": "bad_params"}, status=400)
-        mid = await asyncio.to_thread(_do_merge, uid, p, s)
+        mid, refusal = await asyncio.to_thread(_do_merge, uid, p, s)
         if mid is None:
-            return web.json_response({"ok": False, "reason": "refused"}, status=409)
+            return web.json_response({"ok": False, "reason": refusal}, status=409)
         return web.json_response({"ok": True, "merge_id": mid})
 
     def _do_undo(uid: str, merge_id: str) -> bool:
