@@ -200,13 +200,16 @@ def provision_work(work: Path) -> None:
     for repo in SOURCE_REPOS:
         if not (work / repo).exists():
             shutil.copytree(IMAGE_SOURCES / repo, work / repo, symlinks=True)
+    # The wheels go into site-packages, which dies with the container — so the
+    # pip cache lives on the volume, or every restart re-downloads those 3 GB.
     _run(
         [
             sys.executable,
             "-m",
             "pip",
             "install",
-            "--no-cache-dir",
+            "--cache-dir",
+            str(work / "pip-cache"),
             "-e",
             str(work / "piper-sample-generator"),
         ]
