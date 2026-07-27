@@ -150,37 +150,36 @@ def test_clear_request_drops_row(tmp_path):
 # --- start_voice_enrollment tool --------------------------------------------
 
 
-async def test_start_opens_request_and_returns_sample_count(tmp_path):
+async def test_start_hands_off_to_the_wizard(tmp_path):
+    """The entry tool must not run a second state machine. It used to resolve a
+    name and open the request itself — which is exactly what activates the
+    wizard, so the wizard restarted at consent and every sentence the resident
+    spoke was read as a yes/no answer. Observed on the box as an endless
+    "Bitte antworte mit Ja oder Nein"."""
     db = _db(tmp_path)
-    out = json.loads(
-        await _tools(db)["start_voice_enrollment"].handler({"uid": "lena"})
-    )
+    out = json.loads(await _tools(db)["start_voice_enrollment"].handler({}))
     assert out["ok"] is True
-    assert out["uid"] == "lena"
     assert out["collecting"] is True
-    assert out["samples_needed"] == 3
-    assert enroll_requests_store.read_request(db, "lena")["status"] == "pending"
+    # It opens no request: the wizard does that once it has a name.
+    assert enroll_requests_store.read_request(db, "lena") is None
+    # And it speaks the wizard's own first line, ending in a question.
+    assert "biometrisch" in out["say"]
+    assert out["say"].rstrip().endswith("?")
 
 
-async def test_start_returns_ready_made_three_sentence_prompt_not_the_name(tmp_path):
-    # #404: on the small household model, prompt-only steering fails, so the tool
-    # hands the model the exact line to echo — three natural sentences, never the
-    # "say your name N times" the weak model otherwise defaults to.
+async def test_start_ignores_any_uid_the_model_passes(tmp_path):
+    """The model cannot name the resident. It used to pass whatever it plucked
+    from the sentence and the resolver turned it into an identity — "mein
+    Sprachprofil" became a resident called "Meinname" (#1067). The wizard asks
+    for the name itself, so there is nothing to invent."""
     db = _db(tmp_path)
-    out = json.loads(
-        await _tools(db)["start_voice_enrollment"].handler({"uid": "lena"})
-    )
-    say = out["say"]
-    assert "drei" in say.lower() and ("Sätze" in say or "Satz" in say)
-    assert "Name" not in say.replace("NICHT einfach deinen Namen", "")
-
-
-async def test_start_rejects_invalid_uid(tmp_path):
-    db = _db(tmp_path)
-    out = json.loads(
-        await _tools(db)["start_voice_enrollment"].handler({"uid": "Bad UID!"})
-    )
-    assert out == {"ok": False, "reason": "invalid_uid"}
+    for passed in ("lena", "mein Sprachprofil", "Bad UID!", ""):
+        out = json.loads(
+            await _tools(db)["start_voice_enrollment"].handler({"uid": passed})
+        )
+        assert out["ok"] is True, passed
+        assert "uid" not in out, passed
+        assert enroll_requests_store.read_request(db, "lena") is None, passed
 
 
 # --- register_pending_resident tool -----------------------------------------
