@@ -52,6 +52,8 @@ CREATE TABLE engine_messages (
   tool_calls  TEXT,
   images      TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  conversation_id TEXT,
+  in_prompt   INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE engine_timers (
@@ -1203,3 +1205,118 @@ def test_trace_record_shape():
     detail = rec.detail(record["id"])
     assert detail["response"]["final"] == "answer"
     assert json.dumps(detail)  # JSON-serialisable end to end
+
+
+# --- conversation-scoped prompt history (#1067) ---------------------------
+
+
+def test_prompt_history_returns_only_the_requested_conversation(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "alt", conversation_id="conv-a")
+    store.append_message(db, sid, "assistant", "alte Antwort", conversation_id="conv-a")
+    store.append_message(db, sid, "user", "neu", conversation_id="conv-b")
+
+    msgs = store.prompt_history(db, sid, "conv-b")
+    assert [m["content"] for m in msgs] == ["neu"]
+    assert len(store.history(db, sid)) == 3  # full reader untouched
+
+
+def test_prompt_history_skips_legacy_rows_without_a_conversation(db):
+    """The rows already on the box carry no conversation id. They must drop out
+    of every future prompt without being rewritten — and stay in the UI."""
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "assistant", "Alex wurde als A - L - E - X erkannt!")
+    store.append_message(db, sid, "user", "frisch", conversation_id="conv-new")
+
+    msgs = store.prompt_history(db, sid, "conv-new")
+    assert [m["content"] for m in msgs] == ["frisch"]
+    assert any("erkannt" in m["content"] for m in store.history(db, sid))
+
+
+def test_prompt_history_excludes_hidden_rows(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "frage", conversation_id="c1")
+    store.append_message(
+        db, sid, "assistant", "Skriptzeile", conversation_id="c1", in_prompt=False
+    )
+
+    assert [m["content"] for m in store.prompt_history(db, sid, "c1")] == ["frage"]
+    assert len(store.get_session(db, sid, "anna")["messages"]) == 2
+
+
+def test_prompt_history_trims_a_leading_orphan_tool_row(db):
+    """A head cut by truncation (or a hidden pass) can leave a dangling tool
+    result — Ollama rejects that shape, so open on a standalone turn."""
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "tool", "verwaistes Ergebnis", conversation_id="c1")
+    store.append_message(db, sid, "user", "frage", conversation_id="c1")
+
+    assert [m["role"] for m in store.prompt_history(db, sid, "c1")] == ["user"]
+
+
+def test_prompt_history_empty_without_a_conversation_id(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "x", conversation_id="c1")
+    assert store.prompt_history(db, sid, "") == []
+
+
+def test_resolve_conversation_reuses_within_the_idle_gap(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "erste", conversation_id="c1")
+    assert store.resolve_conversation_id(db, sid) == "c1"
+
+
+def test_resolve_conversation_starts_fresh_after_the_idle_gap(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "gestern", conversation_id="c1")
+    _age_last_message(db, sid, seconds=3600)
+
+    assert store.resolve_conversation_id(db, sid) not in ("", "c1")
+
+
+def test_resolve_conversation_honours_a_requested_id(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "erste", conversation_id="c1")
+    assert store.resolve_conversation_id(db, sid, requested="ha-42") == "ha-42"
+
+
+def test_resolve_conversation_rejects_a_stale_requested_id(db):
+    """HA re-sending yesterday's conversation id must not resurrect it."""
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "gestern", conversation_id="ha-42")
+    _age_last_message(db, sid, seconds=3600)
+
+    assert store.resolve_conversation_id(db, sid, requested="ha-42") != "ha-42"
+
+
+def test_resolve_conversation_ignores_hidden_rows_for_the_boundary(db):
+    """A hidden enrolment turn must not split the resident's conversation."""
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "frage", conversation_id="c1")
+    store.append_message(
+        db, sid, "assistant", "Skriptzeile", conversation_id="c1", in_prompt=False
+    )
+    assert store.resolve_conversation_id(db, sid) == "c1"
+
+
+def test_truncated_head_still_yields_a_valid_prompt(db):
+    sid = store.create_session(db, "anna")
+    for i in range(6):
+        store.append_message(db, sid, "user", f"frage {i} " * 40, conversation_id="c1")
+        store.append_message(db, sid, "assistant", f"antwort {i}", conversation_id="c1")
+    store.truncate_session_head(db, sid, 40)
+
+    msgs = store.prompt_history(db, sid, "c1")
+    assert msgs and msgs[0]["role"] == "user"
+
+
+def _age_last_message(db_path: str, session_id: str, *, seconds: int) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE engine_messages SET created_at = datetime('now', ?)"
+        " WHERE session_id = ? AND seq = (SELECT MAX(seq) FROM engine_messages"
+        "                                  WHERE session_id = ?)",
+        (f"-{seconds} seconds", session_id, session_id),
+    )
+    conn.commit()
+    conn.close()

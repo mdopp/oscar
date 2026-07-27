@@ -180,6 +180,9 @@ def test_empty_steps_is_noop(tmp_path):
 
 
 class _FakeEngine:
+    # Client-config flag the server reads (real EngineClient.ephemeral).
+    ephemeral = False
+
     async def create_session(self, uid, system_prompt=None, **kw):
         return "sess-1"
 

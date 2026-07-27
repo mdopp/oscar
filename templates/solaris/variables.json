@@ -303,5 +303,23 @@
       "false"
     ],
     "default": "true"
+  },
+  "SOLARIS_LANGUAGE": {
+    "type": "select",
+    "default": "de",
+    "options": [
+      "de",
+      "en"
+    ],
+    "description": "Sprache des Sprach-Stacks (#1057): speist Whisper (STT), die TTS-Bruecke, die Home-Assistant-Assist-Pipeline und die vom Gatekeeper angekuendigten Sprachen aus EINER Einstellung. WHISPER_LANGUAGE ueberschreibt sie weiterhin fuer die Spracherkennung allein. Aendert NICHT die Sprache der Prompts/Skills — die Soul ist deutsch geschrieben; eine echte Uebersetzung ist ein eigenes Thema."
+  },
+  "WAKEWORD_TRAINER_ENABLED": {
+    "type": "select",
+    "default": "true",
+    "options": [
+      "true",
+      "false"
+    ],
+    "description": "Wakeword-Training (#1066): installiert den GPU-Companion, der eingeplante Trainingslaeufe abholt und das On-Device-microWakeWord-Modell fuer „Solaris\" baut. OHNE ihn bleibt jeder eingeplante Lauf liegen — dann sagt Solaris zwar ehrlich Bescheid, aber es entsteht nie ein Modell. Braucht eine CDI-GPU (auf CPU-Boxen wird die Unit ohnehin nicht geschrieben) und viel Platz: das TensorFlow-GPU-Image ist ~10 GB, dazu kommen Piper-Stimmen und Negativ-Korpora im Arbeitsverzeichnis. Auf `false` stellen, wenn die Box den Platz nicht hat."
   }
 }

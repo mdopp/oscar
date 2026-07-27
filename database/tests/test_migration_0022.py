@@ -26,9 +26,11 @@ def _cfg(db_path: str) -> Config:
     return cfg
 
 
-def test_head_is_0022(tmp_path):
+def test_single_linear_head(tmp_path):
+    # Pinning the newest revision id here rots with every later migration; the
+    # property this file cares about is that the chain never forks.
     heads = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db"))).get_heads()
-    assert list(heads) == ["0022_wartung_seen_updates"]
+    assert len(heads) == 1
 
 
 def test_upgrade_creates_wartung_seen_updates(tmp_path):

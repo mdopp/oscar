@@ -4,7 +4,7 @@ handler capture path.
 The store mirrors uid_stash; the handler, when an enroll request is active and
 speaker-ID is on, captures each onboarding turn's PCM as a sample and after N
 enrols the averaged embedding in-process. Tests use a real sqlite db (the three
-relevant tables replayed) and a stub extractor that returns a fixed 256-d vector.
+relevant tables replayed) and a stub extractor that returns a fixed 192-d vector.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ CREATE TABLE voice_embeddings (
 );
 """
 
-# A unit-norm-able 256-d float32 vector (1024 bytes) the stub extractor returns.
-_EMBEDDING = struct.pack("<256f", *([0.5] * 256))
+# A unit-norm-able 192-d float32 vector (768 bytes) the stub extractor returns.
+_EMBEDDING = struct.pack("<192f", *([0.5] * 192))
 
 
 def _db(tmp_path) -> str:

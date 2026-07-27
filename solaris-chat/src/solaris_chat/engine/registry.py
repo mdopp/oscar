@@ -47,6 +47,14 @@ CONTROLLABLE_DOMAINS = (
 
 _TTL_S = 300.0
 
+# How long a cached block may still be served after HA stopped answering. The
+# block is an inventory (id | name | area, no live state), so a stale one is
+# survivable — but not unboundedly: it long outlives renamed, removed or newly
+# added devices, and the model then confidently addresses entity_ids that are
+# gone. A grace window rides out a restart or a blip; past it the prompt omits
+# the list and the model discovers entities with ha_list_entities instead.
+_STALE_GRACE_S = 900.0
+
 # Real HA service names per domain, so the model emits e.g. cover.open_cover
 # (not the guessed cover.open that 400'd, #379) without a separate roundtrip.
 # Kept as a compact per-domain legend appended once, not repeated per entity.
@@ -185,8 +193,15 @@ class EntityRegistry:
         try:
             states = await self._fetch_states()
         except (aiohttp.ClientError, TimeoutError, OSError) as e:
-            log.warn("engine.registry.unreachable", error=str(e))
-            return self._block  # stale beats empty
+            age_s = time.time() - self._fetched_at
+            if self._block and age_s <= _STALE_GRACE_S:
+                log.warn("engine.registry.unreachable", error=str(e), age_s=int(age_s))
+                return self._block  # a blip: yesterday's list still beats none
+            # Past the grace window the cached inventory is too likely to name
+            # entities that no longer exist. Drop it; discovery still works.
+            log.warn("engine.registry.stale_dropped", error=str(e), age_s=int(age_s))
+            self._block = ""
+            return ""
         areas = await self._areas.snapshot()
         lines = []
         domains: set[str] = set()

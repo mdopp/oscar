@@ -880,7 +880,7 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
     # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
     from solaris_chat.engine.profiles import build_engine_clients
 
-    _, _, _, guest, _, _, _ = build_engine_clients(
+    _, _, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://x",
         fast_model="gemma4:e2b",
@@ -910,7 +910,7 @@ async def test_household_profile_reads_persisted_model(tmp_path):
     from solaris_chat.engine.profiles import build_engine_clients
 
     db = str(tmp_path / "solaris.db")
-    household, _, _, _, _, _, _ = build_engine_clients(
+    household, _, _, _, _, _, _, _ = build_engine_clients(
         db_path=db,
         ollama_url="http://x",
         fast_model="gemma4:e2b",
@@ -1537,3 +1537,173 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
     )
     assert resp.status == 200
     assert notifier.pushes == []
+
+
+# --- conversation-scoped prompt history (#1067) ---------------------------
+
+
+async def test_poisoned_history_from_an_old_conversation_is_not_replayed(db, soul):
+    """The regression this change exists for. The shared Zuhause row carried a
+    day of turns including 12 identity statements from failed enrolments, and
+    every later voice turn preloaded them — measured on the box: ~5.6k tokens,
+    and a single-message request still answered "… wurde als M-D-O-P-P
+    erkannt!". Old conversations must not reach the prompt; the browser must
+    still show them."""
+    client, fake = _engine(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    sid = store.ensure_household_session(db, "michael")
+    # Two shapes of poison: a legacy row (no conversation id at all) and one
+    # stamped with an old, long-idle conversation.
+    store.append_message(db, sid, "assistant", "Michael wurde als M-D-O-P-P erkannt!")
+    store.append_message(db, sid, "user", "alte Frage", conversation_id="alt")
+    store.append_message(db, sid, "assistant", "Alte Antwort.", conversation_id="alt")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE engine_messages SET created_at = datetime('now', '-3 hours')"
+        " WHERE session_id = ?",
+        (sid,),
+    )
+    conn.commit()
+    conn.close()
+
+    async for _ in client.respond_session("Wie warm ist es?", uid="michael"):
+        pass
+
+    sent = fake.calls[0]["messages"]
+    assert not any("erkannt" in str(m.get("content", "")) for m in sent)
+    assert not any("Alte Antwort" in str(m.get("content", "")) for m in sent)
+    assert [m["role"] for m in sent if m["role"] != "system"] == ["user"]
+    # The browser history keeps every bubble.
+    shown = [m["content"] for m in store.get_session(db, sid, "michael")["messages"]]
+    assert any("erkannt" in c for c in shown)
+
+
+async def test_ha_conversation_id_scopes_the_prompt(db, soul):
+    client, fake = _engine(
+        db,
+        soul,
+        [
+            ChatResult(content=f"A{i}", prompt_tokens=5, completion_tokens=1)
+            for i in range(3)
+        ],
+    )
+    async for _ in client.respond_session("erste", uid="michael", conversation_id="A"):
+        pass
+    async for _ in client.respond_session("zweite", uid="michael", conversation_id="A"):
+        pass
+    async for _ in client.respond_session("dritte", uid="michael", conversation_id="B"):
+        pass
+
+    second = [str(m.get("content", "")) for m in fake.calls[1]["messages"]]
+    assert any("erste" in c for c in second)  # same conversation carries over
+    third = [str(m.get("content", "")) for m in fake.calls[2]["messages"]]
+    assert not any("erste" in c or "zweite" in c for c in third)
+
+
+async def test_absent_conversation_id_reuses_within_the_idle_gap(db, soul):
+    client, fake = _engine(
+        db,
+        soul,
+        [
+            ChatResult(content=f"A{i}", prompt_tokens=5, completion_tokens=1)
+            for i in range(2)
+        ],
+    )
+    async for _ in client.respond_session("erste", uid="michael"):
+        pass
+    async for _ in client.respond_session("zweite", uid="michael"):
+        pass
+
+    second = [str(m.get("content", "")) for m in fake.calls[1]["messages"]]
+    assert any("erste" in c for c in second)
+
+
+async def test_enrollment_say_is_persisted_once_and_hidden_from_the_prompt(db, soul):
+    """The say short-circuit wrote the spoken line twice and left it in the
+    shared session, where it replayed into every later prompt."""
+
+    async def _start(args):
+        return json.dumps({"ok": True, "say": "Alex wurde als A - L - E - X erkannt?"})
+
+    tool = Tool(
+        name="start_wakeword_enrollment",
+        description="Startet die Wakeword-Aufnahme.",
+        parameters={"type": "object", "properties": {}},
+        handler=_start,
+    )
+    client, fake = _engine(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="",
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "start_wakeword_enrollment",
+                            "arguments": {},
+                        }
+                    }
+                ],
+                prompt_tokens=5,
+                completion_tokens=1,
+            ),
+            ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1),
+        ],
+        tools=[tool],
+    )
+    async for _ in client.respond_session("Richte das Wakeword ein", uid="michael"):
+        pass
+
+    sid = store.household_session_id("michael")
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT role, content, in_prompt FROM engine_messages"
+        " WHERE session_id = ? ORDER BY seq",
+        (sid,),
+    ).fetchall()
+    conn.close()
+    spoken = [r for r in rows if r[0] == "assistant" and "erkannt" in (r[1] or "")]
+    assert len(spoken) == 1, "the say line must be persisted exactly once"
+    assert spoken[0][2] == 0, "and must be hidden from later prompts"
+    assert all(r[2] == 0 for r in rows if r[0] == "tool")
+    # Visible in the browser, absent from the next prompt.
+    shown = [m["content"] for m in store.get_session(db, sid, "michael")["messages"]]
+    assert any("erkannt" in c for c in shown)
+
+    async for _ in client.respond_session("und weiter?", uid="michael"):
+        pass
+    sent = [str(m.get("content", "")) for m in fake.calls[-1]["messages"]]
+    assert not any("erkannt" in c for c in sent)
+
+
+def test_as_question_replaces_trailing_punctuation():
+    """The Voice PE mic stays open on a trailing '?', but appending one after a
+    full stop produced "Bitte antworte mit Ja oder Nein.?" on the box."""
+    from solaris_chat.engine.facade import _as_question
+
+    assert _as_question("Bitte antworte mit Ja oder Nein.") == (
+        "Bitte antworte mit Ja oder Nein?"
+    )
+    assert _as_question("Sag mir noch einen Satz!") == "Sag mir noch einen Satz?"
+    assert _as_question("Und weiter...") == "Und weiter?"
+    assert _as_question("Wie heisst du") == "Wie heisst du?"
+    assert _as_question("Alles klar?") == "Alles klar?"  # untouched
+    assert _as_question("Fertig.  ") == "Fertig?"
+
+
+def test_room_markers_are_stripped_from_every_replayed_turn():
+    """HA replays the whole conversation on the guest path, and each turn
+    carried its own `[room: X]` marker. Only the newest one was cleaned, so the
+    model saw the internal marker on all the others."""
+    from solaris_chat.engine.facade import _strip_room_from_messages
+
+    messages = [
+        {"role": "user", "content": "[room: Küche] Licht an"},
+        {"role": "assistant", "content": "Klar."},
+        {"role": "user", "content": "[room: Bad] und hier?"},
+    ]
+    _strip_room_from_messages(messages)
+
+    assert [m["content"] for m in messages] == ["Licht an", "Klar.", "und hier?"]

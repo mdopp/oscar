@@ -162,6 +162,23 @@ _CLAIM_CORRECTION = (
     " Aktion auf. Behaupte nichts ohne Tool-Ergebnis."
 )
 
+# Tools whose result carries a ready-made `say` line: the wizard scripts the
+# dialog, the model only reads it out. Their turns are kept OUT of later prompts
+# (#1067) — they name the speaker ("… wurde als M-D-O-P-P erkannt"), land in the
+# shared household session, and the model then imitates them forever. Distinct
+# from the enrolment tool *allowlist* below, which also carries a read-only tool.
+_ENROLLMENT_SAY_TOOLS = frozenset(
+    {
+        "start_voice_enrollment",
+        "register_pending_resident",
+        "start_wakeword_enrollment",
+        "record_wakeword_sample",
+        "trigger_wakeword_training",
+        "audit_wakeword_samples",
+        "delete_wakeword_sample",
+    }
+)
+
 
 def _is_fabricated_device_claim(content: str) -> bool:
     return bool(_DEVICE_CLAIM.search(content or ""))
@@ -416,6 +433,7 @@ class EngineClient:
         reasoning_effort: str = "none",
         turn_uid: str = "",
         model_override: str = "",
+        conversation_id: str | None = None,
     ) -> str:
         """One turn, non-streamed: drain the stream, return the final answer.
 
@@ -430,6 +448,7 @@ class EngineClient:
             reasoning_effort,
             turn_uid=turn_uid,
             model_override=model_override,
+            conversation_id=conversation_id,
         ):
             if event["type"] == "run.completed":
                 for msg in event["data"].get("messages", []):
@@ -446,6 +465,7 @@ class EngineClient:
         suggest_answers: bool = False,
         turn_uid: str = "",
         model_override: str = "",
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         owner = store.session_owner(self._db_path, session_id)
         if owner is None:
@@ -464,6 +484,7 @@ class EngineClient:
                 suggest_answers,
                 turn_uid=turn_uid,
                 model_override=model_override,
+                conversation_id=conversation_id,
             ):
                 yield event
         except OllamaError as e:
@@ -487,25 +508,42 @@ class EngineClient:
         suggest_answers: bool = False,
         turn_uid: str = "",
         model_override: str = "",
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
+        owner = store.session_owner(self._db_path, session_id) or ""
+        # Resolve BEFORE the user row lands, or the idle gap is measured against
+        # the row we are about to write.
+        conversation = store.resolve_conversation_id(
+            self._db_path, session_id, requested=conversation_id
+        )
         store.append_message(
-            self._db_path, session_id, "user", text, images=images or None
+            self._db_path,
+            session_id,
+            "user",
+            text,
+            images=images or None,
+            conversation_id=conversation,
         )
         # Bound the durable household chat in place: it is never forked (#419),
         # so when its history outgrows the window the oldest turns are dropped
         # (#420). Soul + device registry are the per-turn system prompt below —
         # never touched; only chat turns are cut. Other sessions are bounded by
         # continuation-compaction (server.maybe_compact), not here.
-        owner = store.session_owner(self._db_path, session_id)
-        if owner and session_id == store.household_session_id(owner):
+        scoped = bool(owner) and session_id == store.household_session_id(owner)
+        if scoped:
             store.truncate_session_head(
                 self._db_path, session_id, int((self._context_window or 32768) * 0.4)
             )
         system = await self._system_prompt(session_id)
         messages = [{"role": "system", "content": system}]
-        messages += store.history(self._db_path, session_id)
+        # The shared household row carries every past conversation, so the prompt
+        # takes only the current one (#1067). Forkable sessions keep full history.
+        messages += (
+            store.prompt_history(self._db_path, session_id, conversation)
+            if scoped
+            else store.history(self._db_path, session_id)
+        )
         think = self._profile.think_default or reasoning_effort not in ("", "none")
-        owner = store.session_owner(self._db_path, session_id) or ""
         # Mirror the inbound transcript to this session's OTHER open tabs (#344)
         # before any token streams — a tab that didn't originate the turn (voice,
         # or another browser) renders the user bubble as soon as it lands.
@@ -518,6 +556,7 @@ class EngineClient:
             uid=turn_uid or owner,
             suggest_answers=suggest_answers,
             model_override=model_override,
+            conversation=conversation,
         ):
             self._mirror(session_id, owner, "mirror_event", event)
             yield event
@@ -590,6 +629,7 @@ class EngineClient:
         text: str,
         *,
         uid: str,
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """A voice turn into the resident's durable household session (#345).
 
@@ -604,7 +644,9 @@ class EngineClient:
         # The wall-clock hint rides the user turn (the session path has no
         # topic-hint wrapper) — same lever the browser turns get server-side.
         turn = f"{_now_hint()}\n\n{text}" if text else text
-        async for event in self.chat_stream(session_id, turn):
+        async for event in self.chat_stream(
+            session_id, turn, conversation_id=conversation_id
+        ):
             yield event
 
     def _count_usage(self, uid: str, name: str, args: Any, output: str) -> None:
@@ -735,6 +777,7 @@ class EngineClient:
         pending_key: str | None | _Unset = _UNSET,
         suggest_answers: bool = False,
         model_override: str = "",
+        conversation: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """The agent loop: stream, dispatch tools, feed results back, repeat.
 
@@ -756,6 +799,31 @@ class EngineClient:
         admin_identity = current_admin_identity.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
+
+        try:
+            from solaris_chat import enroll_requests_store, wakeword_requests_store
+
+            _enrollment_active = enroll_requests_store.has_any_active_request(
+                self._db_path
+            ) or wakeword_requests_store.has_any_active_request(self._db_path)
+            if _enrollment_active:
+                _enrollment_tools = {
+                    "start_voice_enrollment",
+                    "register_pending_resident",
+                    "start_wakeword_enrollment",
+                    "record_wakeword_sample",
+                    "trigger_wakeword_training",
+                    "audit_wakeword_samples",
+                    "list_wakeword_samples",
+                    "delete_wakeword_sample",
+                }
+                tools = [
+                    t
+                    for t in tools
+                    if (t.get("function") or {}).get("name") in _enrollment_tools
+                ]
+        except Exception:
+            pass
         # Per-turn sink the HA state tools fill with read-only card-specs (#475);
         # drained into a `ha_cards` event at turn end.
         ha_cards: list[dict[str, Any]] = []
@@ -820,9 +888,20 @@ class EngineClient:
                 }
                 if persist:
                     store.append_message(
-                        self._db_path, session_id, "assistant", "", tool_calls=[tc]
+                        self._db_path,
+                        session_id,
+                        "assistant",
+                        "",
+                        tool_calls=[tc],
+                        conversation_id=conversation,
                     )
-                    store.append_message(self._db_path, session_id, "tool", output)
+                    store.append_message(
+                        self._db_path,
+                        session_id,
+                        "tool",
+                        output,
+                        conversation_id=conversation,
+                    )
                 messages.append(
                     {"role": "assistant", "content": "", "tool_calls": [tc]}
                 )
@@ -840,6 +919,7 @@ class EngineClient:
         # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
         stored_fact = False
         corrected = False
+        short_circuited = False
         final_content = ""
         final_thinking = ""
         model = model_override or self._model()
@@ -902,7 +982,15 @@ class EngineClient:
                 final_content = result.content
                 break
 
-            # Tool pass: persist the call, dispatch, feed results back.
+            # Tool pass: persist the call, dispatch, feed results back. An
+            # enrolment pass is hidden from later prompts as a WHOLE (call row +
+            # every result row): a prompt must never hold a tool_calls row whose
+            # results are missing, or a result with no preceding call.
+            pass_hidden = any(
+                str((tc.get("function") or {}).get("name") or "")
+                in _ENROLLMENT_SAY_TOOLS
+                for tc in result.tool_calls
+            )
             if persist:
                 store.append_message(
                     self._db_path,
@@ -910,6 +998,8 @@ class EngineClient:
                     "assistant",
                     result.content,
                     tool_calls=result.tool_calls,
+                    conversation_id=conversation,
+                    in_prompt=not pass_hidden,
                 )
             messages.append(
                 {
@@ -1011,8 +1101,34 @@ class EngineClient:
                     "data": {"tool": name, "wall_s": tool_wall_s},
                 }
                 if persist:
-                    store.append_message(self._db_path, session_id, "tool", output)
+                    store.append_message(
+                        self._db_path,
+                        session_id,
+                        "tool",
+                        output,
+                        conversation_id=conversation,
+                        in_prompt=not pass_hidden,
+                    )
                 messages.append({"role": "tool", "content": output, "tool_name": name})
+                # SHORT-CIRCUIT: if the tool returned a 'say' field, emit it directly
+                # without a second LLM pass. This prevents 20-30s model stalls during
+                # voice enrollment and wakeword dialogs (#1056).
+                try:
+                    import json as _json
+
+                    _payload = _json.loads(output)
+                    _say = _payload.get("say") if isinstance(_payload, dict) else None
+                    if _say and name in _ENROLLMENT_SAY_TOOLS:
+                        # The generic persist below writes this same text in the
+                        # same position — writing it here too produced two
+                        # identical assistant rows per enrolment turn.
+                        final_content = _say
+                        short_circuited = True
+                        break
+                except Exception:
+                    pass
+            if short_circuited:
+                break
         else:
             # Pass budget exhausted mid-tool-chain: surface what we have.
             final_content = (
@@ -1042,6 +1158,8 @@ class EngineClient:
                 "assistant",
                 final_content,
                 reasoning=final_thinking,
+                conversation_id=conversation,
+                in_prompt=not short_circuited,
             )
         if ha_cards:
             ha_cards = ha_tools.filter_cards_by_query_state(

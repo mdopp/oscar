@@ -1,8 +1,9 @@
 """Tests for the Solaris-owned voice-pipeline Quadlet rendering (#456).
 
-Solaris owns its whole voice pipeline. The GPU services — whisper STT and the
-Kokoro-Martin TTS — run as companion `.container` Quadlets the post-deploy
-writes (CDI is dropped in kube-play pods, #1026); the CPU services —
+Solaris owns its whole voice pipeline. The GPU services — whisper STT, the
+Kokoro-Martin TTS and the wakeword trainer (#1066) — run as companion
+`.container` Quadlets the post-deploy writes (CDI is dropped in kube-play pods,
+#1026); the CPU services —
 openWakeWord and the wyoming TTS bridge — ride the solaris pod (template.yml).
 The render_* functions are pure, so they're unit-tested directly (mirroring the
 ServiceBay voice template's own quadlet-render tests)."""
@@ -159,6 +160,81 @@ def test_install_tts_units_writes_only_kokoro_on_gpu(pd, monkeypatch):
     assert pd.install_tts_units() is True
     # The bridge moved into the pod — only the GPU Kokoro TTS Quadlet is written.
     assert written == [pd.TTS_UNIT]
+
+
+# -- wakeword trainer --------------------------------------------------------
+
+
+def test_wakeword_trainer_unit_mounts_the_queue_db_and_work_dir(pd):
+    unit = pd.render_wakeword_trainer_unit("/mnt/data")
+    assert "Image=ghcr.io/mdopp/solaris-wakeword-trainer:latest" in unit
+    # #1026: CDI device must be AddDevice= on the quadlet, never resources.limits.
+    assert "AddDevice=nvidia.com/gpu=all" in unit
+    assert "SecurityLabelDisable=true" in unit
+    # The queue lives in the pod's solaris.db — without this mount the trainer
+    # polls an empty path forever and every enqueued run just sits there.
+    assert "Volume=/mnt/data/solarisbay:/var/lib/solaris:Z" in unit
+    assert "Volume=/mnt/data/solaris/wakeword-train:/work:Z" in unit
+    assert "ShmSize=8g" in unit
+
+
+def test_wakeword_trainer_unit_allows_a_long_first_pull(pd):
+    """The TF-GPU base is several GB and podman derives its pull timeout from
+    TimeoutStartSec. Box-observed: systemd killed the unit 4m15s into the first
+    pull, and each retry restarted the download from the top — a crash loop that
+    could never converge."""
+    unit = pd.render_wakeword_trainer_unit("/mnt/data")
+    timeout = next(
+        (
+            int(ln.split("=", 1)[1])
+            for ln in unit.splitlines()
+            if ln.startswith("TimeoutStartSec=")
+        ),
+        0,
+    )
+    assert timeout >= 1800, "a multi-GB first pull needs more than the systemd default"
+
+
+def test_install_wakeword_trainer_unit_skips_without_cdi(pd, monkeypatch):
+    monkeypatch.setattr(pd, "cdi_available", lambda: False)
+    monkeypatch.setattr(
+        pd,
+        "install_unit",
+        lambda *a: pytest.fail("must not write the trainer unit on CPU box"),
+    )
+    assert pd.install_wakeword_trainer_unit("/mnt/data") is False
+
+
+def test_install_wakeword_trainer_unit_honours_the_off_switch(pd, monkeypatch):
+    # A ~10 GB TensorFlow-GPU image plus its corpora is not something a
+    # space-constrained box should get handed unconditionally.
+    monkeypatch.setattr(pd, "cdi_available", lambda: True)
+    monkeypatch.setattr(
+        pd,
+        "env",
+        lambda key, default="": (
+            "false" if key == "WAKEWORD_TRAINER_ENABLED" else default
+        ),
+    )
+    monkeypatch.setattr(
+        pd, "install_unit", lambda *a: pytest.fail("must not write a disabled unit")
+    )
+    assert pd.install_wakeword_trainer_unit("/mnt/data") is False
+
+
+def test_install_wakeword_trainer_unit_creates_work_dir_on_gpu(
+    pd, monkeypatch, tmp_path
+):
+    written = []
+    monkeypatch.setattr(pd, "cdi_available", lambda: True)
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd, "install_unit", lambda unit, content: written.append(unit) or True
+    )
+    assert pd.install_wakeword_trainer_unit(str(tmp_path)) is True
+    assert written == [pd.WAKEWORD_TRAINER_UNIT]
+    # Quadlet Volume= does not create the host dir (unlike kube DirectoryOrCreate).
+    assert (tmp_path / "solaris" / "wakeword-train").is_dir()
 
 
 # -- openWakeWord custom-models dir ------------------------------------------

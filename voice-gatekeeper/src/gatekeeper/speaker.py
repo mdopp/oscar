@@ -7,7 +7,7 @@ Two distinct moving parts live here:
      stored embeddings. Always available. Tested with synthetic
      embeddings (see tests/).
   2. `get_extractor` / `EmbeddingExtractor` — abstraction over the
-     ECAPA-TDNN model that turns raw PCM into a 256-d vector. The
+     ECAPA-TDNN model that turns raw PCM into a 192-d vector. The
      default implementation imports SpeechBrain lazily; when
      SpeechBrain is not installed (the default image), it raises
      NotImplementedError on first use. Callers must check
@@ -32,6 +32,7 @@ import os
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
+from .config import speaker_id_enabled_from_env
 from .embeddings_store import EMBEDDING_DIM, VoiceEmbedding
 
 
@@ -118,7 +119,7 @@ def resolve_speaker(
 
 
 class EmbeddingExtractor(Protocol):
-    """Turn buffered audio chunks into a 256-d float32 embedding.
+    """Turn buffered audio chunks into a 192-d float32 embedding.
 
     The protocol is sync — extractors are CPU/GPU-bound and the
     handler calls them from an asyncio.to_thread wrapper. Returning
@@ -211,12 +212,7 @@ def get_extractor() -> EmbeddingExtractor | None:
     global _extractor_singleton
     if _extractor_singleton is not None:
         return _extractor_singleton
-    if os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if not speaker_id_enabled_from_env():
         return None
     if not extractor_available():
         return None

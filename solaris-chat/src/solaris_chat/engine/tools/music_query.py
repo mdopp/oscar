@@ -250,11 +250,13 @@ def build_music_query_tools(
                     if _song_by_value(conn, sid, caller) == want_value:
                         return sid
             return ids[0]
+        query_first = title.split()[0] if title.split() else title
         candidates = conn.execute(
             "SELECT id, canonical_name FROM entities"
             " WHERE type = 'song' AND resident_uid IN (?, ?)"
+            " AND (canonical_name LIKE ? OR canonical_name LIKE ?)"
             " ORDER BY canonical_name",
-            (caller, projection.SHARED_UID),
+            (caller, projection.SHARED_UID, f"%{title}%", f"%{query_first}%"),
         ).fetchall()
         best_id: str | None = None
         best_score = 0.0
@@ -498,17 +500,29 @@ def build_music_query_tools(
         if band_id is None:
             return None
         okf_path = projection.entity_okf_path(conn, band_id)
-        if okf_path is None:
-            return None
-        value = _band_value(okf_path)
+        if okf_path is not None:
+            value = _band_value(okf_path)
+        else:
+            band_row = projection.entity_row(conn, band_id)
+            if band_row is None:
+                return None
+            from solaris_chat.engine.knowledge.okf import safe_slug
+
+            value = f"bands/{safe_slug(band_row['canonical_name'])}"
+        from solaris_chat.engine.knowledge.okf import safe_slug
+
+        band_name = band_row["canonical_name"] if okf_path is None else value
+        clean_slug = safe_slug(
+            band_name.replace(", The", "").replace("The ", "").strip()
+        )
         rows = projection.fetch_all(
             conn,
             "SELECT e.id, e.canonical_name FROM facts f"
             " JOIN entities e ON e.id = f.subject_entity_id"
-            " WHERE f.predicate = 'by' AND f.value = ?"
+            " WHERE f.predicate = 'by' AND (f.value = ? OR f.value LIKE ?)"
             " AND e.type = 'song' AND e.resident_uid IN (?, ?)"
             " ORDER BY e.canonical_name",
-            (value, caller, projection.SHARED_UID),
+            (value, f"%{clean_slug}%", caller, projection.SHARED_UID),
         )
         for row in rows:
             audio_id = _song_audio_id(conn, row["id"], caller)
@@ -572,6 +586,130 @@ def build_music_query_tools(
     async def play_music(args: dict[str, Any]) -> str:
         title = str(args.get("title") or "").strip()
         artist = str(args.get("artist") or "").strip()
+        # Treat generic filler words ('Musik', 'Spielermusik', 'Spiele Musik') as empty query
+        if title.casefold() in {
+            "musik",
+            "spielermusik",
+            "spiele musik",
+            "spiel musik",
+            "etwas musik",
+            "radio",
+        }:
+            title = ""
+        if artist.casefold() in {
+            "musik",
+            "spielermusik",
+            "spiele musik",
+            "spiel musik",
+            "etwas musik",
+            "radio",
+        }:
+            artist = ""
+        # Redirect radio stations passed to play_music
+        _RADIO_KEYWORDS = {
+            "1live",
+            "1 live",
+            "einslive",
+            "eins live",
+            "ndr2",
+            "ndr 2",
+            "wdr2",
+            "wdr 2",
+            "ffn",
+            "antenne niedersachsen",
+            "radio bob",
+            "dlf",
+        }
+        import re
+
+        _RADIO_NORMALISE = {
+            "einslive": "1 live",
+            "eins live": "1 live",
+            "1live": "1 live",
+            "1 live": "1 live",
+            "einsleif": "1 live",
+            "eins leif": "1 live",
+            "ein slive": "1 live",
+            "eins lief": "1 live",
+            "da ins live": "1 live",
+            "spiel da ins live": "1 live",
+            "ins live": "1 live",
+            "eins life": "1 live",
+            "1 life": "1 live",
+            "einslaiv": "1 live",
+            "1laiv": "1 live",
+            "ndr2": "ndr 2",
+            "ndr 2": "ndr 2",
+            "wdr2": "wdr 2",
+            "wdr 2": "wdr 2",
+        }
+        _RADIO_VERBS = re.compile(
+            r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?|ich\s+möchte|kannst?\s+du(\s+bitte)?|lass|bitte)\s+",
+            re.I,
+        )
+        _ROOM_SUFFIXES = re.compile(
+            r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b",
+            re.I,
+        )
+        _ACTION_PARTICLES = re.compile(
+            r"\s+(an|ein|ab|laufen|spielen|bitte|jetzt)\b", re.I
+        )
+        check_raw = re.sub(r"[^\w\s]", "", (title or artist).casefold()).strip()
+        check_str = _RADIO_VERBS.sub("", check_raw).strip()
+        check_str = _ACTION_PARTICLES.sub("", check_str).strip()
+        check_str = _ROOM_SUFFIXES.sub("", check_str).strip()
+        check_str = _RADIO_NORMALISE.get(check_str, check_str)
+        _RADIO_PREFIXES = [
+            "1 live",
+            "ndr",
+            "wdr",
+            "swr",
+            "hr",
+            "br",
+            "mdr",
+            "rbb",
+            "ffn",
+            "antenne",
+            "rock",
+            "sunshine",
+            "hit",
+            "klassik",
+            "schlager",
+            "bigfm",
+            "planet",
+            "paloma",
+            "brocken",
+            "bob",
+        ]
+        is_radio_hint = (
+            "radio" in check_str
+            or "fm" in check_str
+            or "sender" in check_str
+            or check_str in _RADIO_KEYWORDS
+            or any(k in check_str for k in _RADIO_PREFIXES)
+        )
+        if is_radio_hint:
+            from solaris_chat.engine.tools.radio import build_radio_tools
+
+            r_tools_local = build_radio_tools(
+                notes_dir,
+                hass_url,
+                hass_token,
+                _caller,
+                room_getter=room_getter,
+                room_resolver=room_resolver,
+                area_fallback=area_fallback,
+            )
+            r_handler_local = next(
+                (t.handler for t in r_tools_local if t.name == "play_radio"), None
+            )
+            if r_handler_local:
+                res = await r_handler_local(
+                    {"station": check_str, "entity_id": args.get("entity_id") or ""}
+                )
+                if json.loads(res).get("ok"):
+                    return res
+        artist = str(args.get("artist") or "").strip()
         entity_id = str(args.get("entity_id") or "").strip()
         # Strip a filler-phrase title ("ein Song von Queen") the model wrongly put
         # in `title`: the trailing name is the artist, the title is empty.
@@ -605,26 +743,32 @@ def build_music_query_tools(
         conn = projection.open_conn(db_path)
         try:
             if title:
-                song_id = _resolve_song_id(conn, title, artist, caller)
-                if song_id is not None:
-                    song = projection.entity_row(conn, song_id)
-                    clean = song["canonical_name"]
-                    audio_id = _song_audio_id(conn, song_id, caller)
-                elif artist:
-                    # An unresolved title with an artist falls back to that artist's
-                    # first castable track — never echo the unresolved title.
-                    hit = _band_first_castable(conn, artist, caller)
-                    if hit is None:
+                # Priority: check if title is actually an artist/band name
+                hit_artist = _band_first_castable(conn, check_str, caller)
+                if hit_artist is not None:
+                    clean, audio_id = hit_artist
+                    artist = check_str
+                else:
+                    song_id = _resolve_song_id(conn, title, artist, caller)
+                    if song_id is not None:
+                        song = projection.entity_row(conn, song_id)
+                        clean = song["canonical_name"]
+                        audio_id = _song_audio_id(conn, song_id, caller)
+                    elif artist:
+                        # An unresolved title with an artist falls back to that artist's
+                        # first castable track — never echo the unresolved title.
+                        hit = _band_first_castable(conn, artist, caller)
+                        if hit is None:
+                            return json.dumps(
+                                {"ok": False, "reason": "not_found", "query": title},
+                                ensure_ascii=False,
+                            )
+                        clean, audio_id = hit
+                    else:
                         return json.dumps(
                             {"ok": False, "reason": "not_found", "query": title},
                             ensure_ascii=False,
                         )
-                    clean, audio_id = hit
-                else:
-                    return json.dumps(
-                        {"ok": False, "reason": "not_found", "query": title},
-                        ensure_ascii=False,
-                    )
             elif artist:
                 hit = _band_first_castable(conn, artist, caller)
                 if hit is None:

@@ -19,6 +19,7 @@ hardware.
 """
 
 from __future__ import annotations
+from solaris_chat.engine import enrollment_fsm
 
 import json
 import re
@@ -96,8 +97,17 @@ def _question_pending(text: str, offered_choices: bool) -> bool:
     return offered_choices or any(q in text for q in _QUESTION_MARKS)
 
 
+# Sentence-final punctuation a trailing "?" REPLACES rather than follows —
+# appending produced "Bitte antworte mit Ja oder Nein.?" on the box. Not the
+# Greek ";" — that is already a question mark and returns above.
+_SENTENCE_END = ".!…:,"
+
+
 def _as_question(text: str) -> str:
-    return text if text.rstrip().endswith(_QUESTION_MARKS) else text.rstrip() + "?"
+    stripped = text.rstrip()
+    if stripped.endswith(_QUESTION_MARKS):
+        return text
+    return stripped.rstrip(_SENTENCE_END) + "?"
 
 
 def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes:
@@ -206,8 +216,9 @@ def add_facade_routes(
         # (and the uid-stash lookup, keyed on the raw whisper transcript) never
         # sees it.
         room, transcript = _split_room(_last_user(messages))
-        if room:
-            _strip_room_from_messages(messages)
+        # Unconditionally: an older replayed turn can carry a marker even when
+        # the newest one does not.
+        _strip_room_from_messages(messages)
         current_room.set(room)
         uid = consume_uid(solaris_db_path, transcript) or str(
             body.get("user") or default_uid
@@ -221,6 +232,21 @@ def add_facade_routes(
         guest = clients.get("solaris-guest")
         if uid == GUEST_UID and guest is not None:
             model, client = "solaris-guest", guest
+
+        # Enrollment routing (#1056): if ANY user has an active voice enrollment
+        # or wakeword request, route ALL voice turns to the isolated enrollment
+        # profile. This profile has no HA tools, no history, no context pollution.
+        enrollment = clients.get("solaris-enrollment")
+        if enrollment is not None:
+            try:
+                from solaris_chat import enroll_requests_store, wakeword_requests_store
+
+                if enroll_requests_store.has_any_active_request(
+                    solaris_db_path
+                ) or wakeword_requests_store.has_any_active_request(solaris_db_path):
+                    model, client = "solaris-enrollment", enrollment
+            except Exception:
+                pass
         log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
 
         # A voice turn lands in the resident's durable household session (#345):
@@ -245,11 +271,27 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
+            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(
+                solaris_db_path
+            ):
+                # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
+                # Guarantees zero latency, zero hallucinations, and zero device action risk.
+                async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
+                    reply = enrollment_fsm.handle_turn(
+                        solaris_db_path, transcript, uid_hint=uid
+                    )
+                    yield {"type": "assistant.delta", "data": {"delta": reply}}
+                    yield {"type": "run.completed", "data": {"answer": reply}}
+
+                return _fsm_turns()
+
             if client.ephemeral:
                 return client.respond(
                     messages, uid=uid, source=model, conversation_id=conversation_id
                 )
-            return client.respond_session(text, uid=uid)
+            return client.respond_session(
+                text, uid=uid, conversation_id=conversation_id
+            )
 
         def persist_trace() -> None:
             if client.ephemeral:
@@ -387,14 +429,17 @@ def _persist_voice_trace(
 
 
 def _strip_room_from_messages(messages: list[Any]) -> None:
-    """Strip a `[room: X]` prefix off the latest user message in place, so the
+    """Strip the `[room: X]` prefix off EVERY user message in place, so the
     ephemeral `respond` path (which replays the caller's message list) never
-    feeds the marker to the model."""
-    for msg in reversed(messages):
+    feeds the marker to the model.
+
+    Every one, not just the newest: HA replays the whole conversation, so the
+    turns before it still carried their own markers into the guest prompt.
+    """
+    for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content"):
             _, stripped = _split_room(str(msg["content"]))
             msg["content"] = stripped
-            return
 
 
 def _last_user(messages: list[Any]) -> str:

@@ -1,25 +1,4 @@
-"""Resident-registration tools — the onboarding flow's voice-enrol + file step.
-
-Live-voice enrolment uses the reverse enroll-stash (#376): the engine can't pass
-PCM (it only ever sees text), so instead of shipping base64 samples it opens an
-`enroll_requests` row for the candidate uid and the gatekeeper — while it is HA's
-Wyoming STT provider — captures the speaker's audio across the next few onboarding
-turns, enrols the voice in-process, and writes the result back.
-
-Two tools drive the dialog:
-
-  * `start_voice_enrollment(uid)` opens the request, then the dialog prompts the
-    speaker to say their name N times (one utterance = one captured turn).
-  * `register_pending_resident(uid, display_name)` reads the result and, only on
-    a successful enrol, files a `pending_residents` row (#376) for the admin
-    step (#355). A timeout (speaker-ID off, so no gatekeeper picked the request
-    up) or a `failed` result is surfaced honestly — no pending row, no false
-    success — and the dialog reports it instead of hanging.
-
-Biometric care: the raw audio never reaches the engine or any log line — only the
-uid, display name and the gatekeeper's status surface. These are onboarding-only
-tools, not part of the household or general guest toolset (see profiles.py).
-"""
+"""Resident-registration tools — the onboarding flow's voice-enrol + file step (#1056)."""
 
 from __future__ import annotations
 
@@ -30,78 +9,163 @@ from typing import Any
 from solaris_chat import enroll_requests_store, pending_residents_store
 from solaris_chat.engine.tools import Tool
 
-# Same uid shape the gatekeeper's /enrol enforces — validate before opening the
-# request so a malformed uid is a clear local error.
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _TARGET_SAMPLES = 3
 
-# Prompt-only SOUL steering is too high-variance on the small household model
-# (gemma4:e4b ignores "drei Sätze" and falls back to its "sage deinen Namen"
-# prior — #404). So the tool hands the model the exact line to echo: it speaks
-# this verbatim instead of inventing the next prompt from a weak instruction.
-_COLLECT_PROMPT = (
-    "Alles klar! Sag mir jetzt bitte drei ganz normale Sätze oder Befehle,"
-    " wie du sonst auch mit mir sprichst — zum Beispiel „Schalte das Licht"
-    " im Wohnzimmer an“, „Stell einen Timer auf zehn Minuten“ oder"
-    " „Wie wird das Wetter morgen?“. Sag NICHT einfach deinen Namen —"
-    " der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Leg einfach"
-    " mit dem ersten Satz los."
+# Words that mean "the resident did not actually say a name". The model passes
+# whatever it plucked out of the sentence, so any of these appearing as a WORD
+# means we still have to ask.
+_GENERIC_WORDS = frozenset(
+    {
+        "benutzer",
+        "nutzer",
+        "user",
+        "profil",
+        "sprachprofil",
+        "stimmprofil",
+        "stimme",
+        "account",
+        "konto",
+        "einrichten",
+        "einrichtung",
+        "anlegen",
+        "erstellen",
+        "registrieren",
+        "mein",
+        "meine",
+        "meinen",
+        "meins",
+        "dein",
+        "deine",
+        "bitte",
+        "neu",
+        "neuer",
+        "neues",
+        "ja",
+        "yes",
+        "ok",
+        "okay",
+        "einverstanden",
+        "zustimmung",
+        "klar",
+        "gerne",
+    }
 )
+_WORD_RE = re.compile(r"[a-zäöüß0-9]+", re.I)
+
+
+def _is_generic_name(raw: str) -> bool:
+    """True when the argument is a phrase about enrolling rather than a name.
+
+    Spelled forms ("M - A - X") tokenise to single letters and pass through.
+    """
+    words = [w.casefold() for w in _WORD_RE.findall(raw)]
+    if not words:
+        return True
+    return any(w in _GENERIC_WORDS for w in words)
 
 
 def build_register_tools(
     db_path: str, gatekeeper_url: str = "", gatekeeper_token: str = ""
 ) -> list[Tool]:
     async def start(args: dict[str, Any]) -> str:
-        uid = str(args.get("uid") or "").strip()
+        raw_uid = str(args.get("uid") or "").strip()
+        # If the user only gave consent or generic setup without naming/spelling
+        # a user, ask for the name (#1056). Matched per WORD, not as whole
+        # phrases: the model hands over whatever it plucked from the sentence,
+        # and an exact-phrase list let "mein Sprachprofil" through, which the
+        # resolver then turned into the resident "Meinname" (#1067). Word-wise
+        # so a real name that merely contains one of these (Meinhard) survives.
+        if not raw_uid or _is_generic_name(raw_uid):
+            say_ask = "Danke für deine Zustimmung! Wie lautet dein Name oder welches Kürzel möchtest du nutzen? Bitte buchstabiere das Kürzel?"
+            return json.dumps(
+                {"ok": False, "reason": "missing_uid", "say": say_ask},
+                ensure_ascii=False,
+            )
+        # Reject junk before the resolver normalises it away: "Bad UID!" would
+        # otherwise be coerced to the perfectly valid uid "baduid".
+        if re.search(r"[^a-z0-9 ._-]", raw_uid, re.I):
+            return json.dumps({"ok": False, "reason": "invalid_uid"})
+        from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
+
+        uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
+
         if not _UID_RE.match(uid):
             return json.dumps({"ok": False, "reason": "invalid_uid"})
         try:
             enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
-        except Exception:  # noqa: BLE001 — table/DB missing surfaces as not-ok
+        except Exception:
             return json.dumps({"ok": False, "reason": "enroll_store_unavailable"})
+
+        say_custom = (
+            f"{display_name} wurde als {spelled_uid} erkannt! Lass uns jetzt mit den 3 Sprachproben für dein Profil weitermachen. "
+            f"Sag mir bitte nacheinander drei ganz normale Sätze oder Befehle, wie du sonst auch mit mir sprichst. "
+            f"Der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Was ist dein erster Satz?"
+        )
+
         return json.dumps(
             {
                 "ok": True,
                 "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
                 "collecting": True,
                 "samples_needed": _TARGET_SAMPLES,
-                "say": _COLLECT_PROMPT,
+                "say": say_custom,
             },
             ensure_ascii=False,
         )
 
     async def register(args: dict[str, Any]) -> str:
-        uid = str(args.get("uid") or "").strip()
-        display_name = str(args.get("display_name") or "").strip()
+        raw_uid = str(args.get("uid") or "").strip()
+        dn_arg = args.get("display_name")
+        from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
+
+        uid, resolved_display, spelled_uid = resolve_resident_identity(raw_uid, db_path)
+
         if not _UID_RE.match(uid):
             return json.dumps({"ok": False, "reason": "invalid_uid"})
-        if not display_name:
+        # An explicitly-passed but blank display_name is a caller error; an
+        # omitted one falls back to the resolved name.
+        if dn_arg is not None and not str(dn_arg).strip():
             return json.dumps({"ok": False, "reason": "missing_display_name"})
+        display_name = str(dn_arg).strip() if dn_arg else resolved_display
 
         req = enroll_requests_store.read_request(db_path, uid)
         if req is None:
+            # Nothing was ever opened — an honest failure, not a silent re-open
+            # (a re-open would make the dialog look like it is still capturing).
             return json.dumps({"ok": False, "reason": "no_enroll_request"})
-        if req["timed_out"]:
-            # No gatekeeper ever picked the request up — speaker-ID is off, so
-            # voice onboarding can't enrol. Honest failure, not a hang.
+
+        if req.get("timed_out"):
+            # No gatekeeper ever picked the request up — speaker-ID is off.
             enroll_requests_store.clear_request(db_path, uid)
             return json.dumps({"ok": False, "reason": "speaker_id_disabled"})
-        if req["status"] == enroll_requests_store.STATUS_FAILED:
-            # The gatekeeper could not extract an embedding (silent/short audio,
-            # ECAPA error) — a real failure, not "collect more". Surface it and
-            # drop the stale row so the uid can be re-enrolled, not blocked.
+
+        if req.get("status") == enroll_requests_store.STATUS_FAILED:
+            # A real gatekeeper failure, not "collect more". Drop the stale row
+            # so the uid can be re-enrolled instead of being blocked.
             enroll_requests_store.clear_request(db_path, uid)
             return json.dumps({"ok": False, "reason": "enroll_failed"})
-        if req["status"] != enroll_requests_store.STATUS_DONE:
-            # Still capturing (fewer than N samples in) — the dialog should
-            # collect another utterance before confirming.
+
+        if req.get("status") != enroll_requests_store.STATUS_DONE:
+            enroll_requests_store.touch_request(db_path, uid)
+            collected = req.get("collected", 1)
+            needed = req.get("target_samples", 3)
+            rem = needed - collected
+            if rem == 2:
+                say = f"Danke, {display_name}! Was ist dein zweiter Satz?"
+            elif rem == 1:
+                say = "Sehr schön! Was ist dein dritter und letzter Satz?"
+            else:
+                say = f"Super! Noch {rem} Sätze. Was ist dein nächster Satz?"
             return json.dumps(
                 {
                     "ok": False,
                     "reason": "enroll_incomplete",
-                    "collected": req["collected"],
-                    "needed": req["target_samples"],
+                    "collected": collected,
+                    "needed": needed,
+                    "say": say,
                 },
                 ensure_ascii=False,
             )
@@ -110,8 +174,20 @@ def build_register_tools(
         request_id = pending_residents_store.add_pending_resident(
             db_path, uid=uid, display_name=display_name, enrolled=True
         )
+        say_done = (
+            f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) ist eingerichtet! "
+            f"Wollen wir jetzt direkt 10 Wakeword-Proben für „Solaris“ für dein Profil aufnehmen?"
+        )
         return json.dumps(
-            {"ok": True, "uid": uid, "request_id": request_id, "status": "pending"},
+            {
+                "ok": True,
+                "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
+                "request_id": request_id,
+                "status": "pending",
+                "say": say_done,
+            },
             ensure_ascii=False,
         )
 
@@ -119,15 +195,12 @@ def build_register_tools(
         Tool(
             name="start_voice_enrollment",
             description=(
-                "Startet das Sprach-Enrollment, wenn sich jemand einrichten will"
-                " ('richte mich ein', 'merk dir meine Stimme'). Vorher: kurz"
-                " Einverständnis zur Stimmaufnahme einholen (biometrisch) und nach"
-                " dem NAMEN fragen — nie nach einer ID; uid selbst ableiten"
-                " (kleinbuchstaben, ASCII: 'Michael' ⇒ 'michael'). Gibt 'say'"
-                " zurück: sprich GENAU diese Zeile — bitte NIE, den Namen zu"
-                " wiederholen. Jede folgende Äußerung ist eine Probe; nach drei"
-                " Äußerungen register_pending_resident rufen. Braucht aktive"
-                " Sprechererkennung."
+                "Startet das Sprach-Enrollment, wenn sich jemand einrichten will ('richte mich ein', 'merk dir meine Stimme'). "
+                "SCHRITT 1: Wenn der Nutzer noch nicht sein Einverständnis zur biometrischen Stimmaufnahme gegeben hat, frage NUR kurz: "
+                "'Möchtest du dein Sprachprofil biometrisch auf der Box anlegen? Bitte antworte mit Ja oder Nein.' "
+                "SCHRITT 2: Wenn das Einverständnis vorliegt, frage nach dem Namen oder Kürzel: "
+                "'Welcher Name oder welches Kürzel soll verwendet werden? Bitte buchstabiere das Kürzel. Wie lautet dein Name?' "
+                "SCHRITT 2: Sobald der Nutzer den Namen oder das Kürzel genannt hat, rufe start_voice_enrollment(uid=genannter_name) auf. Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
             ),
             parameters={
                 "type": "object",
@@ -139,15 +212,10 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Registrierung ab, NACHDEM start_voice_enrollment mit"
-                " collecting=true geantwortet hat UND die Person drei Sätze gesagt"
-                " hat. Ruf es NIE vorher. Übergib dieselbe uid und"
-                " den Anzeigenamen. Prüft das Enrollment-Ergebnis und legt nur bei"
-                " Erfolg eine Freigabe-Anfrage an — es entsteht KEIN Konto und kein"
-                " Bewohner-Zugang, bis ein Admin freigibt (auch beim ersten Bewohner)."
-                " Bei 'enroll_incomplete' noch eine Äußerung sammeln und erneut rufen;"
-                " bei 'speaker_id_disabled' oder Fehler nichts vortäuschen, keine"
-                " Anfrage."
+                "MUST BE CALLED IMMEDIATELY during voice profile enrollment turns! "
+                "WÄHREND der Sprachprofil-Einrichtung (Sätze 1, 2, 3) rufst du IMMER SOFORT register_pending_resident auf. "
+                "FÜHRE KEINE GERÄTE-AKTIONEN (Licht schalten, Geräte steuern) AUS, egal was in den Sätzen gesagt wird! "
+                "Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
             ),
             parameters={
                 "type": "object",

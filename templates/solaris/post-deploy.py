@@ -145,6 +145,11 @@ OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 WHISPER_UNIT = "solaris-whisper"
 TTS_UNIT = "solaris-tts"
 TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
+# The wakeword trainer (#1066) is a GPU companion for the same reason: the chat
+# container has no TensorFlow, no GPU and no route to the host's podman, so it
+# only enqueues `wakeword_training_runs` rows and this unit claims them.
+WAKEWORD_TRAINER_UNIT = "solaris-wakeword-trainer"
+WAKEWORD_TRAINER_IMAGE = "ghcr.io/mdopp/solaris-wakeword-trainer:latest"
 
 # The whisper wizard default. On a CDI GPU box the default upgrades to the
 # better model the GPU runs faster than the CPU ran base (box-measured 0.38s vs
@@ -162,6 +167,17 @@ HA_URL = "http://127.0.0.1:8123"
 def env(key: str, default: str = "") -> str:
     val = os.environ.get(key, default)
     return val if val else default
+
+
+def system_language() -> str:
+    """The one language the voice stack runs in (#1057).
+
+    Whisper, the TTS bridge, the HA assist pipeline and the gatekeeper's
+    advertised languages all derived their own hardcoded "de"; this is the
+    single knob they now share. Per-component overrides still win where they
+    exist (WHISPER_LANGUAGE).
+    """
+    return env("SOLARIS_LANGUAGE", "de")
 
 
 def _truthy(val: str) -> bool:
@@ -394,7 +410,7 @@ def main():
         return 1
     sock.settimeout(30)
     try:
-        _send(sock, "transcribe", {"language": "de"})
+        _send(sock, "transcribe", {"language": system_language()})
         _send(
             sock,
             "audio-start",
@@ -554,6 +570,72 @@ def render_tts_unit() -> str:
     )
 
 
+def render_wakeword_trainer_unit(data_dir: str) -> str:
+    """Render the wakeword-trainer `.container` Quadlet (pure, GPU via CDI).
+    It polls solaris.db for queued training runs, so it mounts the same
+    solaris-data host dir the pod's chat container writes."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Wakeword Trainer (microWakeWord, GPU via CDI #1066)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        f"Image={WAKEWORD_TRAINER_IMAGE}\n"
+        f"ContainerName={WAKEWORD_TRAINER_UNIT}\n"
+        "Network=host\n"
+        "AddDevice=nvidia.com/gpu=all\n"
+        "SecurityLabelDisable=true\n"
+        "# The queue the chat container writes — same solaris.db, same host path\n"
+        "# the pod mounts at /var/lib/solaris.\n"
+        f"Volume={data_dir}/solarisbay:/var/lib/solaris:Z\n"
+        "# Training work dir: Piper voices, negative corpora, features and\n"
+        "# checkpoints. Tens of GB, and it must survive a restart mid-run.\n"
+        f"Volume={data_dir}/solaris/wakeword-train:/work:Z\n"
+        "# Part of the upstream training recipe (train-micro-wake-word.py):\n"
+        "# the feature/augmentation phase does not fit podman's stock 64 MB.\n"
+        "ShmSize=8g\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=30\n"
+        # The TensorFlow-GPU base is several GB, and podman derives its own pull
+        # timeout from this value. Box-observed on the first deploy: systemd
+        # killed the unit 4m15s into the initial pull, and every retry restarted
+        # the download from the top — a crash loop that could never converge.
+        "TimeoutStartSec=3600\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_wakeword_trainer_unit(data_dir: str) -> bool:
+    """Write + activate the wakeword-trainer companion Quadlet. GPU-only (the
+    image is TensorFlow-CUDA) and skippable via WAKEWORD_TRAINER_ENABLED for
+    boxes that can't spare the ~10 GB image plus its training corpora. Creates
+    the work dir first — Quadlet Volume= does not create it."""
+    if not cdi_available():
+        jlog("info", "voice-unit", "wakeword-trainer: no CDI GPU — skipping unit")
+        return False
+    if not _truthy(env("WAKEWORD_TRAINER_ENABLED", "true")):
+        jlog("info", "voice-unit", "wakeword-trainer: disabled by variable")
+        return False
+    work_dir = os.path.join(data_dir, "solaris", "wakeword-train")
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+    except OSError as e:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: could not create work dir",
+            error=str(e),
+        )
+        return False
+    return install_unit(WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir))
+
+
 def install_whisper_unit(data_dir: str) -> bool:
     """Write + activate the companion whisper Quadlet (GPU when CDI is
     registered, CPU otherwise). Creates the model-cache host dir first —
@@ -563,7 +645,7 @@ def install_whisper_unit(data_dir: str) -> bool:
     model = env("WHISPER_MODEL", WHISPER_CPU_DEFAULT_MODEL)
     if gpu and model == WHISPER_CPU_DEFAULT_MODEL:
         model = WHISPER_GPU_DEFAULT_MODEL
-    language = env("WHISPER_LANGUAGE", "de")
+    language = env("WHISPER_LANGUAGE", system_language())
     volume_dir = os.path.join(data_dir, "voice", "whisper-gpu" if gpu else "whisper")
     try:
         os.makedirs(volume_dir, exist_ok=True)
@@ -628,9 +710,10 @@ def setup_custom_models_dir(custom_dir: str) -> None:
 
 def install_voice_pipeline(data_dir: str) -> None:
     """Stand up the Solaris-owned voice pipeline (#456). The GPU services are
-    companion Quadlets (CDI is dropped in kube-play pods, #1026): whisper STT
-    and the Kokoro-Martin TTS. The CPU services — openWakeWord and the TTS
-    bridge — ride the solaris pod itself (template.yml). Here we install the
+    companion Quadlets (CDI is dropped in kube-play pods, #1026): whisper STT,
+    the Kokoro-Martin TTS and the wakeword trainer (#1066). The CPU services —
+    openWakeWord and the TTS bridge — ride the solaris pod itself
+    (template.yml). Here we install the
     GPU Quadlets and drop the trained wake-word model into the custom-models
     dir the pod's openWakeWord container mounts. The Assist-pipeline wiring
     (later, in wire_voice_pipeline) points HA at these Wyoming endpoints.
@@ -647,6 +730,7 @@ def install_voice_pipeline(data_dir: str) -> None:
     )
     install_whisper_unit(data_dir)
     install_tts_units()
+    install_wakeword_trainer_unit(data_dir)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2552,11 +2636,11 @@ def ensure_assist_pipeline(
                 {
                     "type": "assist_pipeline/pipeline/create",
                     "name": PIPELINE_NAME,
-                    "language": "de",
+                    "language": system_language(),
                     "conversation_engine": conversation_entity,
-                    "conversation_language": "de",
+                    "conversation_language": system_language(),
                     "stt_engine": stt_entity,
-                    "stt_language": "de",
+                    "stt_language": system_language(),
                     **tts_fields,
                     **wake_fields,
                 }
@@ -2569,12 +2653,18 @@ def ensure_assist_pipeline(
             # may have been wired with piper before the Martin units landed)
             # and onto the preferred STT (speaker-ID toggled on a redeploy
             # moves it from whisper to the gatekeeper, #350).
+            lang = system_language()
             if (
                 existing.get("tts_engine") != tts_entity
                 or existing.get("tts_voice") != tts_fields["tts_voice"]
                 or existing.get("stt_engine") != stt_entity
                 or existing.get("wake_word_entity") != wake_fields["wake_word_entity"]
                 or existing.get("wake_word_id") != wake_fields["wake_word_id"]
+                # Without this an existing pipeline kept whatever language it
+                # was created with, so changing the setting did nothing (#1057).
+                or existing.get("language") != lang
+                or existing.get("conversation_language") != lang
+                or existing.get("stt_language") != lang
             ):
                 upd = {
                     k: existing.get(k)
@@ -2595,6 +2685,9 @@ def ensure_assist_pipeline(
                 upd.update(tts_fields)
                 upd.update(wake_fields)
                 upd["stt_engine"] = stt_entity
+                upd["language"] = lang
+                upd["conversation_language"] = lang
+                upd["stt_language"] = lang
                 ws.cmd(
                     {
                         "type": "assist_pipeline/pipeline/update",

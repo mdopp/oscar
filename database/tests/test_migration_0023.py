@@ -36,7 +36,7 @@ def _cfg(db_path: str) -> Config:
 
 def test_single_linear_head(tmp_path):
     heads = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db"))).get_heads()
-    assert heads == ("0023_wartung_seen_approvals",)
+    assert len(heads) == 1
 
 
 def test_upgrade_creates_wartung_seen_approvals(tmp_path):

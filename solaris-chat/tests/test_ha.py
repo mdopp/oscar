@@ -323,7 +323,7 @@ async def test_call_service_unknown_service_still_errors(monkeypatch):
 async def test_guest_toolset_excludes_run_tool():
     from solaris_chat.engine.profiles import build_engine_clients
 
-    household, _, _, guest, _, _, _ = build_engine_clients(
+    household, _, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://o",
         fast_model="m",
@@ -348,7 +348,7 @@ async def test_household_has_self_enrollment_tools():
     # can never bootstrap the first voice profile.
     from solaris_chat.engine.profiles import build_engine_clients
 
-    household, deep, _, guest, _, _, _ = build_engine_clients(
+    household, deep, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://o",
         fast_model="m",

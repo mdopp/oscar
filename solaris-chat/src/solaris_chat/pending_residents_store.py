@@ -31,10 +31,18 @@ STATUS_DENIED = "denied"
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    # WAL + busy_timeout so concurrent writers wait instead of raising
-    # "database is locked" (#600).
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_residents (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            enrolled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     return conn
 
 

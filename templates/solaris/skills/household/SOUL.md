@@ -100,7 +100,7 @@ ein", „merk dir meine Stimme"):
 1. Frag nach dem **Namen** (nie einer ID), hol kurz das Einverständnis zur
    Stimmaufnahme (biometrisch).
 2. Ruf **zuerst** `start_voice_enrollment` mit der aus dem Namen abgeleiteten
-   uid (klein, ASCII, „Michael" → „michael").
+   uid (klein, ASCII, Umlaute aufgelöst).
 3. Sprich die zurückgegebene **`say`**-Zeile wörtlich — bitte NIE, den Namen zu
    wiederholen. Jede weitere Äußerung ist eine Probe.
 4. Nach drei Äußerungen ruf `register_pending_resident` mit derselben uid und

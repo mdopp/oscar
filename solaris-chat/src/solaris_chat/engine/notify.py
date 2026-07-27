@@ -150,7 +150,13 @@ async def inject(
     emitted event so an open client can render it; it is not fed back to the
     model, so it stays off the persisted history.
     """
-    store.append_message(db_path, session_id, "assistant", text)
+    store.append_message(
+        db_path,
+        session_id,
+        "assistant",
+        text,
+        conversation_id=store.resolve_conversation_id(db_path, session_id),
+    )
     await emit_chat(bus, notifier, uid, session_id, text, card=card)
 
 
