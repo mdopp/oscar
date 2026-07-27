@@ -880,7 +880,7 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
     # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
     from solaris_chat.engine.profiles import build_engine_clients
 
-    _, _, _, guest, _, _, _ = build_engine_clients(
+    _, _, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://x",
         fast_model="gemma4:e2b",
@@ -910,7 +910,7 @@ async def test_household_profile_reads_persisted_model(tmp_path):
     from solaris_chat.engine.profiles import build_engine_clients
 
     db = str(tmp_path / "solaris.db")
-    household, _, _, _, _, _, _ = build_engine_clients(
+    household, _, _, _, _, _, _, _ = build_engine_clients(
         db_path=db,
         ollama_url="http://x",
         fast_model="gemma4:e2b",

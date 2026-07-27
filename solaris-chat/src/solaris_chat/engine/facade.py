@@ -19,6 +19,7 @@ hardware.
 """
 
 from __future__ import annotations
+from solaris_chat.engine import enrollment_fsm
 
 import json
 import re
@@ -221,6 +222,21 @@ def add_facade_routes(
         guest = clients.get("solaris-guest")
         if uid == GUEST_UID and guest is not None:
             model, client = "solaris-guest", guest
+
+        # Enrollment routing (#1056): if ANY user has an active voice enrollment
+        # or wakeword request, route ALL voice turns to the isolated enrollment
+        # profile. This profile has no HA tools, no history, no context pollution.
+        enrollment = clients.get("solaris-enrollment")
+        if enrollment is not None:
+            try:
+                from solaris_chat import enroll_requests_store, wakeword_requests_store
+
+                if enroll_requests_store.has_any_active_request(
+                    solaris_db_path
+                ) or wakeword_requests_store.has_any_active_request(solaris_db_path):
+                    model, client = "solaris-enrollment", enrollment
+            except Exception:
+                pass
         log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
 
         # A voice turn lands in the resident's durable household session (#345):
@@ -245,6 +261,20 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
+            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(
+                solaris_db_path
+            ):
+                # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
+                # Guarantees zero latency, zero hallucinations, and zero device action risk.
+                async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
+                    reply = enrollment_fsm.handle_turn(
+                        solaris_db_path, transcript, uid_hint=uid
+                    )
+                    yield {"type": "assistant.delta", "data": {"delta": reply}}
+                    yield {"type": "run.completed", "data": {"answer": reply}}
+
+                return _fsm_turns()
+
             if client.ephemeral:
                 return client.respond(
                     messages, uid=uid, source=model, conversation_id=conversation_id

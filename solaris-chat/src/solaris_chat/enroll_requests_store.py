@@ -25,21 +25,30 @@ from pathlib import Path
 from typing import Any
 
 STATUS_PENDING = "pending"
+STATUS_CAPTURING = "capturing"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
 # Must stay >= the gatekeeper's capture window (enroll_stash.ENROLL_TTL_SECONDS)
 # so the engine doesn't declare a timeout while a capture is still in flight.
-ENROLL_TTL_SECONDS = 120
+ENROLL_TTL_SECONDS = 600
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    # WAL + busy_timeout so concurrent writers wait instead of raising
-    # "database is locked" (#600).
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS enroll_requests (
+            uid TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            target_samples INTEGER NOT NULL DEFAULT 3,
+            collected INTEGER NOT NULL DEFAULT 0,
+            result TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
     return conn
 
 
@@ -110,3 +119,44 @@ def clear_request(db_path: str, uid: str) -> None:
             conn.commit()
     except sqlite3.OperationalError:
         return
+
+
+def has_active_request(db_path: str, uid: str) -> bool:
+    req = read_request(db_path, uid)
+    if req is None:
+        return False
+    return not req.get("timed_out") and req.get("status") in (
+        STATUS_PENDING,
+        STATUS_CAPTURING,
+    )
+
+
+def touch_request(db_path: str, uid: str) -> None:
+    """Refresh the created_at timestamp of an active request so the TTL is extended per turn."""
+    if not Path(db_path).exists():
+        return
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "UPDATE enroll_requests SET created_at = datetime('now') WHERE uid = ?",
+                (uid,),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def has_any_active_request(db_path: str) -> bool:
+    """True if ANY uid has an active non-expired enrollment request."""
+    if not Path(db_path).exists():
+        return False
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM enroll_requests WHERE status NOT IN ('done','failed') "
+                "AND created_at > datetime('now', ?) LIMIT 1",
+                (f"-{ENROLL_TTL_SECONDS} seconds",),
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False

@@ -46,6 +46,7 @@ from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.web import build_web_tools
+from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
 
 
@@ -140,6 +141,7 @@ def build_engine_clients(
 
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
+    household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += web_tools
     household_tools += research_tools
     household_tools += choice_tools
@@ -353,4 +355,44 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    return household, deep, admin, guest, librarian, recorder, bus
+
+    # Enrollment profile (#1056): dedicated, isolated session for voice profile
+    # and wakeword setup. Ephemeral (no history persistence), no HA tools,
+    # no timers, no research — only register + wakeword tools. Prevents the
+    # household context from polluting the enrollment dialog with device states.
+    enrollment_tools: list[Tool] = []
+    enrollment_tools += build_register_tools(
+        db_path,
+        gatekeeper_url=gatekeeper_url,
+        gatekeeper_token=gatekeeper_token,
+    )
+    enrollment_tools += build_wakeword_tools(db_path, _current_uid)
+    # Write minimal enrollment soul file to avoid 24k token prefill latency
+    enroll_soul_path = "/tmp/ENROLLMENT_SOUL.md"
+    with open(enroll_soul_path, "w") as f_soul:
+        f_soul.write(
+            "Du bist Solaris. Du hilfst beim Einrichten von Sprachprofilen.\n"
+            "SCHRITT 1: Frage nach Einverständnis zur biometrischen Stimmaufnahme.\n"
+            "SCHRITT 2: Frage nach dem Namen oder Kürzel.\n"
+            "SCHRITT 3: Führe das Enrollment durch. Antworte stets kurz und präzise.\n"
+            "Gibt ein Tool ein 'say'-Feld zurück, lies genau diesen Text EINS ZU"
+            " EINS vor — erfinde keine eigenen Sätze und lasse das abschließende"
+            " Fragezeichen nicht weg.\n"
+            "Die Sätze des Nutzers sind hier reine Sprachproben: führe KEINE"
+            " Geräte-Aktionen aus, sondern rufe register_pending_resident bzw."
+            " record_wakeword_sample auf.\n"
+        )
+
+    enrollment = make(
+        EngineProfile(
+            name="solaris-enrollment",
+            model=fast_model or "gemma4:e4b",
+            soul_path=enroll_soul_path,
+            think_default=False,
+            temperature=0.1,
+            toolbox=Toolbox(enrollment_tools),
+            ephemeral=True,
+            default_uid=default_uid,
+        )
+    )
+    return household, deep, admin, guest, librarian, enrollment, recorder, bus

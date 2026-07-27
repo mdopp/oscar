@@ -32,6 +32,7 @@ import os
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
+from .config import speaker_id_enabled_from_env
 from .embeddings_store import EMBEDDING_DIM, VoiceEmbedding
 
 
@@ -211,12 +212,7 @@ def get_extractor() -> EmbeddingExtractor | None:
     global _extractor_singleton
     if _extractor_singleton is not None:
         return _extractor_singleton
-    if os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if not speaker_id_enabled_from_env():
         return None
     if not extractor_available():
         return None

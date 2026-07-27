@@ -11,6 +11,20 @@ import json
 import os
 from dataclasses import dataclass, field
 
+# Truthy values that turn speaker-ID + live enrolment ON. Speaker-ID stores
+# per-resident voice fingerprints, so it stays opt-in: unset/empty means OFF,
+# matching the template's `SOLARIS_SPEAKER_ID_ENABLED` default.
+_SPEAKER_ID_ENABLED = {"1", "true", "yes", "on"}
+
+
+def speaker_id_enabled_from_env() -> bool:
+    """Single source of truth for "is speaker-ID on": off unless
+    SOLARIS_SPEAKER_ID_ENABLED is set to an explicit truthy value. Shared with
+    `gatekeeper.speaker.get_extractor` so the config flag and the extractor
+    loader can never disagree."""
+    raw = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
+    return raw in _SPEAKER_ID_ENABLED
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -43,7 +57,6 @@ class Settings:
                     devices = {str(k): str(v) for k, v in parsed.items()}
             except json.JSONDecodeError:
                 devices = {}
-        flag = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
         try:
             threshold = float(os.environ.get("SOLARIS_SPEAKER_ID_THRESHOLD", "0.55"))
         except ValueError:
@@ -78,7 +91,7 @@ class Settings:
             solaris_db_path=os.environ.get(
                 "SOLARIS_DB_PATH", "/var/lib/solaris/solaris.db"
             ),
-            speaker_id_enabled=flag in {"1", "true", "yes", "on"},
+            speaker_id_enabled=speaker_id_enabled_from_env(),
             speaker_id_threshold=threshold,
             voice_pe_devices=devices,
         )

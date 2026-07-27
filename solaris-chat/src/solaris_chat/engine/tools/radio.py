@@ -162,6 +162,10 @@ def _write_pref(notes_dir: str, uid: str, name: str, fields: dict[str, str]) -> 
     """Write a resident's preference note as sanitized frontmatter. A pref with
     no real values isn't persisted — that would leave a bare `---\\n---\\n` shell
     (e.g. resolving a default device before one is set); drop any stale stub."""
+    if not notes_dir:
+        # No notes root configured — a relative _pref_path would write the note
+        # into the process CWD instead of the resident's space.
+        return
     sanitized = {k: _sanitize_field(v) for k, v in fields.items()}
     path = _pref_path(notes_dir, uid, name)
     if not any(v.strip() for v in sanitized.values()):
@@ -216,6 +220,16 @@ def resolve_play_device(
         if notes_dir and _read_default_device(notes_dir, uid) is None:
             _write_default_device(notes_dir, uid, entity_id)
         return entity_id, None
+    if notes_dir and room:
+        room_prefs = _read_pref(
+            notes_dir,
+            uid,
+            "room-devices",
+            (room, room.lower(), room.capitalize(), room.title()),
+        )
+        for v in room_prefs.values():
+            if v.strip():
+                return v.strip(), None
     if room and resolved_room_device:
         return resolved_room_device, None
     if notes_dir:
@@ -264,7 +278,51 @@ def build_radio_tools(
             )
 
         if station:
+            import re
+
+            _RADIO_VERBS = re.compile(
+                r"^(spiel(e|t)?|play|starte?|mach(e|t)?|schalt(e|en)?|ich\s+möchte|kannst?\s+du(\s+bitte)?|lass|bitte)\s+",
+                re.I,
+            )
+            _ROOM_SUFFIXES = re.compile(
+                r"\s+(im|in|auf)\s+(der|dem|den)?\s*(wohnzimmer|küche|kueche|kinderzimmer|bad|badezimmer|schlafzimmer|büro|buero|flur|garten)\b",
+                re.I,
+            )
+            _ACTION_PARTICLES = re.compile(
+                r"\s+(an|ein|ab|laufen|spielen|bitte|jetzt)\b", re.I
+            )
+            _RADIO_NORMALISE = {
+                "einslive": "1live",
+                "eins live": "1live",
+                "1live": "1live",
+                "1 live": "1live",
+                "einsleif": "1live",
+                "eins leif": "1live",
+                "ein slive": "1live",
+                "eins lief": "1live",
+                "da ins live": "1live",
+                "spiel da ins live": "1live",
+                "ins live": "1live",
+                "eins life": "1live",
+                "1 life": "1live",
+                "einslaiv": "1live",
+                "1laiv": "1live",
+                "ndr2": "ndr 2",
+                "ndr 2": "ndr 2",
+                "wdr2": "wdr 2",
+                "wdr 2": "wdr 2",
+            }
+            clean_station = re.sub(r"[^\w\s]", "", station.casefold()).strip()
+            clean_station = _RADIO_VERBS.sub("", clean_station).strip()
+            clean_station = _ACTION_PARTICLES.sub("", clean_station).strip()
+            clean_station = _ROOM_SUFFIXES.sub("", clean_station).strip()
+            clean_station = _RADIO_NORMALISE.get(clean_station, clean_station)
+            # Try the station as given first (an exact name resolves directly);
+            # only fall back to the voice-cleaned form when it doesn't, so a
+            # transcribed "spiel 1live im wohnzimmer" still lands on "1live".
             resolved = await resolver.resolve_station(station)
+            if resolved is None and clean_station and clean_station != station:
+                resolved = await resolver.resolve_station(clean_station)
             if resolved is None:
                 return json.dumps(
                     {"ok": False, "reason": "station_not_found", "query": station},

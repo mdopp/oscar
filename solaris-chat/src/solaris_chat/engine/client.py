@@ -756,6 +756,31 @@ class EngineClient:
         admin_identity = current_admin_identity.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
+
+        try:
+            from solaris_chat import enroll_requests_store, wakeword_requests_store
+
+            _enrollment_active = enroll_requests_store.has_any_active_request(
+                self._db_path
+            ) or wakeword_requests_store.has_any_active_request(self._db_path)
+            if _enrollment_active:
+                _enrollment_tools = {
+                    "start_voice_enrollment",
+                    "register_pending_resident",
+                    "start_wakeword_enrollment",
+                    "record_wakeword_sample",
+                    "trigger_wakeword_training",
+                    "audit_wakeword_samples",
+                    "list_wakeword_samples",
+                    "delete_wakeword_sample",
+                }
+                tools = [
+                    t
+                    for t in tools
+                    if (t.get("function") or {}).get("name") in _enrollment_tools
+                ]
+        except Exception:
+            pass
         # Per-turn sink the HA state tools fill with read-only card-specs (#475);
         # drained into a `ha_cards` event at turn end.
         ha_cards: list[dict[str, Any]] = []
@@ -840,6 +865,7 @@ class EngineClient:
         # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
         stored_fact = False
         corrected = False
+        short_circuited = False
         final_content = ""
         final_thinking = ""
         model = model_override or self._model()
@@ -1013,6 +1039,34 @@ class EngineClient:
                 if persist:
                     store.append_message(self._db_path, session_id, "tool", output)
                 messages.append({"role": "tool", "content": output, "tool_name": name})
+                # SHORT-CIRCUIT: if the tool returned a 'say' field, emit it directly
+                # without a second LLM pass. This prevents 20-30s model stalls during
+                # voice enrollment and wakeword dialogs (#1056).
+                try:
+                    import json as _json
+
+                    _payload = _json.loads(output)
+                    _say = _payload.get("say") if isinstance(_payload, dict) else None
+                    if _say and name in (
+                        "start_voice_enrollment",
+                        "register_pending_resident",
+                        "start_wakeword_enrollment",
+                        "record_wakeword_sample",
+                        "trigger_wakeword_training",
+                        "audit_wakeword_samples",
+                        "delete_wakeword_sample",
+                    ):
+                        final_content = _say
+                        if persist:
+                            store.append_message(
+                                self._db_path, session_id, "assistant", final_content
+                            )
+                        short_circuited = True
+                        break
+                except Exception:
+                    pass
+            if short_circuited:
+                break
         else:
             # Pass budget exhausted mid-tool-chain: surface what we have.
             final_content = (
