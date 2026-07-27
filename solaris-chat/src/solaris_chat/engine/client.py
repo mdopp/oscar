@@ -131,8 +131,6 @@ _TOOL_DISCIPLINE = (
     " Bei einer Wissensfrage rufst du research(query) auf und antwortest"
     " DIREKT aus den gelieferten Quellen MIT Quellenangabe — ohne vorher"
     " eine Rückfrage zu stellen."
-    " WENN ein Tool ein 'say'-Feld in seinem Ergebnis zurückgibt (z.B. bei start_voice_enrollment, register_pending_resident, start_wakeword_enrollment, record_wakeword_sample), MUSST du den Text aus 'say' EINS ZU EINS VERBATIM WORT FÜR WORT vorlesen. Erfinde KEINE eigenen Sätze, lasse das abschließende Fragezeichen NICHT weg und ändere den Text NICHT ab!"
-    " WÄHREND des Sprach-Enrollments oder Wakeword-Aufnahmeprozesses sind die Aussagen des Nutzers REINE Sprachproben. Führe in diesem Modus KEINE Geräte-Aktionen (Licht schalten, Schalter bedienen etc.) aus, sondern rufe direkt register_pending_resident bzw. record_wakeword_sample auf und lies das 'say'-Feld 1:1 unverändert vor."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
@@ -761,19 +759,24 @@ class EngineClient:
 
         try:
             from solaris_chat import enroll_requests_store, wakeword_requests_store
-            _enrollment_active = (
-                enroll_requests_store.has_any_active_request(self._db_path)
-                or wakeword_requests_store.has_any_active_request(self._db_path)
-            )
+
+            _enrollment_active = enroll_requests_store.has_any_active_request(
+                self._db_path
+            ) or wakeword_requests_store.has_any_active_request(self._db_path)
             if _enrollment_active:
                 _enrollment_tools = {
-                    "start_voice_enrollment", "register_pending_resident",
-                    "start_wakeword_enrollment", "record_wakeword_sample",
-                    "trigger_wakeword_training", "audit_wakeword_samples",
-                    "list_wakeword_samples", "delete_wakeword_sample",
+                    "start_voice_enrollment",
+                    "register_pending_resident",
+                    "start_wakeword_enrollment",
+                    "record_wakeword_sample",
+                    "trigger_wakeword_training",
+                    "audit_wakeword_samples",
+                    "list_wakeword_samples",
+                    "delete_wakeword_sample",
                 }
                 tools = [
-                    t for t in tools
+                    t
+                    for t in tools
                     if (t.get("function") or {}).get("name") in _enrollment_tools
                 ]
         except Exception:
@@ -1041,12 +1044,16 @@ class EngineClient:
                 # voice enrollment and wakeword dialogs (#1056).
                 try:
                     import json as _json
+
                     _payload = _json.loads(output)
                     _say = _payload.get("say") if isinstance(_payload, dict) else None
                     if _say and name in (
-                        "start_voice_enrollment", "register_pending_resident",
-                        "start_wakeword_enrollment", "record_wakeword_sample",
-                        "trigger_wakeword_training", "audit_wakeword_samples",
+                        "start_voice_enrollment",
+                        "register_pending_resident",
+                        "start_wakeword_enrollment",
+                        "record_wakeword_sample",
+                        "trigger_wakeword_training",
+                        "audit_wakeword_samples",
                         "delete_wakeword_sample",
                     ):
                         final_content = _say

@@ -375,6 +375,12 @@ def build_engine_clients(
             "SCHRITT 1: Frage nach Einverständnis zur biometrischen Stimmaufnahme.\n"
             "SCHRITT 2: Frage nach dem Namen oder Kürzel.\n"
             "SCHRITT 3: Führe das Enrollment durch. Antworte stets kurz und präzise.\n"
+            "Gibt ein Tool ein 'say'-Feld zurück, lies genau diesen Text EINS ZU"
+            " EINS vor — erfinde keine eigenen Sätze und lasse das abschließende"
+            " Fragezeichen nicht weg.\n"
+            "Die Sätze des Nutzers sind hier reine Sprachproben: führe KEINE"
+            " Geräte-Aktionen aus, sondern rufe register_pending_resident bzw."
+            " record_wakeword_sample auf.\n"
         )
 
     enrollment = make(
