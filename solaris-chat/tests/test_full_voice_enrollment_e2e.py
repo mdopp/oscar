@@ -290,3 +290,32 @@ async def test_facade_chat_turns_generator_execution(tmp_path):
     # Execute facade handler logic directly
     if client.profile_name == "solaris-enrollment":
         assert True
+
+
+@pytest.mark.asyncio
+async def test_enrollment_rejects_phrases_that_are_not_a_name(tmp_path):
+    """The model passes whatever it plucked out of the sentence. An exact-phrase
+    blocklist let "mein Sprachprofil" through and the resolver turned it into a
+    resident called "Meinname" — observed live on the box (#1067)."""
+    db = str(tmp_path / "generic.db")
+    tools = build_register_tools(db)
+    start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
+
+    for phrase in (
+        "mein Sprachprofil",
+        "meinen Benutzer",
+        "bitte einrichten",
+        "ein neues Profil",
+        "ja gerne",
+        "meine Stimme",
+        "   ",
+    ):
+        res = json.loads(await start_tool.handler({"uid": phrase}))
+        assert res["ok"] is False, f"{phrase!r} must not become a resident"
+        assert res["reason"] == "missing_uid"
+        assert res["say"].rstrip().endswith("?")
+
+    # A real name still works, including one that merely contains a stop word.
+    for name in ("Alex", "M - A - X", "Meinhard"):
+        res = json.loads(await start_tool.handler({"uid": name}))
+        assert res["ok"] is True, f"{name!r} must be accepted"
