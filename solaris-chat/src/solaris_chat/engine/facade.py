@@ -19,7 +19,7 @@ hardware.
 """
 
 from __future__ import annotations
-from solaris_chat.engine import enrollment_fsm
+from solaris_chat.engine import confirm, enrollment_fsm
 
 import json
 import re
@@ -108,6 +108,23 @@ def _as_question(text: str) -> str:
     if stripped.endswith(_QUESTION_MARKS):
         return text
     return stripped.rstrip(_SENTENCE_END) + "?"
+
+
+# A bare "nein" after a closing pleasantry ends the conversation. HA re-opens
+# the mic purely because the reply ended in `?`, and nothing ever closed it
+# deliberately — so the resident's decline arrived as an ordinary utterance with
+# no content, and the model answered from the only thing left in the prompt: the
+# wall-clock hint. Box-observed: "kann ich noch etwas für dich tun?" — "nein" —
+# silence, then the time. Only "stop" (HA's own word) got out.
+_MAX_DECLINE_WORDS = 3
+
+
+def _is_bare_decline(text: str) -> bool:
+    """A short, content-free refusal — not a "nein" that answers something."""
+    words = re.findall(r"[\wäöüß]+", (text or "").lower())
+    if not words or len(words) > _MAX_DECLINE_WORDS:
+        return False
+    return confirm.is_negative(text) and not confirm.is_affirmative(text)
 
 
 def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes:
@@ -271,6 +288,27 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
+            # A decline that ends the conversation, answered deterministically so
+            # the reply carries no `?` and HA closes the mic. Skipped while the
+            # wizard runs (it owns its own ja/nein) and while a sensitive action
+            # is held for confirmation, where "nein" is the answer, not an exit.
+            if (
+                _is_bare_decline(transcript)
+                and not enrollment_fsm.is_active(solaris_db_path)
+                and not client.has_pending_confirmation(
+                    conversation_id
+                    if client.ephemeral
+                    else store.household_session_id(uid)
+                )
+            ):
+
+                async def _closing_turns() -> AsyncIterator[dict[str, Any]]:
+                    reply = "Alles klar."
+                    yield {"type": "assistant.delta", "data": {"delta": reply}}
+                    yield {"type": "run.completed", "data": {"answer": reply}}
+
+                return _closing_turns()
+
             if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(
                 solaris_db_path
             ):

@@ -1707,3 +1707,97 @@ def test_room_markers_are_stripped_from_every_replayed_turn():
     _strip_room_from_messages(messages)
 
     assert [m["content"] for m in messages] == ["Licht an", "Klar.", "und hier?"]
+
+
+def test_bare_decline_is_recognised_but_a_real_answer_is_not():
+    """ "nein" as a whole utterance ends the conversation; "nein" inside a
+    sentence, or a yes, is ordinary content the model must still see."""
+    from solaris_chat.engine.facade import _is_bare_decline
+
+    for text in ("nein", "Nein.", "nein danke", "nö", "stop"):
+        assert _is_bare_decline(text) is True, text
+    for text in (
+        "",
+        "ja",
+        "nein, mach das Licht im Wohnzimmer aus",
+        "spiel keine Musik mehr ab bitte",
+        "wie spät ist es",
+    ):
+        assert _is_bare_decline(text) is False, text
+
+
+async def test_declining_a_pleasantry_closes_the_mic(aiohttp_client, db, soul):
+    """HA re-opens the mic purely because a reply ended in `?`, and nothing ever
+    closed it. Box-observed: "kann ich noch etwas für dich tun?" — "nein" —
+    silence, then the time, because a content-free turn left the model nothing
+    but the wall-clock hint."""
+    app, fake = _app(
+        db, soul, [ChatResult(content="19:57", prompt_tokens=5, completion_tokens=1)]
+    )
+    http = await aiohttp_client(app)
+
+    r = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "nein"}],
+            "user": "michael",
+        },
+    )
+    answer = (await r.json())["message"]["content"]
+
+    assert answer == "Alles klar."
+    assert not answer.rstrip().endswith("?"), "a trailing ? re-opens the mic"
+    assert fake.calls == [], "the model must not run for a bare decline"
+
+
+async def test_a_held_action_still_gets_its_no(aiohttp_client, db, soul):
+    """The one "nein" that must NOT be swallowed: the confirm gate is waiting on
+    it. Swallowing it would leave the sensitive action stashed forever."""
+    from solaris_chat.engine import confirm, store
+
+    household, fake = _engine(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="Alles klar, ich lasse es.",
+                prompt_tokens=5,
+                completion_tokens=1,
+            )
+        ],
+    )
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    # The gate is keyed by the durable household session the voice path runs in.
+    household._pending.stash(
+        store.household_session_id("michael"),
+        confirm.PendingAction(
+            domain="cover",
+            service="open_cover",
+            entity_id="cover.garage",
+            data=None,
+            prompt="Soll ich das Garagentor öffnen?",
+        ),
+    )
+    app = build_app(
+        engine=household,
+        engine_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        api_key="",
+    )
+    http = await aiohttp_client(app)
+
+    r = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "nein"}],
+            "user": "michael",
+        },
+    )
+    await r.json()
+    assert fake.calls != [], "the gate's pending action must still see the answer"

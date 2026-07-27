@@ -354,6 +354,15 @@ class EngineClient:
     def recorder(self) -> TraceRecorder:
         return self._recorder
 
+    def has_pending_confirmation(self, key: str | None) -> bool:
+        """True when a sensitive action is held awaiting this caller's yes/no.
+
+        The voice path needs it to tell a decline that ENDS the conversation
+        ("kann ich sonst noch helfen?" — "nein") from one that ANSWERS a held
+        action ("soll ich das Licht ausschalten?" — "nein"), which must still
+        reach the gate."""
+        return key is not None and self._pending.peek(key) is not None
+
     @property
     def profile_name(self) -> str:
         return self._profile.name
