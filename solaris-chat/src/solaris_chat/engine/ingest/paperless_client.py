@@ -145,7 +145,10 @@ class RestPaperlessClient:
             # lowercase "success"/"failure" — normalise so neither times out.
             status = (task.get("status") or "").upper()
             if status == "SUCCESS":
-                doc_id = task.get("related_document")
+                # :beta returns the created id under `related_document_ids` (a
+                # list); older API versions used the singular `related_document`.
+                ids = task.get("related_document_ids") or []
+                doc_id = ids[0] if ids else task.get("related_document")
                 return int(doc_id) if doc_id else None
             if status == "FAILURE":
                 log.error("engine.ingest.paperless_task_failed", task=task_id)
