@@ -23,6 +23,11 @@ _HOUSEHOLD_NS = uuid.UUID("a3f0c0de-0501-0345-0000-000000000345")
 # Namespace for the deterministic shared "Wartung" (admin ops) session id (#786).
 _WARTUNG_NS = uuid.UUID("a3f0c0de-0501-0786-0000-000000000786")
 
+# How long a durable session stays "the same conversation" for callers that
+# supply no conversation id of their own. The household row is never forked, so
+# without this every turn would replay months of history into the prompt.
+_CONVERSATION_IDLE_GAP_S = 600
+
 
 def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
@@ -293,13 +298,19 @@ def append_message(
     reasoning: str = "",
     tool_calls: list[dict[str, Any]] | None = None,
     images: list[str] | None = None,
+    conversation_id: str = "",
+    in_prompt: bool = True,
 ) -> None:
+    """Append one row. `conversation_id` scopes what a later prompt replays;
+    `in_prompt=False` keeps the row in the browser history but out of every
+    future prompt (the enrolment dialog scripts)."""
     with _conn(db_path) as conn:
         conn.execute(
             "INSERT INTO engine_messages"
-            " (session_id, seq, role, content, reasoning, tool_calls, images)"
+            " (session_id, seq, role, content, reasoning, tool_calls, images,"
+            "  conversation_id, in_prompt)"
             " VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM engine_messages"
-            "             WHERE session_id = ?), ?, ?, ?, ?, ?)",
+            "             WHERE session_id = ?), ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 session_id,
@@ -308,6 +319,8 @@ def append_message(
                 reasoning or None,
                 json.dumps(tool_calls) if tool_calls else None,
                 json.dumps(images) if images else None,
+                conversation_id or None,
+                int(in_prompt),
             ),
         )
         conn.execute(
@@ -316,16 +329,7 @@ def append_message(
         )
 
 
-def history(db_path: str, session_id: str) -> list[dict[str, Any]]:
-    """The Ollama-shaped message history for the next call: user/assistant
-    turns plus tool calls and their results, reasoning omitted (it is never
-    fed back — gemma4 reasons fresh per turn)."""
-    with _conn(db_path) as conn:
-        rows = conn.execute(
-            "SELECT role, content, tool_calls, images"
-            " FROM engine_messages WHERE session_id = ? ORDER BY seq",
-            (session_id,),
-        ).fetchall()
+def _to_messages(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         msg: dict[str, Any] = {"role": r["role"], "content": r["content"]}
@@ -338,6 +342,86 @@ def history(db_path: str, session_id: str) -> list[dict[str, Any]]:
     return out
 
 
+def history(db_path: str, session_id: str) -> list[dict[str, Any]]:
+    """The Ollama-shaped message history for the next call: user/assistant
+    turns plus tool calls and their results, reasoning omitted (it is never
+    fed back — gemma4 reasons fresh per turn)."""
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT role, content, tool_calls, images"
+            " FROM engine_messages WHERE session_id = ? ORDER BY seq",
+            (session_id,),
+        ).fetchall()
+    return _to_messages(rows)
+
+
+def prompt_history(
+    db_path: str, session_id: str, conversation_id: str
+) -> list[dict[str, Any]]:
+    """The model-visible slice of a session: one conversation, hidden rows
+    dropped. The never-forked household row would otherwise replay every past
+    conversation into each prompt (#1067)."""
+    if not conversation_id:
+        return []
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT role, content, tool_calls, images"
+            " FROM engine_messages"
+            " WHERE session_id = ? AND conversation_id = ? AND in_prompt = 1"
+            " ORDER BY seq",
+            (session_id, conversation_id),
+        ).fetchall()
+    msgs = _to_messages(rows)
+    # A head cut by `truncate_session_head`, or a hidden enrolment pass, can
+    # leave a dangling tool result or a tool_calls row whose results are gone.
+    # Ollama rejects that shape, so open on a turn that can stand alone.
+    start = 0
+    for i, m in enumerate(msgs):
+        if m["role"] == "user" or (
+            m["role"] == "assistant" and not m.get("tool_calls")
+        ):
+            start = i
+            break
+    else:
+        return []
+    return msgs[start:]
+
+
+def resolve_conversation_id(
+    db_path: str,
+    session_id: str,
+    *,
+    requested: str | None = None,
+    idle_gap_s: int = _CONVERSATION_IDLE_GAP_S,
+) -> str:
+    """The conversation this turn belongs to.
+
+    Home Assistant supplies one per Assist conversation; callers without one
+    (browser, direct API) continue the previous conversation while the session
+    is still warm. Derived from the DB, so it survives a restart. Reads the last
+    row regardless of `in_prompt` — a hidden enrolment turn must not split the
+    resident's conversation in two.
+    """
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT conversation_id,"
+            " (julianday('now') - julianday(created_at)) * 86400.0 AS age_s"
+            " FROM engine_messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    last = (row["conversation_id"] if row else None) or ""
+    age_s = float(row["age_s"] or 0.0) if row else 0.0
+    if requested:
+        # A stale id resurfacing hours later starts a new conversation rather
+        # than resurrecting the old one.
+        if last == requested and age_s > idle_gap_s:
+            return uuid.uuid4().hex
+        return requested
+    if last and age_s <= idle_gap_s:
+        return last
+    return uuid.uuid4().hex
+
+
 def messages_since(
     db_path: str, session_id: str, since_utc: str
 ) -> list[tuple[str, str]]:
@@ -347,13 +431,15 @@ def messages_since(
     Skips tool-call/empty rows (the stenograph only distils real conversation)
     and orders by `seq` — the durable household session is head-truncated in
     place (#466), so `created_at` filters what is new without relying on seq
-    continuity.
+    continuity. Rows marked `in_prompt = 0` are skipped too: the enrolment
+    dialog scripts must not be distilled into durable facts either.
     """
     with _conn(db_path) as conn:
         rows = conn.execute(
             "SELECT role, content FROM engine_messages"
             " WHERE session_id = ? AND created_at > ?"
             " AND role IN ('user', 'assistant') AND content != ''"
+            " AND in_prompt = 1"
             " ORDER BY seq",
             (session_id, since_utc),
         ).fetchall()

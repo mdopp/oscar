@@ -10,6 +10,7 @@ Verifies the complete end-to-end multi-turn lifecycle:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import pytest
 
@@ -128,20 +129,48 @@ async def test_enrollment_asks_for_username_when_missing(tmp_path):
     assert "A - L - E - X" in data_explicit["spelled_uid"]
 
 
+_EXAMPLE_NAMES = (
+    "user1",
+    "alex",
+    "max",
+    "marco",
+    "carola",
+    "anna",
+    "lena",
+    "michael",
+    "mdopp",
+)
+
+
+def _described_strings(tool):
+    """Every string the model actually reads: the tool description AND each
+    parameter description. The original test only checked the former, which is
+    why 'M-A-X' and 'marco' sat in the parameter schemas unnoticed."""
+    yield "description", tool.description
+    props = (tool.parameters or {}).get("properties") or {}
+    for prop, spec in props.items():
+        if isinstance(spec, dict) and spec.get("description"):
+            yield f"parameters.{prop}", str(spec["description"])
+
+
 def test_tool_descriptions_contain_no_hardcoded_user_defaults():
-    """Schema validation test (#1056): Ensures no Tool.description contains
-    hardcoded 'user1', 'alex', or default instructions that mislead the LLM."""
+    """Schema validation test (#1056): no resident's name may appear as an
+    example anywhere the model reads. Ollama copied such examples straight into
+    `uid=`, inventing a speaker nobody named (#1067)."""
     reg_tools = build_register_tools("/tmp/dummy.db")
     wake_tools = build_wakeword_tools("/tmp/dummy.db", lambda: "household")
 
     for tool in reg_tools + wake_tools:
-        desc = tool.description.lower()
-        assert "user1" not in desc, (
-            f"Hardcoded 'user1' found in tool {tool.name} description: {tool.description}"
-        )
-        assert "alex" not in desc, (
-            f"Hardcoded 'alex' found in tool {tool.name} description: {tool.description}"
-        )
+        for where, text in _described_strings(tool):
+            lowered = text.lower()
+            for name in _EXAMPLE_NAMES:
+                assert name not in lowered, (
+                    f"Hardcoded example name '{name}' in {tool.name}.{where}: {text}"
+                )
+            # Spelled-out forms dodge the substring check above.
+            assert not re.search(r"\b[a-z](\s*-\s*[a-z]){2,}\b", lowered), (
+                f"Spelled-out example name in {tool.name}.{where}: {text}"
+            )
 
 
 @pytest.mark.asyncio
