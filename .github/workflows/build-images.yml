@@ -144,6 +144,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: ${{ matrix.skip_layer_cache && '' || format('type=gha,scope={0}', matrix.image) }}
-          cache-to: ${{ matrix.skip_layer_cache && '' || format('type=gha,mode=max,scope={0}', matrix.image) }}
+          # The skip flag has to be on the TRUE branch: `flag && '' || cache`
+          # never skips, because the empty string is falsy and falls through to
+          # the right-hand side.
+          cache-from: ${{ matrix.skip_layer_cache != true && format('type=gha,scope={0}', matrix.image) || '' }}
+          cache-to: ${{ matrix.skip_layer_cache != true && format('type=gha,mode=max,scope={0}', matrix.image) || '' }}
           platforms: linux/amd64
