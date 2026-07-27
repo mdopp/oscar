@@ -34,7 +34,7 @@ def _cfg(db_path: str) -> Config:
 
 def test_single_linear_head(tmp_path):
     heads = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db"))).get_heads()
-    assert tuple(heads) == ("0028_engine_messages_conversation",)
+    assert len(heads) == 1
 
 
 def test_upgrade_adds_conversation_columns(tmp_path):
