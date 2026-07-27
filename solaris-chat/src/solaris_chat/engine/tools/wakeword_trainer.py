@@ -260,20 +260,40 @@ def build_wakeword_tools(
         )
 
     async def _handle_delete(args: dict[str, Any]) -> str:
+        raw_uid = str(args.get("uid") or "").strip()
+        if raw_uid:
+            target_uid = resolve_resident_identity(raw_uid, db_path)[0]
+        else:
+            target_uid = uid_getter() or "household"
+
         sample_id = str(args.get("sample_id", "")).strip()
         if not sample_id:
-            suspicious = wakeword_samples_store.get_suspicious_samples(
-                db_path, "solaris"
-            )
+            suspicious = [
+                s
+                for s in wakeword_samples_store.get_suspicious_samples(
+                    db_path, "solaris"
+                )
+                if s.get("resident_uid") == target_uid
+            ]
             if suspicious:
                 sample_id = suspicious[0]["id"]
 
         if sample_id:
+            sample = wakeword_samples_store.get_sample(db_path, sample_id)
+            owner = (sample or {}).get("resident_uid")
+            if sample is not None and owner != target_uid:
+                # One resident must never delete another's recording, and the
+                # decrement must land on the owner's counter, not the speaker's.
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "deleted_sample_id": "",
+                        "say": "Diese Aufnahme gehört zu einem anderen Profil, deshalb lösche ich sie nicht. Soll ich stattdessen deine letzte Aufnahme löschen?",
+                    },
+                    ensure_ascii=False,
+                )
             wakeword_samples_store.delete_sample(db_path, sample_id)
-            current_uid = uid_getter()
-            wakeword_requests_store.decrement_sample(
-                db_path, current_uid or "household"
-            )
+            wakeword_requests_store.decrement_sample(db_path, owner or target_uid)
             say = f"Aufnahme {sample_id} wurde gelöscht. Es fehlt jetzt wieder 1 Probe. Bist du bereit, sie neu einzusprechen?"
         else:
             say = "Keine fehlerhaften Aufnahmen zum Löschen gefunden. Wollen wir weitermachen?"
@@ -293,7 +313,13 @@ def build_wakeword_tools(
             )
 
         wakeword_requests_store.finish_request(db_path, uid)
-        samples = wakeword_samples_store.list_samples(db_path, "solaris")
+        # Training uses the whole household's samples, but "deine Proben" must
+        # only count this resident's own — not everyone else's recordings.
+        samples = [
+            s
+            for s in wakeword_samples_store.list_samples(db_path, "solaris")
+            if s.get("resident_uid") == uid
+        ]
 
         script = os.path.join(script_dir, "train-micro-wake-word.py")
         training_started = False

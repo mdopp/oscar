@@ -75,3 +75,42 @@ async def test_training_not_started_when_script_missing(tmp_path):
     assert "gestartet" not in res["say"]
     assert "nicht starten" in res["say"]
     assert res["say"].rstrip().endswith("?")
+
+
+@pytest.mark.asyncio
+async def test_delete_never_touches_another_residents_sample(tmp_path):
+    """The delete tool used to grab the first suspicious sample across ALL
+    residents and decrement whoever happened to be speaking. On a household box
+    that lets one resident erase another's recording and corrupts both counters.
+    Observed live: deleting for `verifyww` removed `sample_mdopp_10`."""
+    from solaris_chat import wakeword_requests_store, wakeword_samples_store
+
+    db_path = str(tmp_path / "solaris_test.db")
+    wakeword_requests_store.start_request(db_path, "alex", 10)
+    wakeword_requests_store.start_request(db_path, "other", 10)
+    wakeword_samples_store.add_sample(
+        db_path,
+        sample_id="sample_other_1",
+        wakeword_id="solaris",
+        filename=str(tmp_path / "other.wav"),
+        resident_uid="other",
+        intended_phrase="Solaris",
+        stt_transcript="voellig anderes",
+        is_valid=0,
+    )
+
+    tools = build_wakeword_tools(db_path, lambda: "alex", script_dir=str(tmp_path))
+    delete_tool = next(t for t in tools if t.name == "delete_wakeword_sample")
+
+    # No sample of alex's own is suspicious -> nothing to delete, and the other
+    # resident's sample must survive.
+    res = json.loads(await delete_tool.handler({"uid": "alex"}))
+    assert res["deleted_sample_id"] == ""
+    assert wakeword_samples_store.get_sample(db_path, "sample_other_1") is not None
+
+    # Naming it explicitly is refused too.
+    res2 = json.loads(
+        await delete_tool.handler({"uid": "alex", "sample_id": "sample_other_1"})
+    )
+    assert res2["ok"] is False
+    assert wakeword_samples_store.get_sample(db_path, "sample_other_1") is not None
