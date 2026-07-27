@@ -10,110 +10,41 @@ from solaris_chat import enroll_requests_store, pending_residents_store
 from solaris_chat.engine.tools import Tool
 
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_TARGET_SAMPLES = 3
-
-# Words that mean "the resident did not actually say a name". The model passes
-# whatever it plucked out of the sentence, so any of these appearing as a WORD
-# means we still have to ask.
-_GENERIC_WORDS = frozenset(
-    {
-        "benutzer",
-        "nutzer",
-        "user",
-        "profil",
-        "sprachprofil",
-        "stimmprofil",
-        "stimme",
-        "account",
-        "konto",
-        "einrichten",
-        "einrichtung",
-        "anlegen",
-        "erstellen",
-        "registrieren",
-        "mein",
-        "meine",
-        "meinen",
-        "meins",
-        "dein",
-        "deine",
-        "bitte",
-        "neu",
-        "neuer",
-        "neues",
-        "ja",
-        "yes",
-        "ok",
-        "okay",
-        "einverstanden",
-        "zustimmung",
-        "klar",
-        "gerne",
-    }
-)
-_WORD_RE = re.compile(r"[a-zäöüß0-9]+", re.I)
-
-
-def _is_generic_name(raw: str) -> bool:
-    """True when the argument is a phrase about enrolling rather than a name.
-
-    Spelled forms ("M - A - X") tokenise to single letters and pass through.
-    """
-    words = [w.casefold() for w in _WORD_RE.findall(raw)]
-    if not words:
-        return True
-    return any(w in _GENERIC_WORDS for w in words)
 
 
 def build_register_tools(
     db_path: str, gatekeeper_url: str = "", gatekeeper_token: str = ""
 ) -> list[Tool]:
     async def start(args: dict[str, Any]) -> str:
-        raw_uid = str(args.get("uid") or "").strip()
-        # If the user only gave consent or generic setup without naming/spelling
-        # a user, ask for the name (#1056). Matched per WORD, not as whole
-        # phrases: the model hands over whatever it plucked from the sentence,
-        # and an exact-phrase list let "mein Sprachprofil" through, which the
-        # resolver then turned into the resident "Meinname" (#1067). Word-wise
-        # so a real name that merely contains one of these (Meinhard) survives.
-        if not raw_uid or _is_generic_name(raw_uid):
-            say_ask = "Danke für deine Zustimmung! Wie lautet dein Name oder welches Kürzel möchtest du nutzen? Bitte buchstabiere das Kürzel?"
+        """Hand the resident to the deterministic wizard and read out its line.
+
+        This used to run its own consent + name logic and open the enrol request
+        itself. That put TWO state machines on one dialog: opening the request
+        is exactly what activates the wizard, the wizard then started over at
+        its consent step, and every sentence the resident spoke afterwards was
+        read as a yes/no answer — the dialog could never reach the samples.
+        Observed on the box as an endless "Bitte antworte mit Ja oder Nein".
+
+        The wizard owns consent -> name -> samples, and opens the request at the
+        name step. The `uid` argument is deliberately ignored: the wizard asks
+        for the name itself, so the model cannot invent one (#1067).
+        """
+        from solaris_chat.engine import enrollment_fsm
+
+        try:
+            enrollment_fsm.reset_fsm(db_path)
+            say = enrollment_fsm.handle_turn(db_path, "einrichten")
+        except Exception:
             return json.dumps(
-                {"ok": False, "reason": "missing_uid", "say": say_ask},
+                {
+                    "ok": False,
+                    "reason": "enroll_store_unavailable",
+                    "say": "Ich kann die Einrichtung gerade nicht starten. Versuchen wir es später nochmal?",
+                },
                 ensure_ascii=False,
             )
-        # Reject junk before the resolver normalises it away: "Bad UID!" would
-        # otherwise be coerced to the perfectly valid uid "baduid".
-        if re.search(r"[^a-z0-9 ._-]", raw_uid, re.I):
-            return json.dumps({"ok": False, "reason": "invalid_uid"})
-        from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
-
-        uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
-
-        if not _UID_RE.match(uid):
-            return json.dumps({"ok": False, "reason": "invalid_uid"})
-        try:
-            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
-        except Exception:
-            return json.dumps({"ok": False, "reason": "enroll_store_unavailable"})
-
-        say_custom = (
-            f"{display_name} wurde als {spelled_uid} erkannt! Lass uns jetzt mit den 3 Sprachproben für dein Profil weitermachen. "
-            f"Sag mir bitte nacheinander drei ganz normale Sätze oder Befehle, wie du sonst auch mit mir sprichst. "
-            f"Der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Was ist dein erster Satz?"
-        )
-
         return json.dumps(
-            {
-                "ok": True,
-                "uid": uid,
-                "display_name": display_name,
-                "spelled_uid": spelled_uid,
-                "collecting": True,
-                "samples_needed": _TARGET_SAMPLES,
-                "say": say_custom,
-            },
-            ensure_ascii=False,
+            {"ok": True, "collecting": True, "say": say}, ensure_ascii=False
         )
 
     async def register(args: dict[str, Any]) -> str:
@@ -196,16 +127,12 @@ def build_register_tools(
             name="start_voice_enrollment",
             description=(
                 "Startet das Sprach-Enrollment, wenn sich jemand einrichten will ('richte mich ein', 'merk dir meine Stimme'). "
-                "SCHRITT 1: Wenn der Nutzer noch nicht sein Einverständnis zur biometrischen Stimmaufnahme gegeben hat, frage NUR kurz: "
-                "'Möchtest du dein Sprachprofil biometrisch auf der Box anlegen? Bitte antworte mit Ja oder Nein.' "
-                "SCHRITT 2: Wenn das Einverständnis vorliegt, frage nach dem Namen oder Kürzel: "
-                "'Welcher Name oder welches Kürzel soll verwendet werden? Bitte buchstabiere das Kürzel. Wie lautet dein Name?' "
-                "SCHRITT 2: Sobald der Nutzer den Namen oder das Kürzel genannt hat, rufe start_voice_enrollment(uid=genannter_name) auf. Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
+                "Rufe es SOFORT auf, ohne vorher nach Einverständnis oder Namen zu fragen — beides erfragt der Assistent danach selbst. "
+                "Lies das zurückgegebene 'say'-Feld EXAKT 1:1 vor und ergänze nichts."
             ),
             parameters={
                 "type": "object",
-                "properties": {"uid": {"type": "string"}},
-                "required": ["uid"],
+                "properties": {},
             },
             handler=start,
         ),

@@ -42,13 +42,19 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     start_reg = next(t for t in reg_tools if t.name == "start_voice_enrollment")
     finish_reg = next(t for t in reg_tools if t.name == "register_pending_resident")
 
-    # 1. Start voice enrollment for 'Alex' (resolves to 'alex')
-    r1 = json.loads(await start_reg.handler({"uid": "Alex"}))
+    # 1. The entry tool hands off to the wizard, which owns consent -> name.
+    from solaris_chat.engine import enrollment_fsm
+
+    r1 = json.loads(await start_reg.handler({}))
     assert r1["ok"] is True
-    assert r1["uid"] == "alex"
-    assert r1["display_name"] == "Alex Test"
-    assert r1["spelled_uid"] == "A - L - E - X"
     assert r1["say"].endswith("?")
+    assert enrollment_fsm.is_active(db_path) is True
+    consent = enrollment_fsm.handle_turn(db_path, "ja")
+    assert "Name" in consent
+    named = enrollment_fsm.handle_turn(db_path, "Alex")
+    assert "A - L - E - X" in named
+    # The wizard — not the model — opened the request.
+    assert enroll_requests_store.read_request(db_path, "alex")["status"] == "pending"
 
     # 2. Simulate Turn 1 spoken: Gatekeeper captures sample 1
     with enroll_requests_store._connect(db_path) as conn:
@@ -109,24 +115,21 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_enrollment_asks_for_username_when_missing(tmp_path):
+async def test_wizard_asks_for_the_name_itself(tmp_path):
+    """The entry tool no longer takes a name, so the model has nothing to
+    invent. The wizard asks — and does not move on until it gets one."""
     db = str(tmp_path / "test.db")
+    from solaris_chat.engine import enrollment_fsm
+
     tools = build_register_tools(db)
     start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
 
-    # Generic or empty uid argument must return missing_uid and ask for username
-    res_generic = await start_tool.handler({"uid": "ja"})
-    data_generic = json.loads(res_generic)
-    assert data_generic["ok"] is False
-    assert data_generic["reason"] == "missing_uid"
-    assert "Wie lautet dein Name" in data_generic["say"]
+    first = json.loads(await start_tool.handler({}))["say"]
+    assert "biometrisch" in first and first.rstrip().endswith("?")
 
-    # Explicit name provides enrollment
-    res_explicit = await start_tool.handler({"uid": "alex"})
-    data_explicit = json.loads(res_explicit)
-    assert data_explicit["ok"] is True
-    assert data_explicit["uid"] == "alex"
-    assert "A - L - E - X" in data_explicit["spelled_uid"]
+    asks_name = enrollment_fsm.handle_turn(db, "ja")
+    assert "Wie lautet dein Name" in asks_name
+    assert asks_name.rstrip().endswith("?")
 
 
 _EXAMPLE_NAMES = (
@@ -183,15 +186,15 @@ async def test_all_enrollment_responses_end_with_question_mark(tmp_path):
     start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
     finish_tool = next(t for t in tools if t.name == "register_pending_resident")
 
-    # 1. Missing username prompt
-    r_missing = json.loads(await start_tool.handler({}))
-    assert r_missing["say"].strip().endswith("?")
+    from solaris_chat.engine import enrollment_fsm
 
-    # 2. Start enrollment
-    r_start = json.loads(await start_tool.handler({"uid": "alex"}))
-    assert r_start["say"].strip().endswith("?")
+    # 1. Entry, then the wizard's own consent + name turns.
+    assert json.loads(await start_tool.handler({}))["say"].strip().endswith("?")
+    assert enrollment_fsm.handle_turn(db, "ja").strip().endswith("?")
+    # The name turn is what opens the request the steps below rely on.
+    assert enrollment_fsm.handle_turn(db, "alex").strip().endswith("?")
 
-    # 3. Intermediate turns
+    # 2. Intermediate turns
     for sample_count in (1, 2):
         enroll_requests_store.touch_request(db, "alex")
         with sqlite3.connect(db) as conn:
@@ -293,29 +296,19 @@ async def test_facade_chat_turns_generator_execution(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_enrollment_rejects_phrases_that_are_not_a_name(tmp_path):
-    """The model passes whatever it plucked out of the sentence. An exact-phrase
-    blocklist let "mein Sprachprofil" through and the resolver turned it into a
-    resident called "Meinname" — observed live on the box (#1067)."""
+async def test_no_phrase_can_become_a_resident(tmp_path):
+    """A blocklist of phrases used to be the only thing between the model and an
+    invented identity, and it leaked: "mein Sprachprofil" became a resident
+    called "Meinname" on the box (#1067). The entry tool now ignores the
+    argument entirely, so there is no phrase that can get through."""
     db = str(tmp_path / "generic.db")
+    from solaris_chat import pending_residents_store
+
     tools = build_register_tools(db)
     start_tool = next(t for t in tools if t.name == "start_voice_enrollment")
 
-    for phrase in (
-        "mein Sprachprofil",
-        "meinen Benutzer",
-        "bitte einrichten",
-        "ein neues Profil",
-        "ja gerne",
-        "meine Stimme",
-        "   ",
-    ):
+    for phrase in ("mein Sprachprofil", "meinen Benutzer", "ja gerne", "Alex", ""):
         res = json.loads(await start_tool.handler({"uid": phrase}))
-        assert res["ok"] is False, f"{phrase!r} must not become a resident"
-        assert res["reason"] == "missing_uid"
-        assert res["say"].rstrip().endswith("?")
-
-    # A real name still works, including one that merely contains a stop word.
-    for name in ("Alex", "M - A - X", "Meinhard"):
-        res = json.loads(await start_tool.handler({"uid": name}))
-        assert res["ok"] is True, f"{name!r} must be accepted"
+        assert res["ok"] is True, phrase
+        assert "uid" not in res, phrase
+    assert pending_residents_store.list_pending_residents(db) == []
