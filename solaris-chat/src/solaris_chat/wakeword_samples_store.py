@@ -18,6 +18,20 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def sample_path(db_path: str, uid: str, index: int) -> str:
+    """Where one resident's n-th wake-word recording lives. Samples sit next to
+    the database (/var/lib/solaris in the pod); a hardcoded absolute path exists
+    on no runtime box. The gatekeeper writes the `.wav` at this exact path — it
+    mirrors this convention — so the row here points at a real file."""
+    return os.path.join(
+        os.path.dirname(os.path.abspath(db_path)),
+        "wakeword",
+        "user_samples",
+        uid,
+        f"sample_{uid}_{index}.wav",
+    )
+
+
 def init_db(db_path: str) -> None:
     with _connect(db_path) as conn:
         conn.execute("""

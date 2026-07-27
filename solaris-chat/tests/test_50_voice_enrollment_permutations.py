@@ -122,6 +122,12 @@ def test_full_successful_voice_enrollment_3_sentences(test_db):
     _gatekeeper_enrols(test_db)
     t6 = enrollment_fsm.handle_turn(test_db, "Das Wetter ist sonnig.")
     assert "erfolgreich gespeichert" in t6
+    # Stage 1 hands over to the wake-word stage instead of ending the wizard.
+    assert (
+        enrollment_fsm.get_fsm_state(test_db, "default")["state"]
+        == enrollment_fsm.STATE_WAKEWORD_OFFER
+    )
+    assert "Weckwort" in enrollment_fsm.handle_turn(test_db, "nein")
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
 
 
