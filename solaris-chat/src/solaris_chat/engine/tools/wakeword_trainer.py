@@ -11,7 +11,6 @@ Enables bidirectional interactive voice enrollment dialogs & sample audit:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -22,7 +21,9 @@ from typing import Any, Callable
 from solaris_chat import wakeword_requests_store, wakeword_samples_store
 from solaris_chat.engine.tools import Tool
 
-_ACCEPTED_PHONETICS = re.compile(r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I)
+_ACCEPTED_PHONETICS = re.compile(
+    r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I
+)
 
 _RESIDENT_ALIASES = {
     "alex": ("alex", "Alex Test"),
@@ -34,12 +35,16 @@ _RESIDENT_ALIASES = {
 
 def parse_spelled_uid(raw: str) -> str:
     """Extract clean ASCII uid from spelled or spoken names (e.g. 'M - A - R - C - O' -> 'marco')."""
-    cleaned = raw.lower().replace("-", "").replace(" ", "").replace(",", "").replace(".", "")
+    cleaned = (
+        raw.lower().replace("-", "").replace(" ", "").replace(",", "").replace(".", "")
+    )
     cleaned = re.sub(r"[^a-z0-9]", "", cleaned)
     return cleaned if len(cleaned) >= 2 else "household"
 
 
-def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, str, str]:
+def resolve_resident_identity(
+    raw_input: str, db_path: str = ""
+) -> tuple[str, str, str]:
     """Resolves spoken or spelled user names/aliases to (uid, display_name, spelled_uid)."""
     parsed = parse_spelled_uid(raw_input)
     if parsed in _RESIDENT_ALIASES:
@@ -52,7 +57,7 @@ def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, s
             with sqlite3.connect(db_path) as conn:
                 row = conn.execute(
                     "SELECT uid, display_name FROM pending_residents WHERE uid = ? OR LOWER(display_name) LIKE ?",
-                    (parsed, f"%{parsed}%")
+                    (parsed, f"%{parsed}%"),
                 ).fetchone()
                 if row:
                     spelled = " - ".join(list(row[0].upper()))
@@ -67,7 +72,7 @@ def resolve_resident_identity(raw_input: str, db_path: str = "") -> tuple[str, s
 def build_wakeword_tools(
     db_path: str,
     uid_getter: Callable[[], str],
-    script_dir: str = "/workspace/solarisbay/scripts"
+    script_dir: str = "/workspace/solarisbay/scripts",
 ) -> list[Tool]:
     """Build the wakeword improvement tools."""
 
@@ -78,9 +83,15 @@ def build_wakeword_tools(
         if raw_uid:
             uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         elif current_uid and current_uid != "household":
-            uid, display_name, spelled_uid = resolve_resident_identity(current_uid, db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(
+                current_uid, db_path
+            )
         else:
-            uid, display_name, spelled_uid = "household", "Haushalt", "H - A - U - S - H - A - L - T"
+            uid, display_name, spelled_uid = (
+                "household",
+                "Haushalt",
+                "H - A - U - S - H - A - L - T",
+            )
 
         target_count = int(args.get("target_count", 10))
 
@@ -97,15 +108,18 @@ def build_wakeword_tools(
             f"Sprich bitte nach meiner Antwort nacheinander das Wort „Solaris“ — mal leise, "
             f"mal gerufen. Bist du bereit für Probe 1?"
         )
-        return json.dumps({
-            "ok": True,
-            "uid": uid,
-            "display_name": display_name,
-            "spelled_uid": spelled_uid,
-            "target_count": target_count,
-            "remaining": rem,
-            "say": say
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
+                "target_count": target_count,
+                "remaining": rem,
+                "say": say,
+            },
+            ensure_ascii=False,
+        )
 
     async def _handle_sample(args: dict[str, Any]) -> str:
         current_uid = uid_getter()
@@ -114,7 +128,9 @@ def build_wakeword_tools(
         if raw_uid:
             uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         else:
-            uid, display_name, spelled_uid = resolve_resident_identity(current_uid or "household", db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(
+                current_uid or "household", db_path
+            )
 
         req = wakeword_requests_store.record_sample(db_path, uid)
 
@@ -123,7 +139,9 @@ def build_wakeword_tools(
         rem = max(0, target - collected)
 
         sample_id = f"sample_{uid}_{collected}"
-        sample_dir = f"/workspace/solarisbay/templates/solaris/wakeword/user_samples/{uid}"
+        sample_dir = (
+            f"/workspace/solarisbay/templates/solaris/wakeword/user_samples/{uid}"
+        )
         os.makedirs(sample_dir, exist_ok=True)
         filename = os.path.join(sample_dir, f"{sample_id}.wav")
 
@@ -138,30 +156,39 @@ def build_wakeword_tools(
             resident_uid=uid,
             intended_phrase="Solaris",
             stt_transcript=transcript,
-            is_valid=is_valid
+            is_valid=is_valid,
         )
 
         current_probe = target - rem + 1
         if rem > 0:
             if rem == 1:
-                say = f"Sehr gut, {display_name}! Nur noch 1 Probe! Was ist deine letzte Probe?" if uid != "household" else "Sehr gut! Nur noch 1 Probe! Was ist deine letzte Probe?"
+                say = (
+                    f"Sehr gut, {display_name}! Nur noch 1 Probe! Was ist deine letzte Probe?"
+                    if uid != "household"
+                    else "Sehr gut! Nur noch 1 Probe! Was ist deine letzte Probe?"
+                )
             elif rem in (8, 5, 3):
                 say = f"Klasse! Noch {rem} Mal (versuche es jetzt gerne mal geflüstert). Was ist deine {current_probe}. Probe?"
             else:
                 say = f"Super! Noch {rem} Mal. Was ist deine {current_probe}. Probe?"
-            return json.dumps({
-                "ok": True,
-                "uid": uid,
-                "display_name": display_name,
-                "spelled_uid": spelled_uid,
-                "collected": collected,
-                "target": target,
-                "remaining": rem,
-                "completed": False,
-                "say": say
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "uid": uid,
+                    "display_name": display_name,
+                    "spelled_uid": spelled_uid,
+                    "collected": collected,
+                    "target": target,
+                    "remaining": rem,
+                    "completed": False,
+                    "say": say,
+                },
+                ensure_ascii=False,
+            )
         else:
-            suspicious = wakeword_samples_store.get_suspicious_samples(db_path, "solaris")
+            suspicious = wakeword_samples_store.get_suspicious_samples(
+                db_path, "solaris"
+            )
             if suspicious:
                 bad_item = suspicious[0]
                 say = (
@@ -175,18 +202,21 @@ def build_wakeword_tools(
                     f"Möchtest du das 2-Stunden GPU-Training jetzt direkt auf deiner Grafikkarte starten oder noch weitere Proben für andere Personen sammeln?"
                 )
 
-            return json.dumps({
-                "ok": True,
-                "uid": uid,
-                "display_name": display_name,
-                "spelled_uid": spelled_uid,
-                "collected": collected,
-                "target": target,
-                "remaining": 0,
-                "completed": True,
-                "suspicious_count": len(suspicious),
-                "say": say
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "uid": uid,
+                    "display_name": display_name,
+                    "spelled_uid": spelled_uid,
+                    "collected": collected,
+                    "target": target,
+                    "remaining": 0,
+                    "completed": True,
+                    "suspicious_count": len(suspicious),
+                    "say": say,
+                },
+                ensure_ascii=False,
+            )
 
     async def _handle_audit(args: dict[str, Any]) -> str:
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
@@ -194,9 +224,9 @@ def build_wakeword_tools(
 
         if suspicious:
             bad = suspicious[0]
-            speaker_uid = bad['resident_uid']
+            speaker_uid = bad["resident_uid"]
             _, speaker_name, _ = resolve_resident_identity(speaker_uid, db_path)
-            speaker_say = speaker_name if speaker_uid != 'household' else 'dir'
+            speaker_say = speaker_name if speaker_uid != "household" else "dir"
             say = (
                 f"Ich habe {len(samples)} gespeicherte Proben. Bei der Probe von {speaker_say} habe ich wörtlich „{bad['stt_transcript']}“ verstanden. "
                 f"Soll ich diese Aufnahme löschen?"
@@ -204,42 +234,45 @@ def build_wakeword_tools(
         else:
             say = f"Alle {len(samples)} Aufnahmen sind in bester Qualität und verifiziert. Möchtest du noch etwas prüfen?"
 
-        return json.dumps({
-            "ok": True,
-            "total_samples": len(samples),
-            "suspicious": suspicious,
-            "say": say
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "total_samples": len(samples),
+                "suspicious": suspicious,
+                "say": say,
+            },
+            ensure_ascii=False,
+        )
 
     async def _handle_list(args: dict[str, Any]) -> str:
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
         say = f"Es sind {len(samples)} Sprachproben für das Wakeword „Solaris“ gespeichert. Möchtest du eine Probe anhören oder löschen?"
-        return json.dumps({
-            "ok": True,
-            "samples": samples,
-            "say": say
-        }, ensure_ascii=False)
+        return json.dumps(
+            {"ok": True, "samples": samples, "say": say}, ensure_ascii=False
+        )
 
     async def _handle_delete(args: dict[str, Any]) -> str:
         sample_id = str(args.get("sample_id", "")).strip()
         if not sample_id:
-            suspicious = wakeword_samples_store.get_suspicious_samples(db_path, "solaris")
+            suspicious = wakeword_samples_store.get_suspicious_samples(
+                db_path, "solaris"
+            )
             if suspicious:
                 sample_id = suspicious[0]["id"]
 
         if sample_id:
             wakeword_samples_store.delete_sample(db_path, sample_id)
             current_uid = uid_getter()
-            wakeword_requests_store.decrement_sample(db_path, current_uid or "household")
+            wakeword_requests_store.decrement_sample(
+                db_path, current_uid or "household"
+            )
             say = f"Aufnahme {sample_id} wurde gelöscht. Es fehlt jetzt wieder 1 Probe. Bist du bereit, sie neu einzusprechen?"
         else:
             say = "Keine fehlerhaften Aufnahmen zum Löschen gefunden. Wollen wir weitermachen?"
 
-        return json.dumps({
-            "ok": True,
-            "deleted_sample_id": sample_id,
-            "say": say
-        }, ensure_ascii=False)
+        return json.dumps(
+            {"ok": True, "deleted_sample_id": sample_id, "say": say}, ensure_ascii=False
+        )
 
     async def _handle_trigger(args: dict[str, Any]) -> str:
         current_uid = uid_getter()
@@ -247,7 +280,9 @@ def build_wakeword_tools(
         if raw_uid:
             uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
         else:
-            uid, display_name, spelled_uid = resolve_resident_identity(current_uid or "household", db_path)
+            uid, display_name, spelled_uid = resolve_resident_identity(
+                current_uid or "household", db_path
+            )
 
         wakeword_requests_store.finish_request(db_path, uid)
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
@@ -258,7 +293,7 @@ def build_wakeword_tools(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                preexec_fn=os.setpgrp
+                preexec_fn=os.setpgrp,
             )
         except Exception:
             pass
@@ -271,15 +306,18 @@ def build_wakeword_tools(
             f"Wohnzimmer-Nebengeräuschen über 15.000 Steps (~2 Stunden). "
             f"Ich gebe dir Bescheid, sobald das neue Modell fertig ist!"
         )
-        return json.dumps({
-            "ok": True,
-            "uid": uid,
-            "display_name": display_name,
-            "spelled_uid": spelled_uid,
-            "samples_count": len(samples),
-            "training_started": True,
-            "say": say
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
+                "samples_count": len(samples),
+                "training_started": True,
+                "say": say,
+            },
+            ensure_ascii=False,
+        )
 
     return [
         Tool(
@@ -297,15 +335,15 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'max', 'M-A-X')"
+                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'max', 'M-A-X')",
                     },
                     "target_count": {
                         "type": "integer",
-                        "description": "Anzahl der zu sammelnden Proben (Standard: 10)"
-                    }
-                }
+                        "description": "Anzahl der zu sammelnden Proben (Standard: 10)",
+                    },
+                },
             },
-            handler=_handle_start
+            handler=_handle_start,
         ),
         Tool(
             name="record_wakeword_sample",
@@ -318,15 +356,15 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Die User-ID des Sprechers (z.B. 'max')"
+                        "description": "Die User-ID des Sprechers (z.B. 'max')",
                     },
                     "transcript": {
                         "type": "string",
-                        "description": "Das von Whisper STT erfasste Wort (z.B. 'Solaris', 'Cello')"
-                    }
-                }
+                        "description": "Das von Whisper STT erfasste Wort (z.B. 'Solaris', 'Cello')",
+                    },
+                },
             },
-            handler=_handle_sample
+            handler=_handle_sample,
         ),
         Tool(
             name="audit_wakeword_samples",
@@ -335,7 +373,7 @@ def build_wakeword_tools(
                 "oder fehlerhafte Aufnahmen hervor („Aufnahmen überprüfen“, „Qualität prüfen“)."
             ),
             parameters={"type": "object", "properties": {}},
-            handler=_handle_audit
+            handler=_handle_audit,
         ),
         Tool(
             name="list_wakeword_samples",
@@ -343,7 +381,7 @@ def build_wakeword_tools(
                 "Listet alle bisher gespeicherten Wakeword-Sprachproben auf, die für zukünftige Trainingswiederholungen wiederverwendet werden."
             ),
             parameters={"type": "object", "properties": {}},
-            handler=_handle_list
+            handler=_handle_list,
         ),
         Tool(
             name="delete_wakeword_sample",
@@ -355,11 +393,11 @@ def build_wakeword_tools(
                 "properties": {
                     "sample_id": {
                         "type": "string",
-                        "description": "Die ID der zu löschenden Probe (z.B. 'sample_max_4')"
+                        "description": "Die ID der zu löschenden Probe (z.B. 'sample_max_4')",
                     }
-                }
+                },
             },
-            handler=_handle_delete
+            handler=_handle_delete,
         ),
         Tool(
             name="trigger_wakeword_training",
@@ -371,10 +409,10 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Optional: User-ID des Nutzers"
+                        "description": "Optional: User-ID des Nutzers",
                     }
-                }
+                },
             },
-            handler=_handle_trigger
-        )
+            handler=_handle_trigger,
+        ),
     ]

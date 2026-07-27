@@ -1359,10 +1359,10 @@ def build_app(
         """
         try:
             from solaris_chat import enroll_requests_store, wakeword_requests_store
-            if (
-                enroll_requests_store.has_any_active_request(solaris_db_path)
-                or wakeword_requests_store.has_any_active_request(solaris_db_path)
-            ):
+
+            if enroll_requests_store.has_any_active_request(
+                solaris_db_path
+            ) or wakeword_requests_store.has_any_active_request(solaris_db_path):
                 return enrollment_gw
         except Exception:
             pass

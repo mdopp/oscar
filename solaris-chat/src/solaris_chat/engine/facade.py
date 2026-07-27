@@ -230,10 +230,10 @@ def add_facade_routes(
         if enrollment is not None:
             try:
                 from solaris_chat import enroll_requests_store, wakeword_requests_store
-                if (
-                    enroll_requests_store.has_any_active_request(solaris_db_path)
-                    or wakeword_requests_store.has_any_active_request(solaris_db_path)
-                ):
+
+                if enroll_requests_store.has_any_active_request(
+                    solaris_db_path
+                ) or wakeword_requests_store.has_any_active_request(solaris_db_path):
                     model, client = "solaris-enrollment", enrollment
             except Exception:
                 pass
@@ -261,13 +261,18 @@ def add_facade_routes(
         conversation_id = str(conversation_id) if conversation_id else None
 
         def turns() -> AsyncIterator[dict[str, Any]]:
-            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(solaris_db_path):
+            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(
+                solaris_db_path
+            ):
                 # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
                 # Guarantees zero latency, zero hallucinations, and zero device action risk.
                 async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
-                    reply = enrollment_fsm.handle_turn(solaris_db_path, transcript, uid_hint=uid)
+                    reply = enrollment_fsm.handle_turn(
+                        solaris_db_path, transcript, uid_hint=uid
+                    )
                     yield {"type": "assistant.delta", "data": {"delta": reply}}
                     yield {"type": "run.completed", "data": {"answer": reply}}
+
                 return _fsm_turns()
 
             if client.ephemeral:

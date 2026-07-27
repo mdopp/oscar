@@ -1,7 +1,8 @@
 """E2E Test Suite for Real-World Voice Failures (#1056)."""
 
-import json, pytest
-from solaris_chat.engine import enrollment_fsm, facade
+import pytest
+from solaris_chat.engine import enrollment_fsm
+
 
 @pytest.mark.asyncio
 async def test_fsm_stream_must_yield_non_zero_bytes_to_facade(tmp_path):
@@ -21,7 +22,9 @@ async def test_fsm_stream_must_yield_non_zero_bytes_to_facade(tmp_path):
         if event["type"] == "assistant.delta":
             streamed += event["data"].get("delta", "")
 
-    assert len(streamed) > 0, f"FAIL: Streamed response was 0 bytes! Event types did not match 'assistant.delta'. Streamed: '{streamed}'"
+    assert len(streamed) > 0, (
+        f"FAIL: Streamed response was 0 bytes! Event types did not match 'assistant.delta'. Streamed: '{streamed}'"
+    )
 
 
 @pytest.mark.asyncio
@@ -29,6 +32,7 @@ async def test_stale_fsm_state_auto_expires_after_ttl(tmp_path):
     """TTL auto-expiration test (#1056): Ensures stale FSM states older than 180s
     automatically expire and reset so new attempts start cleanly at Step 1."""
     import sqlite3
+
     db = str(tmp_path / "ttl_test.db")
     enrollment_fsm.reset_fsm(db, "default")
 
@@ -38,7 +42,9 @@ async def test_stale_fsm_state_auto_expires_after_ttl(tmp_path):
 
     # 2. Simulate stale timestamp (10 minutes ago)
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE enrollment_fsm SET updated_at = datetime('now', '-600 seconds')")
+        conn.execute(
+            "UPDATE enrollment_fsm SET updated_at = datetime('now', '-600 seconds')"
+        )
         conn.commit()
 
     # 3. Next turn MUST detect stale state, reset automatically, and start fresh at Step 1!

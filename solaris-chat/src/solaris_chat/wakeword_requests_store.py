@@ -7,7 +7,6 @@ in solaris.db for interactive voice enrollment dialogs.
 from __future__ import annotations
 
 import sqlite3
-import time
 from pathlib import Path
 
 
@@ -37,7 +36,8 @@ def init_db(db_path: str) -> None:
 def start_request(db_path: str, uid: str, target_count: int = 10) -> dict:
     init_db(db_path)
     with _connect(db_path) as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO wakeword_requests (uid, target_count, collected_count, status, created_at, updated_at)
             VALUES (?, ?, 0, 'active', datetime('now'), datetime('now'))
             ON CONFLICT(uid) DO UPDATE SET
@@ -45,7 +45,9 @@ def start_request(db_path: str, uid: str, target_count: int = 10) -> dict:
                 collected_count = 0,
                 status = 'active',
                 updated_at = datetime('now')
-        """, (uid, target_count))
+        """,
+            (uid, target_count),
+        )
         conn.commit()
 
     return get_request(db_path, uid) or {}
@@ -56,7 +58,7 @@ def get_request(db_path: str, uid: str) -> dict | None:
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT uid, target_count, collected_count, status, created_at, updated_at FROM wakeword_requests WHERE uid = ?",
-            (uid,)
+            (uid,),
         ).fetchone()
         if row:
             return dict(row)
@@ -73,11 +75,14 @@ def record_sample(db_path: str, uid: str) -> dict:
     new_status = "completed" if new_count >= req["target_count"] else "active"
 
     with _connect(db_path) as conn:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE wakeword_requests
             SET collected_count = ?, status = ?, updated_at = datetime('now')
             WHERE uid = ?
-        """, (new_count, new_status, uid))
+        """,
+            (new_count, new_status, uid),
+        )
         conn.commit()
 
     return get_request(db_path, uid) or {}
@@ -88,7 +93,7 @@ def finish_request(db_path: str, uid: str) -> None:
     with _connect(db_path) as conn:
         conn.execute(
             "UPDATE wakeword_requests SET status = 'finished', updated_at = datetime('now') WHERE uid = ?",
-            (uid,)
+            (uid,),
         )
         conn.commit()
 
@@ -122,11 +127,14 @@ def decrement_sample(db_path: str, uid: str) -> dict:
 
     new_count = max(0, req["collected_count"] - 1)
     with _connect(db_path) as conn:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE wakeword_requests
             SET collected_count = ?, status = 'active', updated_at = datetime('now')
             WHERE uid = ?
-        """, (new_count, uid))
+        """,
+            (new_count, uid),
+        )
         conn.commit()
 
     return get_request(db_path, uid) or {}
