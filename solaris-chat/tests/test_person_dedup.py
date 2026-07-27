@@ -686,3 +686,17 @@ def test_a_household_merge_is_not_undoable_by_any_resident(conn):
     assert person_dedup.undo_merge(conn, mid, "mdopp") is False
     assert conn.execute("SELECT 1 FROM entities WHERE id = 'b'").fetchone() is None
     assert person_dedup.undo_merge(conn, mid, "household") is True
+
+
+def test_generational_suffix_marks_two_different_people():
+    """A suffix is the one token that asserts these are NOT the same person.
+    Father and son share a full name and, on a family landline, the contact key
+    too — so the subset rule alone would have offered them as duplicates."""
+    from solaris_chat.engine.knowledge.person_dedup import _names_compatible
+
+    assert _names_compatible("thomas meyer", "thomas meyer jr") is False
+    assert _names_compatible("hans mueller", "hans mueller sr") is False
+    assert _names_compatible("karl otto", "karl otto iii") is False
+    # A middle name is not a suffix — still the same person.
+    assert _names_compatible("anna meyer", "anna maria meyer") is True
+    assert _names_compatible("thomas meyer", "thomas meyer") is True

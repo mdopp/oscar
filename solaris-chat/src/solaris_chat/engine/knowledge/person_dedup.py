@@ -93,6 +93,12 @@ def _normalize_email(email: str) -> str:
     return e if "@" in e and "." in e.split("@")[-1] else ""
 
 
+# Suffixes that distinguish two people who otherwise share a full name.
+_GENERATION_SUFFIXES = frozenset(
+    {"jr", "jun", "junior", "sr", "sen", "senior", "ii", "iii", "iv"}
+)
+
+
 def _names_compatible(a: str, b: str) -> bool:
     """True when two normalized names could be the same person: equal, or one is
     a token-subset of the other sharing at least TWO tokens.
@@ -108,7 +114,13 @@ def _names_compatible(a: str, b: str) -> bool:
     ta, tb = set(a.split()), set(b.split())
     if ta == tb:
         return True
-    return (ta <= tb or tb <= ta) and len(ta & tb) >= 2
+    if not ((ta <= tb or tb <= ta) and len(ta & tb) >= 2):
+        return False
+    # A generational suffix is the one token that asserts these are DIFFERENT
+    # people: "thomas meyer" vs "thomas meyer jr" is father and son, and on a
+    # shared family landline the contact key matches too, so the subset rule
+    # alone would offer them as duplicates.
+    return not (ta ^ tb) <= _GENERATION_SUFFIXES
 
 
 def _merge_reason(
