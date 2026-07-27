@@ -130,7 +130,7 @@ def test_confirmed_values_resolve_to_names_and_the_owning_note(tmp_path, monkeyp
             "document_type": "Versicherungen",
             "category": "insurance",
             "note": "users/mdopp/okf/documents/scan.md",
-            "applied": "category",
+            "applied": "category,provider",
         }
     ]
 
@@ -229,6 +229,27 @@ def test_category_is_added_to_a_note_that_has_none(tmp_path):
     assert note.read_text(encoding="utf-8").startswith("---\ntype: document\n")
 
 
+def test_confirmed_correspondent_rewrites_the_notes_provider(tmp_path):
+    note = _note(
+        tmp_path,
+        "users/mdopp/okf/documents/scan.md",
+        category="insurance",
+        provider="ERG0 Vers1cherung",  # what OCR made of it
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", correspondent=3)],
+        correspondents={3: "ERGO Versicherung AG"},
+    )
+
+    _run(tmp_path, client)
+
+    text = note.read_text(encoding="utf-8")
+    assert "provider: ERGO Versicherung AG" in text
+    assert "ERG0 Vers1cherung" not in text
+    assert "category: insurance" in text
+
+
 def test_document_without_a_note_is_counted_unmatched(tmp_path, monkeypatch):
     records = _logged(monkeypatch)
     client = FakePaperless(
@@ -318,6 +339,66 @@ def test_the_dokumente_doorway_follows_the_confirmed_type(tmp_path):
     _run(notes_dir, client)
 
     assert ingest() == {"insurance": 1}
+
+
+def test_confirmed_correspondent_links_the_existing_contact(tmp_path):
+    """The correspondent is linked, not merged: the document joins the
+    organization entity that already carries the same normalized provider key —
+    no second contact appears."""
+    db_path = str(tmp_path / "solaris.db")
+    notes_dir = tmp_path / "notes"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    writer = OkfWriter(db_path=db_path, notes_dir=str(notes_dir))
+
+    def ingest():
+        ObsidianIngest(
+            VaultObsidianReader(str(notes_dir)),
+            writer,
+            db_path=db_path,
+            ingesting_uid="mdopp",
+        ).run()
+        return documents_portal_db.contacts(db_path, "mdopp")
+
+    # An older document already established the ERGO contact…
+    _note(
+        notes_dir,
+        "users/mdopp/okf/documents/alt.md",
+        title="ERGO Rechtsschutz",
+        category="insurance",
+        provider="ERGO Versicherung AG",
+        provider_phone="0211 477-0",
+        source_document="users/mdopp/uploads/alt.md",
+    )
+    # …the new one's provider came out of OCR as something else entirely.
+    _note(
+        notes_dir,
+        "users/mdopp/okf/documents/scan.md",
+        title="Beitragsrechnung",
+        category="insurance",
+        provider="ERG0 Vers1cherung",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    assert len(ingest()) == 2  # two contacts, one of them junk
+
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", correspondent=3)],
+        correspondents={3: "ERGO Versicherung AG"},
+    )
+    _run(notes_dir, client)
+
+    orgs = ingest()
+    # The junk contact keeps no documents; the confirmed one now holds both, with
+    # the phone number the older document contributed still on it.
+    ergo = [o for o in orgs if o["name"] == "ERGO Versicherung AG"]
+    assert len(ergo) == 1
+    assert sorted(d["title"] for d in ergo[0]["documents"]) == [
+        "Beitragsrechnung",
+        "ERGO Rechtsschutz",
+    ]
+    assert ergo[0]["contact"]["phone"]["value"] == "0211 477-0"
 
 
 if __name__ == "__main__":  # pragma: no cover

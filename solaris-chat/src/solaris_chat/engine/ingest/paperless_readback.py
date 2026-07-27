@@ -22,6 +22,12 @@ fork the SSOT. The frontmatter write lands in the projection on the NEXT cycle
 (obsidian runs before paperless in `run_ingest`) — a cron cycle late is fine for
 a correction the resident just made in another UI.
 
+The correspondent is LINKED, never merged: it goes in as the document's
+`provider`, which the obsidian pass resolves onto the organization entity that
+already carries the same normalized `provider_key` (creating one only if no such
+contact exists). Deduping/merging the org entities themselves is #1028/#999's
+job, and the `provider_key` normalization stays the fallback it is today.
+
 One-way and value-gated: a null correspondent/document type is left alone and
 nothing is ever written back to paperless, so an instance where the resident has
 confirmed nothing yet (the state today: 18 documents, none carrying either field)
@@ -174,9 +180,10 @@ def _apply(note: Path, fields: dict[str, str]) -> list[str]:
 
 
 async def read_back(notes_dir: str, client: PaperlessClient) -> int:
-    """Converge every paperless document's confirmed document type into its OKF
-    note. Returns the number of documents carrying a confirmed value. Never
-    raises — the read-back is advisory, the push must not be affected."""
+    """Converge every paperless document's confirmed correspondent + document
+    type into its OKF note. Returns the number of documents carrying a confirmed
+    value. Never raises — the read-back is advisory, the push must not be
+    affected."""
     try:
         documents = await client.list_documents()
         correspondents = await client.list_names("correspondents")
@@ -200,7 +207,10 @@ async def read_back(notes_dir: str, client: PaperlessClient) -> int:
         if note is None:
             unmatched += 1
         category = _category_for(document_type) if document_type else ""
-        applied = _apply(note, {"category": category}) if note and category else []
+        fields = {
+            k: v for k, v in (("category", category), ("provider", correspondent)) if v
+        }
+        applied = _apply(note, fields) if note and fields else []
         changed += bool(applied)
         log.info(
             "engine.ingest.paperless_readback_doc",
