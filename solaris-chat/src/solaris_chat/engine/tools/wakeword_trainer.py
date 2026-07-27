@@ -139,8 +139,13 @@ def build_wakeword_tools(
         rem = max(0, target - collected)
 
         sample_id = f"sample_{uid}_{collected}"
-        sample_dir = (
-            f"/workspace/solarisbay/templates/solaris/wakeword/user_samples/{uid}"
+        # Samples live next to the database (/var/lib/solaris in the pod); a
+        # hardcoded absolute path exists on no runtime box.
+        sample_dir = os.path.join(
+            os.path.dirname(os.path.abspath(db_path)),
+            "wakeword",
+            "user_samples",
+            uid,
         )
         os.makedirs(sample_dir, exist_ok=True)
         filename = os.path.join(sample_dir, f"{sample_id}.wav")
