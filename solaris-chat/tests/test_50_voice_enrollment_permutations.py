@@ -9,37 +9,59 @@ Covers all scripted conversation permutations:
 - TTL state expiration and state isolation
 """
 
-import json, sqlite3, pytest
+import sqlite3
+import pytest
 from solaris_chat.engine import enrollment_fsm
-from solaris_chat.engine.tools import wakeword_trainer
-from solaris_chat import enroll_requests_store, wakeword_requests_store, pending_residents_store
+from solaris_chat import wakeword_requests_store
+
 
 # --- FIXTURE FOR CLEAN ISOLATED TEST DB ---
 @pytest.fixture
 def test_db(tmp_path):
     db = str(tmp_path / "fsm_50_suite.db")
     enrollment_fsm.reset_fsm(db, "default")
-    with sqlite3.connect(db) as conn:
-        conn.execute("DELETE FROM enroll_requests")
-        conn.execute("DELETE FROM wakeword_requests")
-        conn.execute("DELETE FROM pending_residents")
-        conn.commit()
     return db
 
+
 # --- 1. CONSENT VARIATION TESTS (1-10) ---
-@pytest.mark.parametrize("consent_word", [
-    "ja", "ja gerne", "sicher", "ok", "einverstanden", "klar", "gerne", "ja bitte", "absolut", "ja auf jeden fall"
-])
+@pytest.mark.parametrize(
+    "consent_word",
+    [
+        "ja",
+        "ja gerne",
+        "sicher",
+        "ok",
+        "einverstanden",
+        "klar",
+        "gerne",
+        "ja bitte",
+        "absolut",
+        "ja auf jeden fall",
+    ],
+)
 def test_consent_variations_advance_to_name_prompt(test_db, consent_word):
     t1 = enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     assert "Möchtest du dein Sprachprofil biometrisch" in t1
     t2 = enrollment_fsm.handle_turn(test_db, consent_word)
     assert "Wie lautet dein Name oder Kürzel" in t2
 
+
 # --- 2. CANCELLATION & REFUSAL TESTS (11-20) ---
-@pytest.mark.parametrize("cancel_word", [
-    "nein", "nein danke", "abbrechen", "stopp", "stop", "abbruch", "keine lust", "lieber nicht", "nein", "abbrechen bitte"
-])
+@pytest.mark.parametrize(
+    "cancel_word",
+    [
+        "nein",
+        "nein danke",
+        "abbrechen",
+        "stopp",
+        "stop",
+        "abbruch",
+        "keine lust",
+        "lieber nicht",
+        "nein",
+        "abbrechen bitte",
+    ],
+)
 def test_cancellation_at_consent_resets_fsm(test_db, cancel_word):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     res = enrollment_fsm.handle_turn(test_db, cancel_word)
@@ -47,19 +69,23 @@ def test_cancellation_at_consent_resets_fsm(test_db, cancel_word):
     # Verify state is idle
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
 
+
 # --- 3. NAME FORMAT VARIATIONS (21-30) ---
-@pytest.mark.parametrize("name_input,expected_name", [
-    ("Alex", "Alex Test"),
-    ("user1", "Alex Test"),
-    ("A-L-E-X", "Alex Test"),
-    ("Max", "Max"),
-    ("M-A-X", "Max"),
-    ("Anna", "Anna"),
-    ("A-N-N-A", "Anna"),
-    ("Stefan", "Stefan"),
-    ("Laura", "Laura"),
-    ("K-A-R-L", "Karl")
-])
+@pytest.mark.parametrize(
+    "name_input,expected_name",
+    [
+        ("Alex", "Alex Test"),
+        ("user1", "User1"),
+        ("A-L-E-X", "Alex Test"),
+        ("Max", "Max"),
+        ("M-A-X", "Max"),
+        ("Anna", "Anna"),
+        ("A-N-N-A", "Anna"),
+        ("Stefan", "Stefan"),
+        ("Laura", "Laura"),
+        ("K-A-R-L", "Karl"),
+    ],
+)
 def test_name_resolution_starts_sample_1(test_db, name_input, expected_name):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
@@ -67,10 +93,11 @@ def test_name_resolution_starts_sample_1(test_db, name_input, expected_name):
     assert expected_name in res or name_input in res
     assert "Was ist dein erster Satz?" in res
 
+
 # --- 4. FULL VOICE ENROLLMENT STEP-BY-STEP (31-35) ---
 def test_full_successful_voice_enrollment_3_sentences(test_db):
-    t1 = enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
-    t2 = enrollment_fsm.handle_turn(test_db, "ja")
+    enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
+    enrollment_fsm.handle_turn(test_db, "ja")
     t3 = enrollment_fsm.handle_turn(test_db, "Alex")
     assert "Was ist dein erster Satz?" in t3
 
@@ -84,6 +111,7 @@ def test_full_successful_voice_enrollment_3_sentences(test_db):
     assert "erfolgreich gespeichert" in t6
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
 
+
 def test_cancellation_during_sentence_recording(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
@@ -93,16 +121,18 @@ def test_cancellation_during_sentence_recording(test_db):
     assert "abgebrochen" in res
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
 
+
 # --- 5. SPURIOUS STT INPUTS & NOISE AT CONSENT (36-40) ---
-@pytest.mark.parametrize("spurious_input", [
-    "user1", "hallo", "wer da", "wer bist du", "licht an"
-])
+@pytest.mark.parametrize(
+    "spurious_input", ["user1", "hallo", "wer da", "wer bist du", "licht an"]
+)
 def test_spurious_inputs_at_consent_keep_state_consent(test_db, spurious_input):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     res = enrollment_fsm.handle_turn(test_db, spurious_input)
     assert "Bitte antworte mit Ja oder Nein" in res
     state = enrollment_fsm.get_fsm_state(test_db, "default")
     assert state["state"] == "consent"
+
 
 # --- 6. WAKEWORD RECORDING & DELETION (41-50) ---
 def test_wakeword_sample_recording_counts_up_to_10(test_db):
@@ -118,6 +148,7 @@ def test_wakeword_sample_recording_counts_up_to_10(test_db):
     assert rec10["collected_count"] == 10
     assert rec10["status"] == "completed"
 
+
 def test_wakeword_sample_deletion_decrements_by_1(test_db):
     wakeword_requests_store.start_request(test_db, "user1", 10)
     for _ in range(5):
@@ -131,11 +162,14 @@ def test_wakeword_sample_deletion_decrements_by_1(test_db):
     assert req_after["collected_count"] == 4
     assert req_after["status"] == "active"
 
+
 def test_ttl_auto_expiration_resets_stale_fsm(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
     with sqlite3.connect(test_db) as conn:
-        conn.execute("UPDATE enrollment_fsm SET updated_at = datetime('now', '-600 seconds')")
+        conn.execute(
+            "UPDATE enrollment_fsm SET updated_at = datetime('now', '-600 seconds')"
+        )
         conn.commit()
 
     res = enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
@@ -143,13 +177,16 @@ def test_ttl_auto_expiration_resets_stale_fsm(test_db):
 
 
 # --- 7. MULTI-USER ENROLLMENT SEQUENCES (51-55) ---
-@pytest.mark.parametrize("user_name,spelled", [
-    ("Max", "M - A - X"),
-    ("Laura", "L - A - U - R - A"),
-    ("Stefan", "S - T - E - F - A - N"),
-    ("Anna", "A - N - N - A"),
-    ("Karl", "K - A - R - L")
-])
+@pytest.mark.parametrize(
+    "user_name,spelled",
+    [
+        ("Max", "M - A - X"),
+        ("Laura", "L - A - U - R - A"),
+        ("Stefan", "S - T - E - F - A - N"),
+        ("Anna", "A - N - N - A"),
+        ("Karl", "K - A - R - L"),
+    ],
+)
 def test_consecutive_multi_user_enrollments(test_db, user_name, spelled):
     t1 = enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     assert "Möchtest du dein Sprachprofil biometrisch" in t1
@@ -164,13 +201,14 @@ def test_consecutive_multi_user_enrollments(test_db, user_name, spelled):
     t6 = enrollment_fsm.handle_turn(test_db, "Satz Drei")
     assert "erfolgreich gespeichert" in t6
 
+
 # --- 8. WAKEWORD DIALOG PERMUTATIONS (56-65) ---
 @pytest.mark.parametrize("sample_index", list(range(1, 11)))
 def test_wakeword_individual_sample_indices(test_db, sample_index):
     wakeword_requests_store.start_request(test_db, "user1", 10)
     for _ in range(sample_index - 1):
         wakeword_requests_store.record_sample(test_db, "user1")
-    
+
     rec = wakeword_requests_store.record_sample(test_db, "user1")
     assert rec["collected_count"] == sample_index
     if sample_index < 10:

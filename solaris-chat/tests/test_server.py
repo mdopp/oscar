@@ -67,7 +67,11 @@ class _FakeEngine:
         self.created = []
         self.created_prompts = []
         self.maintenance = []
-        self.ephemeral = []
+        # Client-config flag the server reads (real EngineClient.ephemeral); the
+        # household fake is a normal, non-ephemeral profile.
+        self.ephemeral = False
+        # Per-create ephemeral flag recorded for assertions.
+        self.ephemeral_flags = []
         self.models = []
         self.turns = []
         self.titles = []
@@ -93,7 +97,7 @@ class _FakeEngine:
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")
         self.maintenance.append(maintenance)
-        self.ephemeral.append(ephemeral)
+        self.ephemeral_flags.append(ephemeral)
         self.models.append(model)
         self.create_titles.append(title)
         # First create is "sess-1" (existing tests assert that); later creates
@@ -1326,7 +1330,7 @@ async def test_ephemeral_session_created_with_temp_marker(aiohttp_client, tmp_pa
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    assert fake.ephemeral == [True]
+    assert fake.ephemeral_flags == [True]
     assert fake.titles == []  # no set_title -> [temp:] marker preserved
     # No durable topic assignment was written for the ephemeral session.
     assert topics_store.get_session_topics(db, "sess-1", "mdopp") == {
@@ -1362,7 +1366,7 @@ async def test_two_ephemeral_first_turns_get_distinct_noncolliding_titles(
         )
         assert resp.status == 200
     # Both creates were ephemeral and carried a non-empty, distinct title suffix.
-    assert fake.ephemeral == [True, True]
+    assert fake.ephemeral_flags == [True, True]
     assert all(t for t in fake.create_titles)
     assert fake.create_titles[0] != fake.create_titles[1]
     # Ephemeral semantics intact: never re-titled (would surface the [uid:]
@@ -1485,7 +1489,7 @@ async def test_non_ephemeral_chat_unaffected(aiohttp_client, tmp_path):
         json={"input": "normaler chat"},
         headers={"Remote-User": "mdopp"},
     )
-    assert fake.ephemeral == [False]
+    assert fake.ephemeral_flags == [False]
     assert fake.create_titles == ["normaler chat"]  # titled at create
     assert "Temporary/incognito chat" not in fake.turns[-1][1]
 

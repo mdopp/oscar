@@ -1,7 +1,7 @@
 """Full Multi-Turn E2E Integration Test Suite for Voice Enrollment & Wakeword Trainer (#1056).
 
 Verifies the complete end-to-end multi-turn lifecycle:
-1. start_voice_enrollment (ID resolution 'Alex' -> 'user1' + spelled UID 'A - L - E - X')
+1. start_voice_enrollment (ID resolution 'Alex' -> 'alex' + spelled UID 'A - L - E - X')
 2. Simulated Wyoming PCM turns 1, 2, 3 via gatekeeper/enroll_requests_store
 3. register_pending_resident (completion & pending_residents DB verification)
 4. Wakeword enrollment (start_wakeword_enrollment -> 10 samples -> audit -> trigger_wakeword_training)
@@ -15,7 +15,7 @@ import pytest
 
 from solaris_chat.engine.tools.register import build_register_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
-from solaris_chat import enroll_requests_store, pending_residents_store, wakeword_samples_store
+from solaris_chat import enroll_requests_store, pending_residents_store
 
 
 @pytest.mark.asyncio
@@ -36,45 +36,47 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
         conn.commit()
 
     reg_tools = build_register_tools(db_path)
-    wake_tools = build_wakeword_tools(db_path, lambda: "user1", script_dir=str(tmp_path))
+    wake_tools = build_wakeword_tools(db_path, lambda: "alex", script_dir=str(tmp_path))
 
     start_reg = next(t for t in reg_tools if t.name == "start_voice_enrollment")
     finish_reg = next(t for t in reg_tools if t.name == "register_pending_resident")
 
-    # 1. Start voice enrollment for 'Alex' (resolves to 'user1')
+    # 1. Start voice enrollment for 'Alex' (resolves to 'alex')
     r1 = json.loads(await start_reg.handler({"uid": "Alex"}))
     assert r1["ok"] is True
-    assert r1["uid"] == "user1"
+    assert r1["uid"] == "alex"
     assert r1["display_name"] == "Alex Test"
     assert r1["spelled_uid"] == "A - L - E - X"
     assert r1["say"].endswith("?")
 
     # 2. Simulate Turn 1 spoken: Gatekeeper captures sample 1
     with enroll_requests_store._connect(db_path) as conn:
-        conn.execute("UPDATE enroll_requests SET collected = 1 WHERE uid = 'user1'")
+        conn.execute("UPDATE enroll_requests SET collected = 1 WHERE uid = 'alex'")
         conn.commit()
 
-    f1 = json.loads(await finish_reg.handler({"uid": "user1"}))
+    f1 = json.loads(await finish_reg.handler({"uid": "alex"}))
     assert f1["ok"] is False
     assert f1["reason"] == "enroll_incomplete"
     assert f1["say"].endswith("?")
 
     # 3. Simulate Turn 2 spoken: Gatekeeper captures sample 2
     with enroll_requests_store._connect(db_path) as conn:
-        conn.execute("UPDATE enroll_requests SET collected = 2 WHERE uid = 'user1'")
+        conn.execute("UPDATE enroll_requests SET collected = 2 WHERE uid = 'alex'")
         conn.commit()
 
-    f2 = json.loads(await finish_reg.handler({"uid": "user1"}))
+    f2 = json.loads(await finish_reg.handler({"uid": "alex"}))
     assert f2["ok"] is False
     assert f2["reason"] == "enroll_incomplete"
     assert f2["say"].endswith("?")
 
     # 4. Simulate Turn 3 spoken: Gatekeeper captures sample 3 -> DONE
     with enroll_requests_store._connect(db_path) as conn:
-        conn.execute("UPDATE enroll_requests SET status = 'done', collected = 3 WHERE uid = 'user1'")
+        conn.execute(
+            "UPDATE enroll_requests SET status = 'done', collected = 3 WHERE uid = 'alex'"
+        )
         conn.commit()
 
-    f3 = json.loads(await finish_reg.handler({"uid": "user1"}))
+    f3 = json.loads(await finish_reg.handler({"uid": "alex"}))
     assert f3["ok"] is True
     assert f3["status"] == "pending"
     assert f3["say"].endswith("?")
@@ -82,21 +84,25 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     # Verify row in pending_residents table
     pending = pending_residents_store.list_pending_residents(db_path)
     assert len(pending) == 1
-    assert pending[0]["uid"] == "user1"
+    assert pending[0]["uid"] == "alex"
     assert pending[0]["display_name"] == "Alex Test"
 
-    # 5. Wakeword Enrollment for user1
+    # 5. Wakeword Enrollment for alex
     start_wake = next(t for t in wake_tools if t.name == "start_wakeword_enrollment")
     sample_wake = next(t for t in wake_tools if t.name == "record_wakeword_sample")
 
-    w1 = json.loads(await start_wake.handler({"uid": "user1", "target_count": 2}))
+    w1 = json.loads(await start_wake.handler({"uid": "alex", "target_count": 2}))
     assert w1["ok"] is True
     assert w1["say"].endswith("?")
 
-    ws1 = json.loads(await sample_wake.handler({"uid": "user1", "transcript": "Solaris"}))
+    ws1 = json.loads(
+        await sample_wake.handler({"uid": "alex", "transcript": "Solaris"})
+    )
     assert ws1["say"].endswith("?")
 
-    ws2 = json.loads(await sample_wake.handler({"uid": "user1", "transcript": "Solaris"}))
+    ws2 = json.loads(
+        await sample_wake.handler({"uid": "alex", "transcript": "Solaris"})
+    )
     assert ws2["completed"] is True
     assert ws2["say"].endswith("?")
 
@@ -115,10 +121,10 @@ async def test_enrollment_asks_for_username_when_missing(tmp_path):
     assert "Wie lautet dein Name" in data_generic["say"]
 
     # Explicit name provides enrollment
-    res_explicit = await start_tool.handler({"uid": "user1"})
+    res_explicit = await start_tool.handler({"uid": "alex"})
     data_explicit = json.loads(res_explicit)
     assert data_explicit["ok"] is True
-    assert data_explicit["uid"] == "user1"
+    assert data_explicit["uid"] == "alex"
     assert "A - L - E - X" in data_explicit["spelled_uid"]
 
 
@@ -130,8 +136,12 @@ def test_tool_descriptions_contain_no_hardcoded_user_defaults():
 
     for tool in reg_tools + wake_tools:
         desc = tool.description.lower()
-        assert "user1" not in desc, f"Hardcoded 'user1' found in tool {tool.name} description: {tool.description}"
-        assert "alex" not in desc, f"Hardcoded 'alex' found in tool {tool.name} description: {tool.description}"
+        assert "user1" not in desc, (
+            f"Hardcoded 'user1' found in tool {tool.name} description: {tool.description}"
+        )
+        assert "alex" not in desc, (
+            f"Hardcoded 'alex' found in tool {tool.name} description: {tool.description}"
+        )
 
 
 @pytest.mark.asyncio
@@ -149,16 +159,19 @@ async def test_all_enrollment_responses_end_with_question_mark(tmp_path):
     assert r_missing["say"].strip().endswith("?")
 
     # 2. Start enrollment
-    r_start = json.loads(await start_tool.handler({"uid": "user1"}))
+    r_start = json.loads(await start_tool.handler({"uid": "alex"}))
     assert r_start["say"].strip().endswith("?")
 
     # 3. Intermediate turns
     for sample_count in (1, 2):
-        enroll_requests_store.touch_request(db, "user1")
+        enroll_requests_store.touch_request(db, "alex")
         with sqlite3.connect(db) as conn:
-            conn.execute("UPDATE enroll_requests SET collected = ? WHERE uid = 'user1'", (sample_count,))
+            conn.execute(
+                "UPDATE enroll_requests SET collected = ? WHERE uid = 'alex'",
+                (sample_count,),
+            )
             conn.commit()
-        r_turn = json.loads(await finish_tool.handler({"uid": "user1"}))
+        r_turn = json.loads(await finish_tool.handler({"uid": "alex"}))
         assert r_turn["say"].strip().endswith("?")
 
 
@@ -178,30 +191,44 @@ async def test_say_short_circuit_bypasses_second_pass(tmp_path):
         model="dummy",
         soul_path="",
         toolbox=Toolbox(tools),
-        ephemeral=True
+        ephemeral=True,
     )
     # Mock Ollama stream to count passes
     pass_count = 0
+
     class MockOllama:
         async def stream(self, model, messages, **kwargs):
             nonlocal pass_count
             pass_count += 1
             if pass_count == 1:
+
                 class Result:
                     content = ""
                     thinking = ""
-                    tool_calls = [{"function": {"name": "start_voice_enrollment", "arguments": {"uid": "user1"}}}]
+                    tool_calls = [
+                        {
+                            "function": {
+                                "name": "start_voice_enrollment",
+                                "arguments": {"uid": "alex"},
+                            }
+                        }
+                    ]
                     prompt_tokens = 10
                     completion_tokens = 10
                     wall_s = 0.01
+
                 yield "done", Result()
 
-    client = EngineClient(profile, db_path=db, ollama=MockOllama(), recorder=TraceRecorder(db))
+    client = EngineClient(
+        profile, db_path=db, ollama=MockOllama(), recorder=TraceRecorder()
+    )
     session_id = "test_sc_session"
-    messages = [{"role": "user", "content": "Richte user1 ein"}]
-    
+    messages = [{"role": "user", "content": "Richte alex ein"}]
+
     events = []
-    async for ev in client._loop(messages, think=False, session_id=session_id, persist=False, uid="user1"):
+    async for ev in client._loop(
+        messages, think=False, session_id=session_id, persist=False, uid="alex"
+    ):
         events.append(ev)
 
     # Must execute exactly ONE pass because the short-circuit breaks out of the outer loop!
@@ -212,6 +239,7 @@ def test_all_server_and_facade_modules_import_cleanly():
     """Module import sanity test (#1056): Ensures solaris_chat.server and
     solaris_chat.engine.facade import cleanly without SyntaxError."""
     import importlib
+
     facade_mod = importlib.import_module("solaris_chat.engine.facade")
     assert facade_mod is not None
     server_mod = importlib.import_module("solaris_chat.server")
@@ -224,16 +252,12 @@ async def test_facade_chat_turns_generator_execution(tmp_path):
     AttributeError when client.profile_name or enrollment_fsm is accessed."""
     db = str(tmp_path / "facade_test.db")
     from solaris_chat.engine.client import EngineClient, EngineProfile
-    from solaris_chat.engine import facade
 
     profile = EngineProfile(
-        name="solaris-enrollment",
-        model="dummy",
-        soul_path="",
-        ephemeral=True
+        name="solaris-enrollment", model="dummy", soul_path="", ephemeral=True
     )
     client = EngineClient(profile, db_path=db, ollama=None, recorder=None)
-    
+
     # Execute facade handler logic directly
     if client.profile_name == "solaris-enrollment":
         assert True

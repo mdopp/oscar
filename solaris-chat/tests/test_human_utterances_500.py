@@ -13,9 +13,8 @@ import sqlite3
 import unittest.mock
 import pytest
 
-from solaris_chat.engine.tools import music_query as music_query_mod
 from solaris_chat.engine.tools.music_query import build_music_query_tools
-from solaris_chat.engine.tools.radio import build_radio_tools, resolve_play_device, _write_pref
+from solaris_chat.engine.tools.radio import _write_pref
 import solaris_chat.engine.tools.radio
 
 _SCHEMA = """
@@ -80,15 +79,48 @@ def _init_test_db(tmp_path) -> str:
 
 
 def generate_500_human_utterances():
-    verbs = ['', 'spiele ', 'spiel ', 'mach ', 'starte ', 'schalte ', 'ich möchte ', 'kannst du ', 'bitte ', 'lass ']
-    suffix_verbs = ['', ' an', ' ein', ' ab', ' laufen', ' spielen']
-    stations = [
-        '1live', '1 live', 'einslive', 'eins live', 'ndr2', 'ndr 2', 'wdr2', 'wdr 2',
-        'ffn', 'radio paloma', 'bigfm', 'planet radio', 'swr3', 'radio brocken',
-        'rock antenne', 'sunshine live', 'radio bob', 'dlf'
+    verbs = [
+        "",
+        "spiele ",
+        "spiel ",
+        "mach ",
+        "starte ",
+        "schalte ",
+        "ich möchte ",
+        "kannst du ",
+        "bitte ",
+        "lass ",
     ]
-    artists = ['50 cent', '3 doors down', 'beatles', 'queen', 'alligatoah', '2pac']
-    rooms = ['', ' im wohnzimmer', ' in der küche', ' im kinderzimmer', ' im bad', ' im büro']
+    suffix_verbs = ["", " an", " ein", " ab", " laufen", " spielen"]
+    stations = [
+        "1live",
+        "1 live",
+        "einslive",
+        "eins live",
+        "ndr2",
+        "ndr 2",
+        "wdr2",
+        "wdr 2",
+        "ffn",
+        "radio paloma",
+        "bigfm",
+        "planet radio",
+        "swr3",
+        "radio brocken",
+        "rock antenne",
+        "sunshine live",
+        "radio bob",
+        "dlf",
+    ]
+    artists = ["50 cent", "3 doors down", "beatles", "queen", "alligatoah", "2pac"]
+    rooms = [
+        "",
+        " im wohnzimmer",
+        " in der küche",
+        " im kinderzimmer",
+        " im bad",
+        " im büro",
+    ]
 
     test_cases = []
 
@@ -96,22 +128,30 @@ def generate_500_human_utterances():
         for v in verbs:
             for sv in suffix_verbs:
                 for r in rooms:
-                    utt = f'{v}{s}{sv}{r}'.strip()
-                    if utt and (utt, 'radio') not in test_cases:
-                        test_cases.append((utt, 'radio'))
+                    utt = f"{v}{s}{sv}{r}".strip()
+                    if utt and (utt, "radio") not in test_cases:
+                        test_cases.append((utt, "radio"))
 
     for a in artists:
         for v in verbs:
             for r in rooms:
-                utt = f'{v}{a}{r}'.strip()
-                if utt and (utt, 'artist') not in test_cases:
-                    test_cases.append((utt, 'artist'))
+                utt = f"{v}{a}{r}".strip()
+                if utt and (utt, "artist") not in test_cases:
+                    test_cases.append((utt, "artist"))
 
-    for g in ['spiele musik', 'spielermusik', 'musik', 'radio', 'etwas musik', 'lass musik laufen', 'spiele radio']:
+    for g in [
+        "spiele musik",
+        "spielermusik",
+        "musik",
+        "radio",
+        "etwas musik",
+        "lass musik laufen",
+        "spiele radio",
+    ]:
         for r in rooms:
-            utt = f'{g}{r}'.strip()
-            if utt and (utt, 'generic') not in test_cases:
-                test_cases.append((utt, 'generic'))
+            utt = f"{g}{r}".strip()
+            if utt and (utt, "generic") not in test_cases:
+                test_cases.append((utt, "generic"))
 
     return test_cases[:500]
 
@@ -122,13 +162,18 @@ async def test_500_human_utterances_regression(tmp_path):
     notes_dir = str(tmp_path / "notes")
     os.makedirs(notes_dir, exist_ok=True)
 
-    _write_pref(notes_dir, "household", "room-devices", {"Wohnzimmer": "media_player.wohnzimmer_paar"})
+    _write_pref(
+        notes_dir,
+        "household",
+        "room-devices",
+        {"Wohnzimmer": "media_player.wohnzimmer_paar"},
+    )
 
     test_cases = generate_500_human_utterances()
     j_client = _FakeJellyfinClient()
 
     async def mock_call_service(*args, **kwargs):
-        return {'ok': True}
+        return {"ok": True}
 
     async def mock_resolve_station(self, name: str):
         name_clean = str(name).strip()
@@ -137,7 +182,7 @@ async def test_500_human_utterances_regression(tmp_path):
         return None
 
     disk_conn = sqlite3.connect(db_path)
-    mem_conn = sqlite3.connect(':memory:', check_same_thread=False)
+    mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
     mem_conn.row_factory = sqlite3.Row
     disk_conn.backup(mem_conn)
     disk_conn.close()
@@ -168,56 +213,79 @@ async def test_500_human_utterances_regression(tmp_path):
     def mock_open_conn(p):
         return wrapper
 
-    solaris_chat.engine.tools.radio.RadioBrowserClient.resolve_station = mock_resolve_station
-
-    with unittest.mock.patch('solaris_chat.engine.tools.music_query.call_service_scoped', side_effect=mock_call_service),          unittest.mock.patch('solaris_chat.engine.tools.radio.call_service_scoped', side_effect=mock_call_service),          unittest.mock.patch('solaris_chat.engine.knowledge.projection.open_conn', side_effect=mock_open_conn):
-
+    with (
+        # Patched (not assigned) so the stub is undone at block exit — a bare
+        # class-attribute assignment leaks into every later test in the session.
+        unittest.mock.patch.object(
+            solaris_chat.engine.tools.radio.RadioBrowserClient,
+            "resolve_station",
+            mock_resolve_station,
+        ),
+        unittest.mock.patch(
+            "solaris_chat.engine.tools.music_query.call_service_scoped",
+            side_effect=mock_call_service,
+        ),
+        unittest.mock.patch(
+            "solaris_chat.engine.tools.radio.call_service_scoped",
+            side_effect=mock_call_service,
+        ),
+        unittest.mock.patch(
+            "solaris_chat.engine.knowledge.projection.open_conn",
+            side_effect=mock_open_conn,
+        ),
+    ):
         tools = build_music_query_tools(
             db_path,
-            lambda: 'household',
+            lambda: "household",
             j_client,
-            hass_url='http://127.0.0.1:8123',
-            hass_token='mock_token',
+            hass_url="http://127.0.0.1:8123",
+            hass_token="mock_token",
             notes_dir=notes_dir,
-            room_getter=lambda: 'Wohnzimmer'
+            room_getter=lambda: "Wohnzimmer",
         )
 
-        play_music_tool = next(t for t in tools if t.name == 'play_music')
+        play_music_tool = next(t for t in tools if t.name == "play_music")
 
         passed, failed = 0, 0
         failures = []
 
         for idx, (utt, kind) in enumerate(test_cases, 1):
-            res_raw = await play_music_tool.handler({'title': utt, 'artist': '', 'entity_id': ''})
+            res_raw = await play_music_tool.handler(
+                {"title": utt, "artist": "", "entity_id": ""}
+            )
             res = json.loads(res_raw)
 
-            ok = res.get('ok')
-            title = res.get('title', '')
-            station = res.get('station', '')
+            ok = res.get("ok")
+            title = res.get("title", "")
+            station = res.get("station", "")
 
-            if title == 'Live Alone':
+            if title == "Live Alone":
                 failed += 1
-                failures.append((utt, 'FAIL: Matched Live Alone!'))
+                failures.append((utt, "FAIL: Matched Live Alone!"))
                 continue
 
-            if kind == 'radio':
+            if kind == "radio":
                 if ok and station:
                     passed += 1
                 else:
                     failed += 1
-                    failures.append((utt, f'FAIL: Expected radio station, got {res}'))
-            elif kind == 'artist':
-                if ok and (title or res.get('artist')):
+                    failures.append((utt, f"FAIL: Expected radio station, got {res}"))
+            elif kind == "artist":
+                if ok and (title or res.get("artist")):
                     passed += 1
                 else:
                     failed += 1
-                    failures.append((utt, f'FAIL: Expected artist track, got {res}'))
-            elif kind == 'generic':
+                    failures.append((utt, f"FAIL: Expected artist track, got {res}"))
+            elif kind == "generic":
                 if ok:
                     passed += 1
                 else:
                     failed += 1
-                    failures.append((utt, f'FAIL: Expected generic playback, got {res}'))
+                    failures.append(
+                        (utt, f"FAIL: Expected generic playback, got {res}")
+                    )
 
-        assert failed == 0, f"500 human utterances test failed with {failed} failures: {failures[:10]}"
+        assert failed == 0, (
+            f"500 human utterances test failed with {failed} failures: {failures[:10]}"
+        )
         assert passed == len(test_cases)
