@@ -166,7 +166,13 @@ def handle_turn(
                 conn.commit()
             return "Danke für deine Zustimmung! Wie lautet dein Name oder Kürzel? Bitte buchstabiere das Kürzel?"
         elif any(w in clean_text for w in ("nein", "no", "nicht")):
+            # Refusing consent must also close the enrol request. While one is
+            # open the gatekeeper keeps capturing the speaker's PCM, so leaving
+            # it behind would enrol a voice profile the resident just declined.
             reset_fsm(db_path, session_key)
+            enroll_requests_store.clear_request(
+                db_path, (state_data or {}).get("uid") or uid_hint or "user1"
+            )
             return "Alles klar, die biometrische Sprachprofil-Einrichtung wurde abgelehnt. Kann ich dir bei etwas anderem helfen?"
         else:
             return "Bitte antworte mit Ja oder Nein: Möchtest du dein Sprachprofil biometrisch anlegen?"
