@@ -110,6 +110,23 @@ jobs:
       - run: pip install pytest
       - run: pytest -q templates/tests
 
+  test-database:
+    name: pytest (database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          # database/pyproject.toml declares requires-python >= 3.12.
+          python-version: "3.12"
+      # The alembic-in-the-loop migration tests. Nothing ran them in CI, so the
+      # head assertions in 0022/0023 had silently rotted red on main; running
+      # them here is what keeps a broken migration chain from reaching a box.
+      - run: pip install -e '.[test]'
+        working-directory: database
+      - run: pytest -q
+        working-directory: database
+
   test-wakeword-trainer:
     name: pytest (wakeword-trainer)
     runs-on: ubuntu-latest
