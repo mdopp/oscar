@@ -16,34 +16,29 @@ separate, ESPHome-builder-gated step; this script only produces the model asset.
 
 Like the openWakeWord producer, this is deliberately NOT run by CI / the image
 build: it needs Piper, TensorFlow-GPU, datasets and ~minutes-to-hours of GPU
-time. Run it once on the GPU box, commit the produced `solaris.tflite` +
-`solaris.json` under templates/solaris/wakeword/ (micro-named, alongside — not
-overwriting — the openWakeWord one).
+time. It is baked into the `solaris-wakeword-trainer` image and driven by
+`trainer.py`, which claims a queued `wakeword_training_runs` row (#1066),
+provisions the work dir and runs this script. Phase 2 (flash) stays manual.
 
-  RECIPE  (one GPU box, podman; tensorflow:2.16-gpu, ~Python 3.11)
-  ---------------------------------------------------------------
-  This script runs ALL phases end to end inside the container. From a box work
-  dir (e.g. /mnt/data/mww-train) with the three sources cloned:
+  RECIPE  (one GPU box, podman; tensorflow:2.18-gpu)
+  -------------------------------------------------
+  This script runs ALL phases end to end inside the container. It expects a
+  work dir (the trainer Quadlet's /work volume) holding the two sources —
+  `trainer.py` copies them in from the image, or clone them by hand:
 
     git clone https://github.com/kahrendt/microWakeWord
     git clone https://github.com/rhasspy/piper-sample-generator
     # German Piper voices into piper-sample-generator/voices/ (see VOICES below)
 
-  then, inside `tensorflow/tensorflow:2.16.1-gpu` (--device nvidia.com/gpu=all
+  then, inside `tensorflow/tensorflow:2.18.0-gpu` (--device nvidia.com/gpu=all
   AND --security-opt label=disable — without label=disable SELinux blocks
   /dev/nvidia* and TF silently falls back to CPU; --shm-size=8g) with
   microWakeWord + piper-sample-generator + their deps pip-installed:
 
-    python scripts/train-micro-wake-word.py --work /work --steps 12000
+    python train-micro-wake-word.py --work /work --steps 12000
 
-  Two env fixes are load-bearing on this image (TF 2.16.1 ships Keras 3.0.5,
-  which microWakeWord predates): pip install keras==3.5.0 (3.0.5's Keras-3
-  optimizers are not tf.train.Checkpoint-trackable -> "expecting optimizer to
-  be a trackable object"; <3.5 also fails the streaming clone_model export with
-  "Can not convert a NoneType into a Tensor"), and patch microwakeword/utils.py
-  save_model_summary to `print_fn=lambda x, **kwargs: ...` (Keras 3 passes a
-  line_break kwarg). Run with TF_FORCE_GPU_ALLOW_GROWTH=true so TF doesn't grab
-  all 16 GB VRAM — ollama/whisper/kokoro share this GPU.
+  Run with TF_FORCE_GPU_ALLOW_GROWTH=true so TF doesn't grab all 16 GB VRAM —
+  ollama/whisper/kokoro share this GPU.
 
   Phases (each is idempotent on its output dir):
     1. generate  — synth German "Solaris" utterances with the German Piper

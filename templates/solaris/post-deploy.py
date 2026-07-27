@@ -145,6 +145,11 @@ OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 WHISPER_UNIT = "solaris-whisper"
 TTS_UNIT = "solaris-tts"
 TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
+# The wakeword trainer (#1066) is a GPU companion for the same reason: the chat
+# container has no TensorFlow, no GPU and no route to the host's podman, so it
+# only enqueues `wakeword_training_runs` rows and this unit claims them.
+WAKEWORD_TRAINER_UNIT = "solaris-wakeword-trainer"
+WAKEWORD_TRAINER_IMAGE = "ghcr.io/mdopp/solaris-wakeword-trainer:latest"
 
 # The whisper wizard default. On a CDI GPU box the default upgrades to the
 # better model the GPU runs faster than the CPU ran base (box-measured 0.38s vs
@@ -565,6 +570,67 @@ def render_tts_unit() -> str:
     )
 
 
+def render_wakeword_trainer_unit(data_dir: str) -> str:
+    """Render the wakeword-trainer `.container` Quadlet (pure, GPU via CDI).
+    It polls solaris.db for queued training runs, so it mounts the same
+    solaris-data host dir the pod's chat container writes."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Wakeword Trainer (microWakeWord, GPU via CDI #1066)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        f"Image={WAKEWORD_TRAINER_IMAGE}\n"
+        f"ContainerName={WAKEWORD_TRAINER_UNIT}\n"
+        "Network=host\n"
+        "AddDevice=nvidia.com/gpu=all\n"
+        "SecurityLabelDisable=true\n"
+        "# The queue the chat container writes — same solaris.db, same host path\n"
+        "# the pod mounts at /var/lib/solaris.\n"
+        f"Volume={data_dir}/solarisbay:/var/lib/solaris:Z\n"
+        "# Training work dir: Piper voices, negative corpora, features and\n"
+        "# checkpoints. Tens of GB, and it must survive a restart mid-run.\n"
+        f"Volume={data_dir}/solaris/wakeword-train:/work:Z\n"
+        "# Part of the upstream training recipe (train-micro-wake-word.py):\n"
+        "# the feature/augmentation phase does not fit podman's stock 64 MB.\n"
+        "ShmSize=8g\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=30\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_wakeword_trainer_unit(data_dir: str) -> bool:
+    """Write + activate the wakeword-trainer companion Quadlet. GPU-only (the
+    image is TensorFlow-CUDA) and skippable via WAKEWORD_TRAINER_ENABLED for
+    boxes that can't spare the ~10 GB image plus its training corpora. Creates
+    the work dir first — Quadlet Volume= does not create it."""
+    if not cdi_available():
+        jlog("info", "voice-unit", "wakeword-trainer: no CDI GPU — skipping unit")
+        return False
+    if not _truthy(env("WAKEWORD_TRAINER_ENABLED", "true")):
+        jlog("info", "voice-unit", "wakeword-trainer: disabled by variable")
+        return False
+    work_dir = os.path.join(data_dir, "solaris", "wakeword-train")
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+    except OSError as e:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: could not create work dir",
+            error=str(e),
+        )
+        return False
+    return install_unit(WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir))
+
+
 def install_whisper_unit(data_dir: str) -> bool:
     """Write + activate the companion whisper Quadlet (GPU when CDI is
     registered, CPU otherwise). Creates the model-cache host dir first —
@@ -639,9 +705,10 @@ def setup_custom_models_dir(custom_dir: str) -> None:
 
 def install_voice_pipeline(data_dir: str) -> None:
     """Stand up the Solaris-owned voice pipeline (#456). The GPU services are
-    companion Quadlets (CDI is dropped in kube-play pods, #1026): whisper STT
-    and the Kokoro-Martin TTS. The CPU services — openWakeWord and the TTS
-    bridge — ride the solaris pod itself (template.yml). Here we install the
+    companion Quadlets (CDI is dropped in kube-play pods, #1026): whisper STT,
+    the Kokoro-Martin TTS and the wakeword trainer (#1066). The CPU services —
+    openWakeWord and the TTS bridge — ride the solaris pod itself
+    (template.yml). Here we install the
     GPU Quadlets and drop the trained wake-word model into the custom-models
     dir the pod's openWakeWord container mounts. The Assist-pipeline wiring
     (later, in wire_voice_pipeline) points HA at these Wyoming endpoints.
@@ -658,6 +725,7 @@ def install_voice_pipeline(data_dir: str) -> None:
     )
     install_whisper_unit(data_dir)
     install_tts_units()
+    install_wakeword_trainer_unit(data_dir)
 
 
 # ════════════════════════════════════════════════════════════════════════════

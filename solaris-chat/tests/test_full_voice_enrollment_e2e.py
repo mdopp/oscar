@@ -37,7 +37,7 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
         conn.commit()
 
     reg_tools = build_register_tools(db_path)
-    wake_tools = build_wakeword_tools(db_path, lambda: "alex", script_dir=str(tmp_path))
+    wake_tools = build_wakeword_tools(db_path, lambda: "alex")
 
     start_reg = next(t for t in reg_tools if t.name == "start_voice_enrollment")
     finish_reg = next(t for t in reg_tools if t.name == "register_pending_resident")
