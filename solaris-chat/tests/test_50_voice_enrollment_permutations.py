@@ -23,6 +23,18 @@ def test_db(tmp_path):
     return db
 
 
+def _gatekeeper_enrols(db, *, status="done", result="enrolled"):
+    """Simulate the gatekeeper half of the handshake: it captures each turn's
+    PCM, writes the averaged embedding and flips the request row terminal. It
+    runs before the engine sees that turn's text, so tests call it just before
+    the final sentence. Without it the wizard must not claim a saved profile."""
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE enroll_requests SET status = ?, result = ?", (status, result)
+        )
+        conn.commit()
+
+
 # --- 1. CONSENT VARIATION TESTS (1-10) ---
 @pytest.mark.parametrize(
     "consent_word",
@@ -107,6 +119,7 @@ def test_full_successful_voice_enrollment_3_sentences(test_db):
     t5 = enrollment_fsm.handle_turn(test_db, "Morgen fahre ich nach Berlin.")
     assert "Was ist dein dritter und letzter Satz?" in t5
 
+    _gatekeeper_enrols(test_db)
     t6 = enrollment_fsm.handle_turn(test_db, "Das Wetter ist sonnig.")
     assert "erfolgreich gespeichert" in t6
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
@@ -198,8 +211,57 @@ def test_consecutive_multi_user_enrollments(test_db, user_name, spelled):
     assert "zweiter Satz" in t4
     t5 = enrollment_fsm.handle_turn(test_db, "Satz Zwei")
     assert "dritter und letzter Satz" in t5
+    _gatekeeper_enrols(test_db)
     t6 = enrollment_fsm.handle_turn(test_db, "Satz Drei")
     assert "erfolgreich gespeichert" in t6
+
+
+def test_no_embedding_reports_honest_failure_and_does_not_enrol(test_db):
+    """The wizard counts text turns; only the gatekeeper writes the embedding.
+    With speaker-ID off nothing enrols, so the last turn must say so plainly
+    instead of claiming success — otherwise the resident is told their profile
+    is ready while person recognition can never work."""
+    enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
+    enrollment_fsm.handle_turn(test_db, "ja")
+    enrollment_fsm.handle_turn(test_db, "Alex")
+    enrollment_fsm.handle_turn(test_db, "Satz Eins")
+    enrollment_fsm.handle_turn(test_db, "Satz Zwei")
+    final = enrollment_fsm.handle_turn(test_db, "Satz Drei")
+
+    assert "erfolgreich gespeichert" not in final
+    assert "nicht speichern" in final
+    assert enrollment_fsm.get_fsm_state(test_db, "default") is None
+    with sqlite3.connect(test_db) as conn:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_residents'"
+        ).fetchone()
+        enrolled = (
+            conn.execute(
+                "SELECT COUNT(*) FROM pending_residents WHERE enrolled = 1"
+            ).fetchone()[0]
+            if has_table
+            else 0
+        )
+    assert enrolled == 0
+
+
+def test_rejected_samples_ask_for_another_sentence(test_db):
+    """Samples rejected as too quiet leave the request `capturing`. The wizard
+    asks for one more sentence rather than ending on a false success."""
+    enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
+    enrollment_fsm.handle_turn(test_db, "ja")
+    enrollment_fsm.handle_turn(test_db, "Alex")
+    enrollment_fsm.handle_turn(test_db, "Satz Eins")
+    enrollment_fsm.handle_turn(test_db, "Satz Zwei")
+    _gatekeeper_enrols(test_db, status="capturing", result=None)
+    retry = enrollment_fsm.handle_turn(test_db, "Satz Drei")
+
+    assert "noch einen Satz" in retry
+    assert retry.rstrip().endswith("?")
+    assert enrollment_fsm.get_fsm_state(test_db, "default") is not None
+
+    _gatekeeper_enrols(test_db)
+    assert "erfolgreich gespeichert" in enrollment_fsm.handle_turn(test_db, "Satz Vier")
 
 
 # --- 8. WAKEWORD DIALOG PERMUTATIONS (56-65) ---

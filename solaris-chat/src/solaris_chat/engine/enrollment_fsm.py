@@ -17,6 +17,10 @@ STATE_CONSENT = "consent"
 STATE_NAME = "name"
 STATE_RECORDING = "recording"
 
+# Extra sentences the wizard may ask for when the gatekeeper rejected samples
+# as too quiet, so a bad mic can't loop the dialog forever.
+_MAX_EXTRA_SAMPLE_TURNS = 3
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -227,14 +231,41 @@ def handle_turn(
         elif rem == 1:
             return "Sehr schön! Was ist dein dritter und letzter Satz?"
         elif rem <= 0:
+            # The gatekeeper owns the embedding, so its terminal status — not
+            # this turn counter — decides whether a profile actually exists.
+            request = enroll_requests_store.read_request(db_path, uid)
+            status = request["status"] if request else None
+
+            if status == enroll_requests_store.STATUS_DONE:
+                reset_fsm(db_path, session_key)
+                enroll_requests_store.clear_request(db_path, uid)
+                pending_residents_store.add_pending_resident(
+                    db_path, uid=uid, display_name=display_name, enrolled=True
+                )
+                return (
+                    f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) wurde erfolgreich gespeichert! "
+                    f"Die Einrichtung ist damit abgeschlossen."
+                )
+
+            # Still capturing: samples were rejected as too quiet or unclear, so
+            # ask for another sentence instead of ending on a false success.
+            if (
+                request is not None
+                and status == enroll_requests_store.STATUS_CAPTURING
+                and not request["timed_out"]
+                and current_collected < target + _MAX_EXTRA_SAMPLE_TURNS
+            ):
+                return (
+                    f"Diese Aufnahme war leider noch nicht deutlich genug, {display_name}. "
+                    f"Sag mir bitte noch einen Satz?"
+                )
+
             reset_fsm(db_path, session_key)
             enroll_requests_store.clear_request(db_path, uid)
-            pending_residents_store.add_pending_resident(
-                db_path, uid=uid, display_name=display_name, enrolled=True
-            )
             return (
-                f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) wurde erfolgreich gespeichert! "
-                f"Die Einrichtung ist damit abgeschlossen."
+                f"Ich konnte dein Sprachprofil leider nicht speichern, {display_name}. "
+                f"Die Stimmerkennung ist auf dieser Box gerade nicht aktiv. "
+                f"Kann ich dir sonst helfen?"
             )
         else:
             return f"Super! Noch {rem} Sätze. Was ist dein nächster Satz?"
