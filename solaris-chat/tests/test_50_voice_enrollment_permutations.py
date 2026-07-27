@@ -277,3 +277,21 @@ def test_wakeword_individual_sample_indices(test_db, sample_index):
         assert rec["status"] == "active"
     else:
         assert rec["status"] == "completed"
+
+
+def test_refusing_consent_closes_the_enrol_request(test_db):
+    """The LLM entry tool opens the enrol request before the wizard asks for
+    consent, and while one is open the gatekeeper captures the speaker's PCM.
+    Refusing must therefore close it — otherwise saying "nein" still ends in an
+    enrolled voice profile."""
+    from solaris_chat import enroll_requests_store
+
+    enroll_requests_store.open_request(test_db, "alex", 3)
+    enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.", uid_hint="alex")
+    assert enroll_requests_store.has_any_active_request(test_db) is True
+
+    out = enrollment_fsm.handle_turn(test_db, "nein", uid_hint="alex")
+
+    assert "abgelehnt" in out
+    assert enrollment_fsm.get_fsm_state(test_db, "default") is None
+    assert enroll_requests_store.has_any_active_request(test_db) is False
