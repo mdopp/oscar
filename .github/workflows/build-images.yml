@@ -18,7 +18,7 @@ on:
       - 'database/**'
       - 'solaris-chat/**'
       - 'tts-martin/**'
-      - 'tts-martin/**'
+      - 'wakeword-trainer/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
@@ -26,6 +26,7 @@ on:
       - 'database/**'
       - 'solaris-chat/**'
       - 'tts-martin/**'
+      - 'wakeword-trainer/**'
       - '.github/workflows/build-images.yml'
   workflow_dispatch:
     inputs:
@@ -64,6 +65,13 @@ jobs:
             context: solaris-chat
             inject_version: true
             description: "Solaris chat — the Solaris Engine agent core (direct Ollama agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-compatible facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOLARIS_API_KEY server-side."
+          - image: solaris-wakeword-trainer
+            context: wakeword-trainer
+            # TensorFlow-GPU base: ~10 GB unpacked, well past the 10 GB the GHA
+            # layer cache holds for the whole repo, so caching it would evict
+            # every other image's cache for no gain.
+            skip_layer_cache: true
+            description: "Solaris wakeword trainer — the GPU companion that claims queued wakeword_training_runs and trains the on-device microWakeWord \"Solaris\" model (TensorFlow 2.18-gpu + microWakeWord + piper-sample-generator). Runs as a CDI GPU Quadlet beside whisper/Kokoro; produces the streaming .tflite + ESPHome manifest, flashing stays a separate phase."
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -136,6 +144,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          cache-from: ${{ matrix.skip_layer_cache && '' || format('type=gha,scope={0}', matrix.image) }}
+          cache-to: ${{ matrix.skip_layer_cache && '' || format('type=gha,mode=max,scope={0}', matrix.image) }}
           platforms: linux/amd64
