@@ -439,7 +439,7 @@ def build_wakeword_tools(
         Tool(
             name="trigger_wakeword_training",
             description=(
-                "Plant das GPU-Training für das neu verfeinerte Wakeword „Solaris“ ein — der Trainings-Container auf der Grafikkarte übernimmt den Lauf und nutzt dabei alle gespeicherten Proben."
+                "Plant das GPU-Training für das neu verfeinerte Wakeword „Solaris“ ein — der Trainings-Container auf der Grafikkarte holt den Lauf ab und baut das neue Modell."
             ),
             parameters={
                 "type": "object",
