@@ -19,11 +19,33 @@ def build_register_tools(
     async def start(args: dict[str, Any]) -> str:
         raw_uid = str(args.get("uid") or "").strip()
         # If the user only gave consent or generic setup without naming/spelling a user, ask for the name (#1056)
-        generic_inputs = {"", "benutzer", "user", "profil", "einrichten", "meinen benutzer", "mein benutzer", "ja", "ja.", "yes", "ok", "einverstanden", "zustimmung"}
+        generic_inputs = {
+            "",
+            "benutzer",
+            "user",
+            "profil",
+            "einrichten",
+            "meinen benutzer",
+            "mein benutzer",
+            "ja",
+            "ja.",
+            "yes",
+            "ok",
+            "einverstanden",
+            "zustimmung",
+        }
         if not raw_uid or raw_uid.lower() in generic_inputs:
             say_ask = "Danke für deine Zustimmung! Wie lautet dein Name oder welches Kürzel möchtest du nutzen? Bitte buchstabiere das Kürzel?"
-            return json.dumps({"ok": False, "reason": "missing_uid", "say": say_ask}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "reason": "missing_uid", "say": say_ask},
+                ensure_ascii=False,
+            )
+        # Reject junk before the resolver normalises it away: "Bad UID!" would
+        # otherwise be coerced to the perfectly valid uid "baduid".
+        if re.search(r"[^a-z0-9 ._-]", raw_uid, re.I):
+            return json.dumps({"ok": False, "reason": "invalid_uid"})
         from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
+
         uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
 
         if not _UID_RE.match(uid):
@@ -54,30 +76,37 @@ def build_register_tools(
 
     async def register(args: dict[str, Any]) -> str:
         raw_uid = str(args.get("uid") or "").strip()
+        dn_arg = args.get("display_name")
         from solaris_chat.engine.tools.wakeword_trainer import resolve_resident_identity
-        uid, display_name, spelled_uid = resolve_resident_identity(raw_uid, db_path)
+
+        uid, resolved_display, spelled_uid = resolve_resident_identity(raw_uid, db_path)
 
         if not _UID_RE.match(uid):
             return json.dumps({"ok": False, "reason": "invalid_uid"})
+        # An explicitly-passed but blank display_name is a caller error; an
+        # omitted one falls back to the resolved name.
+        if dn_arg is not None and not str(dn_arg).strip():
+            return json.dumps({"ok": False, "reason": "missing_display_name"})
+        display_name = str(dn_arg).strip() if dn_arg else resolved_display
 
         req = enroll_requests_store.read_request(db_path, uid)
         if req is None:
-            # Re-open fresh request if DB table was reset
-            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
-            req = enroll_requests_store.read_request(db_path, uid)
+            # Nothing was ever opened — an honest failure, not a silent re-open
+            # (a re-open would make the dialog look like it is still capturing).
+            return json.dumps({"ok": False, "reason": "no_enroll_request"})
 
-        if req and req.get("timed_out"):
-            # Refresh TTL & reset request honestly instead of claiming speaker_id is disabled
-            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
-            say_timeout = "Die Zeit für die Aufnahme ist abgelaufen. Ich habe die Sprachprofil-Einrichtung neu gestartet. Was ist dein erster Satz?"
-            return json.dumps({"ok": False, "reason": "enroll_timeout", "say": say_timeout}, ensure_ascii=False)
-
-        if req and req.get("status") == enroll_requests_store.STATUS_FAILED:
+        if req.get("timed_out"):
+            # No gatekeeper ever picked the request up — speaker-ID is off.
             enroll_requests_store.clear_request(db_path, uid)
-            say_fail = "Die Sprachaufnahme konnte leider nicht verarbeitet werden. Möchtest du es noch einmal versuchen?"
-            return json.dumps({"ok": False, "reason": "enroll_failed", "say": say_fail}, ensure_ascii=False)
+            return json.dumps({"ok": False, "reason": "speaker_id_disabled"})
 
-        if req and req.get("status") != enroll_requests_store.STATUS_DONE:
+        if req.get("status") == enroll_requests_store.STATUS_FAILED:
+            # A real gatekeeper failure, not "collect more". Drop the stale row
+            # so the uid can be re-enrolled instead of being blocked.
+            enroll_requests_store.clear_request(db_path, uid)
+            return json.dumps({"ok": False, "reason": "enroll_failed"})
+
+        if req.get("status") != enroll_requests_store.STATUS_DONE:
             enroll_requests_store.touch_request(db_path, uid)
             collected = req.get("collected", 1)
             needed = req.get("target_samples", 3)
@@ -85,7 +114,7 @@ def build_register_tools(
             if rem == 2:
                 say = f"Danke, {display_name}! Was ist dein zweiter Satz?"
             elif rem == 1:
-                say = f"Sehr schön! Was ist dein dritter und letzter Satz?"
+                say = "Sehr schön! Was ist dein dritter und letzter Satz?"
             else:
                 say = f"Super! Noch {rem} Sätze. Was ist dein nächster Satz?"
             return json.dumps(
@@ -108,7 +137,15 @@ def build_register_tools(
             f"Wollen wir jetzt direkt 10 Wakeword-Proben für „Solaris“ für dein Profil aufnehmen?"
         )
         return json.dumps(
-            {"ok": True, "uid": uid, "display_name": display_name, "spelled_uid": spelled_uid, "request_id": request_id, "status": "pending", "say": say_done},
+            {
+                "ok": True,
+                "uid": uid,
+                "display_name": display_name,
+                "spelled_uid": spelled_uid,
+                "request_id": request_id,
+                "status": "pending",
+                "say": say_done,
+            },
             ensure_ascii=False,
         )
 
