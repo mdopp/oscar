@@ -36,6 +36,7 @@ from .obsidian import ObsidianIngest
 from .obsidian_reader import VaultObsidianReader
 from .paperless import push_uploads
 from .paperless_client import RestPaperlessClient
+from .paperless_readback import read_back
 from .prune import (
     prune_empty_note_shells,
     prune_legacy_music_artifacts,
@@ -289,7 +290,11 @@ async def _run_paperless(settings: Settings) -> None:
         client = RestPaperlessClient(settings.paperless_url, settings.paperless_token)
         ollama = OllamaChat(settings.ollama_url)
         pushed = await push_uploads(settings.notes_dir, ollama, client)
-        log.info("engine.ingest.paperless_run", pushed=pushed)
+        # …then read paperless's own confirmed correspondent/document type back
+        # into the documents' notes (#1051) — the push has to run first so a
+        # just-stored document is part of this same pass.
+        confirmed = await read_back(settings.notes_dir, client)
+        log.info("engine.ingest.paperless_run", pushed=pushed, confirmed=confirmed)
     except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
         log.error("engine.ingest.paperless_failed", error=str(e))
 
