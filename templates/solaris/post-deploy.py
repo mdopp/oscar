@@ -600,6 +600,11 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         "[Service]\n"
         "Restart=on-failure\n"
         "RestartSec=30\n"
+        # The TensorFlow-GPU base is several GB, and podman derives its own pull
+        # timeout from this value. Box-observed on the first deploy: systemd
+        # killed the unit 4m15s into the initial pull, and every retry restarted
+        # the download from the top — a crash loop that could never converge.
+        "TimeoutStartSec=3600\n"
         "\n"
         "[Install]\n"
         "WantedBy=default.target\n"

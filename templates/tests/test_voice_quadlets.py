@@ -178,6 +178,23 @@ def test_wakeword_trainer_unit_mounts_the_queue_db_and_work_dir(pd):
     assert "ShmSize=8g" in unit
 
 
+def test_wakeword_trainer_unit_allows_a_long_first_pull(pd):
+    """The TF-GPU base is several GB and podman derives its pull timeout from
+    TimeoutStartSec. Box-observed: systemd killed the unit 4m15s into the first
+    pull, and each retry restarted the download from the top — a crash loop that
+    could never converge."""
+    unit = pd.render_wakeword_trainer_unit("/mnt/data")
+    timeout = next(
+        (
+            int(ln.split("=", 1)[1])
+            for ln in unit.splitlines()
+            if ln.startswith("TimeoutStartSec=")
+        ),
+        0,
+    )
+    assert timeout >= 1800, "a multi-GB first pull needs more than the systemd default"
+
+
 def test_install_wakeword_trainer_unit_skips_without_cdi(pd, monkeypatch):
     monkeypatch.setattr(pd, "cdi_available", lambda: False)
     monkeypatch.setattr(
