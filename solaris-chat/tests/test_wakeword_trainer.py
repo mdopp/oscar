@@ -30,6 +30,7 @@ def test_spelled_uid_and_identity_resolver():
 @pytest.mark.asyncio
 async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     db_path = str(tmp_path / "solaris_test.db")
+    (tmp_path / "train-micro-wake-word.py").write_text("import sys; sys.exit(0)\n")
     tools = build_wakeword_tools(db_path, lambda: "household", script_dir=str(tmp_path))
 
     start_tool = next(t for t in tools if t.name == "start_wakeword_enrollment")
@@ -56,3 +57,21 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     t1 = json.loads(await trigger_tool.handler({"uid": "alex"}))
     assert t1["training_started"] is True
     assert "Danke, Alex" in t1["say"]
+
+
+@pytest.mark.asyncio
+async def test_training_not_started_when_script_missing(tmp_path):
+    """The chat image ships no training scripts, so the launch usually fails.
+    Claiming a run that never started would leave the resident waiting for a
+    model nobody is building."""
+    db_path = str(tmp_path / "solaris_test.db")
+    tools = build_wakeword_tools(
+        db_path, lambda: "household", script_dir=str(tmp_path / "absent")
+    )
+    trigger_tool = next(t for t in tools if t.name == "trigger_wakeword_training")
+
+    res = json.loads(await trigger_tool.handler({"uid": "alex"}))
+    assert res["training_started"] is False
+    assert "gestartet" not in res["say"]
+    assert "nicht starten" in res["say"]
+    assert res["say"].rstrip().endswith("?")

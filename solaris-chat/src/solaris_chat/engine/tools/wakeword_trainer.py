@@ -72,7 +72,10 @@ def resolve_resident_identity(
 def build_wakeword_tools(
     db_path: str,
     uid_getter: Callable[[], str],
-    script_dir: str = "/workspace/solarisbay/scripts",
+    # The training scripts are not in the chat image (slim, no torch/GPU), so
+    # this only resolves where an operator has mounted them; otherwise the
+    # trainer says so instead of claiming a run it never started.
+    script_dir: str = os.environ.get("WAKEWORD_SCRIPT_DIR", "/app/scripts"),
 ) -> list[Tool]:
     """Build the wakeword improvement tools."""
 
@@ -292,25 +295,37 @@ def build_wakeword_tools(
         wakeword_requests_store.finish_request(db_path, uid)
         samples = wakeword_samples_store.list_samples(db_path, "solaris")
 
-        cmd = ["python3", os.path.join(script_dir, "train-micro-wake-word.py")]
-        try:
-            subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                preexec_fn=os.setpgrp,
-            )
-        except Exception:
-            pass
+        script = os.path.join(script_dir, "train-micro-wake-word.py")
+        training_started = False
+        if os.path.exists(script):
+            try:
+                subprocess.Popen(
+                    ["python3", script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    preexec_fn=os.setpgrp,
+                )
+                training_started = True
+            except Exception:
+                training_started = False
 
         thanks = f"Danke, {display_name}! " if uid != "household" else ""
 
-        say = (
-            f"{thanks}Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
-            f"Die Grafikkarte berechnet jetzt mit deinen {len(samples)} Sprachproben und "
-            f"Wohnzimmer-Nebengeräuschen über 15.000 Steps (~2 Stunden). "
-            f"Ich gebe dir Bescheid, sobald das neue Modell fertig ist!"
-        )
+        if training_started:
+            say = (
+                f"{thanks}Das GPU-Training für dein Wakeword „Solaris“ wurde gestartet! "
+                f"Die Grafikkarte berechnet jetzt mit deinen {len(samples)} Sprachproben und "
+                f"Wohnzimmer-Nebengeräuschen über 15.000 Steps (~2 Stunden). "
+                f"Ich gebe dir Bescheid, sobald das neue Modell fertig ist!"
+            )
+        else:
+            # Claiming a training run that never started would leave the
+            # resident waiting for a model that is never built.
+            say = (
+                f"{thanks}Deine {len(samples)} Sprachproben für „Solaris“ sind gespeichert. "
+                f"Das Training konnte ich hier aber nicht starten — darum muss sich noch "
+                f"jemand von Hand kümmern. Kann ich dir sonst helfen?"
+            )
         return json.dumps(
             {
                 "ok": True,
@@ -318,7 +333,7 @@ def build_wakeword_tools(
                 "display_name": display_name,
                 "spelled_uid": spelled_uid,
                 "samples_count": len(samples),
-                "training_started": True,
+                "training_started": training_started,
                 "say": say,
             },
             ensure_ascii=False,
