@@ -279,27 +279,34 @@ def _resolve(payload, monkeypatch):
     return asyncio.run(client._resolve_document_id(_FakeSession(payload), "task-uuid"))
 
 
-def test_resolve_document_id_reads_drf_paginated_dict(monkeypatch):
-    # #1048: paperless-ngx :beta (API v10+) wraps GET /api/tasks/?task_id=… in DRF
-    # pagination — a dict, not a list. Indexing tasks[0] on the dict raised
-    # KeyError(0) on every push. The client must read `results`.
-    # #1055: the :beta API returns LOWERCASE status ("success"), confirmed live —
-    # the client must normalise so it doesn't burn the whole poll budget then
-    # re-POST a duplicate on every retry.
+def test_resolve_document_id_reads_related_document_ids_list(monkeypatch):
+    # #1061: paperless-ngx :beta returns the created id under `related_document_ids`
+    # (a LIST), confirmed live — reading the singular `related_document` left it
+    # unresolved, so patch_content/trigger_ai_suggestions never fired and the doc
+    # kept its garbled OCR. Take the first element of the list.
+    # #1048/#1055: also DRF-paginated (a dict) with LOWERCASE status.
     payload = {
         "count": 1,
         "next": None,
         "previous": None,
-        "results": [{"status": "success", "related_document": 314}],
+        "results": [{"status": "success", "related_document_ids": [314]}],
     }
     assert _resolve(payload, monkeypatch) == 314
 
 
-def test_resolve_document_id_reads_bare_list_pre_v10(monkeypatch):
-    # pre-v10 paperless returned a bare list with UPPERCASE status; keep both the
-    # list path and the older casing working (#1055 — normalise, don't hardcode).
+def test_resolve_document_id_reads_singular_related_document(monkeypatch):
+    # pre-v10 paperless returned a bare list with UPPERCASE status and the SINGULAR
+    # `related_document`; keep both the list path, the older casing, and the older
+    # key shape working (#1055 — normalise; #1061 — support both id shapes).
     payload = [{"status": "SUCCESS", "related_document": 7}]
     assert _resolve(payload, monkeypatch) == 7
+
+
+def test_resolve_document_id_success_without_id_is_none(monkeypatch):
+    # #1061: an empty `related_document_ids` (or a success with no id at all) must
+    # resolve to None — the dedup case — not raise on an empty list index.
+    payload = {"results": [{"status": "success", "related_document_ids": []}]}
+    assert _resolve(payload, monkeypatch) is None
 
 
 def test_resolve_document_id_reads_lowercase_failure(monkeypatch):
