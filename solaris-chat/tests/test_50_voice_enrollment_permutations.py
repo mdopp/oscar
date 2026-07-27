@@ -295,3 +295,26 @@ def test_refusing_consent_closes_the_enrol_request(test_db):
     assert "abgelehnt" in out
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
     assert enroll_requests_store.has_any_active_request(test_db) is False
+
+
+def test_stale_wakeword_request_stops_hijacking_every_turn(test_db):
+    """An active wakeword row reroutes EVERY resident's turns into the
+    enrolment path and strips the toolbox. Without a TTL, a dialog nobody
+    finished (killed process, speaker walked away) held the whole box there
+    forever."""
+    from solaris_chat import wakeword_requests_store as w
+
+    w.start_request(test_db, "alex", 10)
+    w.record_sample(test_db, "alex")
+    assert w.has_any_active_request(test_db) is True
+
+    with sqlite3.connect(test_db) as conn:
+        conn.execute(
+            "UPDATE wakeword_requests SET updated_at = datetime('now', ?)",
+            (f"-{w.WAKEWORD_TTL_SECONDS + 60} seconds",),
+        )
+        conn.commit()
+
+    assert w.has_any_active_request(test_db) is False
+    # the row itself survives, so the resident can resume by starting over
+    assert w.get_request(test_db, "alex") is not None

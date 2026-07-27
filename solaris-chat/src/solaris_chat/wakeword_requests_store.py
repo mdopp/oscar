@@ -10,6 +10,15 @@ import sqlite3
 from pathlib import Path
 
 
+# How long a dialog stays "active" without a new sample. An active row reroutes
+# EVERY voice and browser turn of EVERY resident into the enrolment path and
+# strips the toolbox down to the enrolment tools, so a row left behind by a
+# killed process (or a resident who walked away mid-dialog) would silently take
+# the whole box hostage. `updated_at` is bumped per sample, so a live dialog
+# never expires under the speaker.
+WAKEWORD_TTL_SECONDS = 600
+
+
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -106,13 +115,21 @@ def has_active_request(db_path: str, uid: str) -> bool:
 
 
 def has_any_active_request(db_path: str) -> bool:
-    """True if ANY uid has an active wakeword recording session."""
+    """True if ANY uid has an active wakeword recording session.
+
+    TTL-bounded: this answer reroutes every resident's turns, so a row nobody
+    finished must stop counting rather than hold the box in enrolment mode
+    forever.
+    """
     if not Path(db_path).exists():
         return False
     try:
         with _connect(db_path) as conn:
             row = conn.execute(
-                "SELECT 1 FROM wakeword_requests WHERE status = 'active' LIMIT 1"
+                "SELECT 1 FROM wakeword_requests"
+                " WHERE status = 'active' AND updated_at > datetime('now', ?)"
+                " LIMIT 1",
+                (f"-{WAKEWORD_TTL_SECONDS} seconds",),
             ).fetchone()
             return row is not None
     except Exception:

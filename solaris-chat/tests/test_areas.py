@@ -10,6 +10,7 @@ no raw entity_id in user-facing output.
 from __future__ import annotations
 
 import json
+import time
 
 from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine.areas import AreaRegistry, _build_snapshot
@@ -603,3 +604,45 @@ async def test_media_player_fallbacks_none_when_no_peers(monkeypatch):
     assert await reg.media_player_fallbacks("media_player.wohnzimmer") == []
     assert await reg.media_player_fallbacks("media_player.unknown") == []
     assert await reg.media_player_fallbacks("") == []
+
+
+# --- stale device block is bounded (#1067) --------------------------------
+
+
+async def test_prompt_block_serves_a_recent_cache_when_ha_blips(monkeypatch):
+    """A restart or a short outage must not blank the device list."""
+    import aiohttp
+
+    from solaris_chat.engine import registry as registry_mod
+
+    reg = EntityRegistry("http://ha:8123", "tok")
+    reg._block = "Geräte:\nlight.wohnzimmer | Jackie | an"
+    reg._fetched_at = time.time() - 60  # cached a minute ago
+
+    async def _boom():
+        raise aiohttp.ClientError("HA down")
+
+    monkeypatch.setattr(reg, "_fetch_states", _boom)
+    assert "Jackie" in await reg.prompt_block()
+    assert registry_mod._STALE_GRACE_S > registry_mod._TTL_S
+
+
+async def test_prompt_block_drops_a_long_stale_cache(monkeypatch):
+    """Past the grace window the cached inventory has outlived any rename or
+    removal, so the prompt omits it rather than naming entities that may be
+    gone — the model can still discover them with ha_list_entities."""
+    import aiohttp
+
+    from solaris_chat.engine import registry as registry_mod
+
+    reg = EntityRegistry("http://ha:8123", "tok")
+    reg._block = "Geräte:\nlight.wohnzimmer | Jackie | an"
+    reg._fetched_at = time.time() - (registry_mod._STALE_GRACE_S + 60)
+
+    async def _boom():
+        raise aiohttp.ClientError("HA down")
+
+    monkeypatch.setattr(reg, "_fetch_states", _boom)
+    assert await reg.prompt_block() == ""
+    # and it stays dropped rather than resurfacing on the next turn
+    assert await reg.prompt_block() == ""

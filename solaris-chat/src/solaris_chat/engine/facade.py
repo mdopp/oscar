@@ -97,8 +97,17 @@ def _question_pending(text: str, offered_choices: bool) -> bool:
     return offered_choices or any(q in text for q in _QUESTION_MARKS)
 
 
+# Sentence-final punctuation a trailing "?" REPLACES rather than follows —
+# appending produced "Bitte antworte mit Ja oder Nein.?" on the box. Not the
+# Greek ";" — that is already a question mark and returns above.
+_SENTENCE_END = ".!…:,"
+
+
 def _as_question(text: str) -> str:
-    return text if text.rstrip().endswith(_QUESTION_MARKS) else text.rstrip() + "?"
+    stripped = text.rstrip()
+    if stripped.endswith(_QUESTION_MARKS):
+        return text
+    return stripped.rstrip(_SENTENCE_END) + "?"
 
 
 def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes:
@@ -207,8 +216,9 @@ def add_facade_routes(
         # (and the uid-stash lookup, keyed on the raw whisper transcript) never
         # sees it.
         room, transcript = _split_room(_last_user(messages))
-        if room:
-            _strip_room_from_messages(messages)
+        # Unconditionally: an older replayed turn can carry a marker even when
+        # the newest one does not.
+        _strip_room_from_messages(messages)
         current_room.set(room)
         uid = consume_uid(solaris_db_path, transcript) or str(
             body.get("user") or default_uid
@@ -419,14 +429,17 @@ def _persist_voice_trace(
 
 
 def _strip_room_from_messages(messages: list[Any]) -> None:
-    """Strip a `[room: X]` prefix off the latest user message in place, so the
+    """Strip the `[room: X]` prefix off EVERY user message in place, so the
     ephemeral `respond` path (which replays the caller's message list) never
-    feeds the marker to the model."""
-    for msg in reversed(messages):
+    feeds the marker to the model.
+
+    Every one, not just the newest: HA replays the whole conversation, so the
+    turns before it still carried their own markers into the guest prompt.
+    """
+    for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content"):
             _, stripped = _split_room(str(msg["content"]))
             msg["content"] = stripped
-            return
 
 
 def _last_user(messages: list[Any]) -> str:
