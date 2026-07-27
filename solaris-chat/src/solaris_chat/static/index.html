@@ -297,10 +297,14 @@
     .step-rows { display: block; margin: 6px 0 2px; max-width: 420px; }
     .step-row {
       display: flex; align-items: baseline; gap: 8px; margin: 2px 0;
-      padding: 2px 6px; border-radius: 6px; cursor: pointer;
+      padding: 2px 6px; border-radius: 6px;
       font-variant-numeric: tabular-nums; border: 1px solid transparent;
     }
-    .step-row:hover { border-color: var(--line); background: rgba(127,127,127,0.10); }
+    /* Only a row that actually opens a detail looks clickable (#939). The
+       detail store is a FIFO ring, so an old cron turn has nothing to open —
+       offering the pointer + hover there was a dead end. */
+    .step-row.is-openable { cursor: pointer; }
+    .step-row.is-openable:hover { border-color: var(--line); background: rgba(127,127,127,0.10); }
     .step-row .st-profile {
       flex: 0 0 auto; color: var(--muted); font-size: 11px;
       padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px;
@@ -3743,8 +3747,11 @@
           num.textContent = secs + (toks ? " · " + toks : "");
           row.appendChild(model); row.appendChild(num);
           if (s.detail_id != null) {
+            row.classList.add("is-openable");
             row.title = "Open exact request/response";
             row.addEventListener("click", function () { openTraceDetail(s.detail_id); });
+          } else {
+            row.title = "Details für diesen Turn sind nicht mehr gespeichert";
           }
           rows.appendChild(row);
         });
