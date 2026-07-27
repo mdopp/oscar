@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 STATUS_PENDING = "pending"
+STATUS_CAPTURING = "capturing"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
@@ -124,7 +125,10 @@ def has_active_request(db_path: str, uid: str) -> bool:
     req = read_request(db_path, uid)
     if req is None:
         return False
-    return not req.get("timed_out") and req.get("status") in (STATUS_PENDING, STATUS_CAPTURING)
+    return not req.get("timed_out") and req.get("status") in (
+        STATUS_PENDING,
+        STATUS_CAPTURING,
+    )
 
 
 def touch_request(db_path: str, uid: str) -> None:
@@ -135,7 +139,7 @@ def touch_request(db_path: str, uid: str) -> None:
         with _connect(db_path) as conn:
             conn.execute(
                 "UPDATE enroll_requests SET created_at = datetime('now') WHERE uid = ?",
-                (uid,)
+                (uid,),
             )
             conn.commit()
     except Exception:
@@ -151,7 +155,7 @@ def has_any_active_request(db_path: str) -> bool:
             row = conn.execute(
                 "SELECT 1 FROM enroll_requests WHERE status NOT IN ('done','failed') "
                 "AND created_at > datetime('now', ?) LIMIT 1",
-                (f"-{ENROLL_TTL_SECONDS} seconds",)
+                (f"-{ENROLL_TTL_SECONDS} seconds",),
             ).fetchone()
             return row is not None
     except Exception:

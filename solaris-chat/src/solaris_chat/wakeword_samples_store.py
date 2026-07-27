@@ -4,11 +4,10 @@ Manages persistent sample metadata (filename, intended phrase, STT transcript, v
 in solaris.db for sample reuse, quality audit, and selective deletion.
 """
 
-from __future__ annotations
+from __future__ import annotations
 
 import os
 import sqlite3
-from pathlib import Path
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -48,13 +47,24 @@ def add_sample(
 ) -> dict:
     init_db(db_path)
     with _connect(db_path) as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO wakeword_samples (id, wakeword_id, filename, resident_uid, intended_phrase, stt_transcript, is_valid, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 stt_transcript = excluded.stt_transcript,
                 is_valid = excluded.is_valid
-        """, (sample_id, wakeword_id, filename, resident_uid, intended_phrase, stt_transcript, 1 if is_valid else 0))
+        """,
+            (
+                sample_id,
+                wakeword_id,
+                filename,
+                resident_uid,
+                intended_phrase,
+                stt_transcript,
+                1 if is_valid else 0,
+            ),
+        )
         conn.commit()
 
     return get_sample(db_path, sample_id) or {}
@@ -65,7 +75,7 @@ def get_sample(db_path: str, sample_id: str) -> dict | None:
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT id, wakeword_id, filename, resident_uid, intended_phrase, stt_transcript, is_valid, created_at FROM wakeword_samples WHERE id = ?",
-            (sample_id,)
+            (sample_id,),
         ).fetchone()
         if row:
             return dict(row)
@@ -78,7 +88,7 @@ def list_samples(db_path: str, wakeword_id: str | None = None) -> list[dict]:
         if wakeword_id:
             rows = conn.execute(
                 "SELECT id, wakeword_id, filename, resident_uid, intended_phrase, stt_transcript, is_valid, created_at FROM wakeword_samples WHERE wakeword_id = ? ORDER BY created_at DESC",
-                (wakeword_id,)
+                (wakeword_id,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -93,7 +103,7 @@ def get_suspicious_samples(db_path: str, wakeword_id: str | None = None) -> list
         if wakeword_id:
             rows = conn.execute(
                 "SELECT id, wakeword_id, filename, resident_uid, intended_phrase, stt_transcript, is_valid, created_at FROM wakeword_samples WHERE wakeword_id = ? AND is_valid = 0 ORDER BY created_at DESC",
-                (wakeword_id,)
+                (wakeword_id,),
             ).fetchall()
         else:
             rows = conn.execute(
