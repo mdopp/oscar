@@ -34,7 +34,8 @@ _RESIDENT_ALIASES = {
 
 
 def parse_spelled_uid(raw: str) -> str:
-    """Extract clean ASCII uid from spelled or spoken names (e.g. 'M - A - R - C - O' -> 'marco')."""
+    """Extract a clean ASCII uid from a spelled or spoken name: strip the
+    spelling separators, lowercase, drop anything outside a-z0-9."""
     cleaned = (
         raw.lower().replace("-", "").replace(" ", "").replace(",", "").replace(".", "")
     )
@@ -373,7 +374,7 @@ def build_wakeword_tools(
                 "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
                 "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
                 "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
-                "Nimmt optional 'uid' (z.B. buchstabiert 'M-A-R-C-O' -> 'marco', 'Max' -> 'max') entgegen. "
+                "Nimmt optional 'uid' entgegen — den gesprochenen oder buchstabierten Vornamen; die Schreibweise normalisiert das Tool selbst. "
                 "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
             ),
             parameters={
@@ -381,7 +382,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Der Name oder buchstabierte User-ID des Sprechers (z.B. 'max', 'M-A-X')",
+                        "description": "Der gesprochene oder buchstabierte Name des Sprechers, so wie er ihn genannt hat",
                     },
                     "target_count": {
                         "type": "integer",
@@ -402,7 +403,7 @@ def build_wakeword_tools(
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Die User-ID des Sprechers (z.B. 'max')",
+                        "description": "Die User-ID des Sprechers",
                     },
                     "transcript": {
                         "type": "string",
@@ -439,7 +440,7 @@ def build_wakeword_tools(
                 "properties": {
                     "sample_id": {
                         "type": "string",
-                        "description": "Die ID der zu löschenden Probe (z.B. 'sample_max_4')",
+                        "description": "Die ID der zu löschenden Probe, wie von list_wakeword_samples zurückgegeben",
                     }
                 },
             },

@@ -279,7 +279,9 @@ def add_facade_routes(
                 return client.respond(
                     messages, uid=uid, source=model, conversation_id=conversation_id
                 )
-            return client.respond_session(text, uid=uid)
+            return client.respond_session(
+                text, uid=uid, conversation_id=conversation_id
+            )
 
         def persist_trace() -> None:
             if client.ephemeral:

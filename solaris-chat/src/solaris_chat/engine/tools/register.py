@@ -157,7 +157,7 @@ def build_register_tools(
                 "SCHRITT 1: Wenn der Nutzer noch nicht sein Einverständnis zur biometrischen Stimmaufnahme gegeben hat, frage NUR kurz: "
                 "'Möchtest du dein Sprachprofil biometrisch auf der Box anlegen? Bitte antworte mit Ja oder Nein.' "
                 "SCHRITT 2: Wenn das Einverständnis vorliegt, frage nach dem Namen oder Kürzel: "
-                "'Welcher Name oder welches Kürzel soll verwendet werden? Bitte buchstabiere das Kürzel (z.B. M - A - X). Wie lautet dein Name?' "
+                "'Welcher Name oder welches Kürzel soll verwendet werden? Bitte buchstabiere das Kürzel. Wie lautet dein Name?' "
                 "SCHRITT 2: Sobald der Nutzer den Namen oder das Kürzel genannt hat, rufe start_voice_enrollment(uid=genannter_name) auf. Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."
             ),
             parameters={

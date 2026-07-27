@@ -42,6 +42,8 @@ CREATE TABLE engine_messages (
   tool_calls  TEXT,
   images      TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  conversation_id TEXT,
+  in_prompt   INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (session_id, seq)
 );
 CREATE TABLE wartung_seen_approvals (
