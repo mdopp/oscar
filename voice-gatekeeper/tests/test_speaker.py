@@ -317,31 +317,32 @@ async def test_resolve_uid_no_enrolments_stays_household_not_guest(
     assert await h._resolve_uid() == "household"
 
 
-def test_speaker_id_enabled_from_env_default_on(monkeypatch):
+def test_speaker_id_enabled_from_env_opt_in(monkeypatch):
     """Single predicate shared by config.speaker_id_enabled and
-    speaker.get_extractor: enabled unless explicitly disabled. Unset/empty/
-    truthy -> on; only 0/false/no/off -> off. Guards the branch bug where the
-    config forced True while get_extractor still required 1/true/yes/on, so
-    speaker-ID silently did nothing."""
+    speaker.get_extractor: off unless explicitly enabled. Speaker-ID stores
+    per-resident voice fingerprints, so unset/empty stays off, matching the
+    template's `SOLARIS_SPEAKER_ID_ENABLED` default. Guards the branch bug
+    where the config forced True while get_extractor still required
+    1/true/yes/on, so speaker-ID silently did nothing."""
     from gatekeeper.config import speaker_id_enabled_from_env
 
     monkeypatch.delenv("SOLARIS_SPEAKER_ID_ENABLED", raising=False)
-    assert speaker_id_enabled_from_env() is True
-    for on in ("", "1", "true", "yes", "on", "whatever"):
+    assert speaker_id_enabled_from_env() is False
+    for on in ("1", "true", "yes", "on", "TRUE", "On"):
         monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", on)
         assert speaker_id_enabled_from_env() is True
-    for off in ("0", "false", "no", "off", "OFF", "False"):
+    for off in ("", "0", "false", "no", "off", "OFF", "False", "whatever"):
         monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", off)
         assert speaker_id_enabled_from_env() is False
 
 
 def test_get_extractor_enabled_but_deps_missing_returns_none(monkeypatch):
-    """Enabled by default but the ML deps are absent (the stock image with no
+    """Explicitly enabled but the ML deps are absent (the stock image with no
     speechbrain/torch) -> None, never a raise."""
     import gatekeeper.speaker as speaker
 
     monkeypatch.setattr(speaker, "_extractor_singleton", None)
-    monkeypatch.delenv("SOLARIS_SPEAKER_ID_ENABLED", raising=False)  # default on
+    monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", "true")
     monkeypatch.setattr(speaker, "extractor_available", lambda: False)
     assert speaker.get_extractor() is None
 
