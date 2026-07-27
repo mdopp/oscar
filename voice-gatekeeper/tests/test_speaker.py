@@ -315,3 +315,58 @@ async def test_resolve_uid_no_enrolments_stays_household_not_guest(
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
     assert await h._resolve_uid() == "household"
+
+
+def test_speaker_id_enabled_from_env_default_on(monkeypatch):
+    """Single predicate shared by config.speaker_id_enabled and
+    speaker.get_extractor: enabled unless explicitly disabled. Unset/empty/
+    truthy -> on; only 0/false/no/off -> off. Guards the branch bug where the
+    config forced True while get_extractor still required 1/true/yes/on, so
+    speaker-ID silently did nothing."""
+    from gatekeeper.config import speaker_id_enabled_from_env
+
+    monkeypatch.delenv("SOLARIS_SPEAKER_ID_ENABLED", raising=False)
+    assert speaker_id_enabled_from_env() is True
+    for on in ("", "1", "true", "yes", "on", "whatever"):
+        monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", on)
+        assert speaker_id_enabled_from_env() is True
+    for off in ("0", "false", "no", "off", "OFF", "False"):
+        monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", off)
+        assert speaker_id_enabled_from_env() is False
+
+
+def test_get_extractor_enabled_but_deps_missing_returns_none(monkeypatch):
+    """Enabled by default but the ML deps are absent (the stock image with no
+    speechbrain/torch) -> None, never a raise."""
+    import gatekeeper.speaker as speaker
+
+    monkeypatch.setattr(speaker, "_extractor_singleton", None)
+    monkeypatch.delenv("SOLARIS_SPEAKER_ID_ENABLED", raising=False)  # default on
+    monkeypatch.setattr(speaker, "extractor_available", lambda: False)
+    assert speaker.get_extractor() is None
+
+
+async def test_resolve_uid_enabled_but_no_extractor_falls_back_household(
+    tmp_path, monkeypatch
+):
+    """Speaker-ID enabled (the default) but the extractor is unavailable ->
+    household, no raise. A raised exception here would emit a 0-byte NDJSON
+    stream — the Voice PE 'red ring' HTTP 500."""
+    import gatekeeper.handler as handler
+    from wyoming.audio import AudioChunk, AudioStart
+
+    monkeypatch.setattr(
+        handler,
+        "settings",
+        dataclasses.replace(
+            handler.settings, speaker_id_enabled=True, default_uid="household"
+        ),
+    )
+    monkeypatch.setattr(handler, "get_extractor", lambda: None)
+
+    h = handler.GatekeeperHandler(None, None, object())
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+    assert await h._resolve_uid() == "household"

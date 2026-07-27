@@ -11,6 +11,19 @@ import json
 import os
 from dataclasses import dataclass, field
 
+# Falsy values that turn speaker-ID + live enrolment OFF. Everything else
+# (including unset/empty) leaves them ON — they ship enabled by default.
+_SPEAKER_ID_DISABLED = {"0", "false", "no", "off"}
+
+
+def speaker_id_enabled_from_env() -> bool:
+    """Single source of truth for "is speaker-ID on": enabled unless
+    SOLARIS_SPEAKER_ID_ENABLED is set to an explicit falsy value. Shared with
+    `gatekeeper.speaker.get_extractor` so the config flag and the extractor
+    loader can never disagree."""
+    raw = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
+    return raw not in _SPEAKER_ID_DISABLED
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -43,7 +56,6 @@ class Settings:
                     devices = {str(k): str(v) for k, v in parsed.items()}
             except json.JSONDecodeError:
                 devices = {}
-        flag = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
         try:
             threshold = float(os.environ.get("SOLARIS_SPEAKER_ID_THRESHOLD", "0.55"))
         except ValueError:
@@ -78,7 +90,7 @@ class Settings:
             solaris_db_path=os.environ.get(
                 "SOLARIS_DB_PATH", "/var/lib/solaris/solaris.db"
             ),
-            speaker_id_enabled=True,
+            speaker_id_enabled=speaker_id_enabled_from_env(),
             speaker_id_threshold=threshold,
             voice_pe_devices=devices,
         )
