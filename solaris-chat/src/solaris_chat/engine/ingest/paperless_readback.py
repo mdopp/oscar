@@ -127,10 +127,56 @@ def _document_notes(notes_dir: str) -> dict[str, Path]:
     return notes
 
 
+def _with_field(text: str, key: str, value: str) -> str | None:
+    """`text` with its frontmatter `key` set to `value`, or None when the note
+    already carries that value (or has no frontmatter fence to write into)."""
+    fence = _FENCE.match(text)
+    if fence is None:
+        return None
+    frontmatter = fence.group("fm")
+    if _fm_value(frontmatter, key) == value:
+        return None
+    lines = frontmatter.splitlines()
+    # Frontmatter values are single-line — a name with a newline in it would
+    # otherwise break the block for every other field.
+    replacement = f"{key}: {' '.join(value.split())}"
+    for i, line in enumerate(lines):
+        name, sep, _ = line.partition(":")
+        if sep and name.strip() == key:
+            lines[i] = replacement
+            break
+    else:
+        lines.append(replacement)
+    return "---\n" + "\n".join(lines) + "\n---\n" + text[fence.end() :]
+
+
+def _apply(note: Path, fields: dict[str, str]) -> list[str]:
+    """Write `fields` into the note's frontmatter; return the keys changed."""
+    try:
+        text = note.read_text(encoding="utf-8")
+    except OSError as e:
+        log.error("engine.ingest.paperless_readback_note_failed", error=str(e))
+        return []
+    applied: list[str] = []
+    for key, value in fields.items():
+        updated = _with_field(text, key, value)
+        if updated is not None:
+            text = updated
+            applied.append(key)
+    if not applied:
+        return []
+    try:
+        note.write_text(text, encoding="utf-8")
+    except OSError as e:
+        log.error("engine.ingest.paperless_readback_write_failed", error=str(e))
+        return []
+    return applied
+
+
 async def read_back(notes_dir: str, client: PaperlessClient) -> int:
-    """Record what each paperless document's confirmed correspondent/document
-    type means for its OKF note. Returns the number of documents carrying one.
-    Never raises — the read-back is advisory, the push must not be affected."""
+    """Converge every paperless document's confirmed document type into its OKF
+    note. Returns the number of documents carrying a confirmed value. Never
+    raises — the read-back is advisory, the push must not be affected."""
     try:
         documents = await client.list_documents()
         correspondents = await client.list_names("correspondents")
@@ -141,6 +187,7 @@ async def read_back(notes_dir: str, client: PaperlessClient) -> int:
 
     notes = _document_notes(notes_dir)
     confirmed = 0
+    changed = 0
     unmatched = 0
     for doc in documents:
         correspondent = correspondents.get(doc.get("correspondent") or 0, "")
@@ -152,19 +199,24 @@ async def read_back(notes_dir: str, client: PaperlessClient) -> int:
         note = notes.get(stem)
         if note is None:
             unmatched += 1
+        category = _category_for(document_type) if document_type else ""
+        applied = _apply(note, {"category": category}) if note and category else []
+        changed += bool(applied)
         log.info(
             "engine.ingest.paperless_readback_doc",
             paperless_id=doc.get("id"),
             file=stem,
             correspondent=correspondent,
             document_type=document_type,
-            category=_category_for(document_type) if document_type else "",
+            category=category,
             note=str(note.relative_to(notes_dir)) if note is not None else "",
+            applied=",".join(applied),
         )
     log.info(
         "engine.ingest.paperless_readback",
         documents=len(documents),
         confirmed=confirmed,
+        changed=changed,
         unmatched=unmatched,
     )
     return confirmed

@@ -9,12 +9,17 @@ state the real instance is in today (documents stored, nothing confirmed yet).
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from solaris_chat.engine.ingest import paperless_readback
+from solaris_chat import documents_portal_db
+from solaris_chat.engine.ingest import ObsidianIngest, paperless_readback
+from solaris_chat.engine.ingest.obsidian_reader import VaultObsidianReader
 from solaris_chat.engine.ingest.paperless_readback import read_back
+from solaris_chat.engine.knowledge.writer import OkfWriter
+from tests.test_obsidian_ingest import _SCHEMA  # shared projection schema
 
 
 class FakePaperless:
@@ -89,6 +94,7 @@ def test_nothing_confirmed_is_a_clean_no_op(tmp_path, monkeypatch):
             "msg": "engine.ingest.paperless_readback",
             "documents": 1,
             "confirmed": 0,
+            "changed": 0,
             "unmatched": 0,
         }
     ]
@@ -124,6 +130,7 @@ def test_confirmed_values_resolve_to_names_and_the_owning_note(tmp_path, monkeyp
             "document_type": "Versicherungen",
             "category": "insurance",
             "note": "users/mdopp/okf/documents/scan.md",
+            "applied": "category",
         }
     ]
 
@@ -142,6 +149,84 @@ def test_confirmed_values_resolve_to_names_and_the_owning_note(tmp_path, monkeyp
 )
 def test_document_type_maps_onto_the_category_vocabulary(document_type, category):
     assert paperless_readback._category_for(document_type) == category
+
+
+def test_confirmed_type_rewrites_the_notes_category(tmp_path):
+    note = _note(
+        tmp_path,
+        "users/mdopp/okf/documents/scan.md",
+        category="other",
+        provider="ERGO",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", document_type=5)], document_types={5: "Versicherungen"}
+    )
+
+    _run(tmp_path, client)
+
+    text = note.read_text(encoding="utf-8")
+    assert "category: insurance" in text
+    assert "category: other" not in text
+    # Only that one field moves — the extraction's other fields stay.
+    assert "provider: ERGO" in text
+    assert "source_document: users/mdopp/uploads/scan.md" in text
+
+
+def test_rewrite_is_idempotent(tmp_path):
+    note = _note(
+        tmp_path,
+        "users/mdopp/okf/documents/scan.md",
+        category="insurance",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    before = note.read_text(encoding="utf-8")
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", document_type=5)], document_types={5: "Versicherungen"}
+    )
+
+    _run(tmp_path, client)
+    _run(tmp_path, client)
+
+    # Already converged → the note is not rewritten at all.
+    assert note.read_text(encoding="utf-8") == before
+
+
+def test_unmappable_type_leaves_the_category_alone(tmp_path, monkeypatch):
+    note = _note(
+        tmp_path,
+        "users/mdopp/okf/documents/scan.md",
+        category="insurance",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    records = _logged(monkeypatch)
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", document_type=5)], document_types={5: "Kontoauszug"}
+    )
+
+    _run(tmp_path, client)
+
+    assert "category: insurance" in note.read_text(encoding="utf-8")
+    # The log names the type Solaris couldn't place, so an alias can be added.
+    line = [r for r in records if r["msg"] == "engine.ingest.paperless_readback_doc"][0]
+    assert line["document_type"] == "Kontoauszug"
+    assert line["category"] == "" and line["applied"] == ""
+
+
+def test_category_is_added_to_a_note_that_has_none(tmp_path):
+    note = _note(
+        tmp_path,
+        "users/mdopp/okf/documents/scan.md",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", document_type=5)], document_types={5: "Rechnungen"}
+    )
+
+    _run(tmp_path, client)
+
+    assert "category: invoice" in note.read_text(encoding="utf-8")
+    assert note.read_text(encoding="utf-8").startswith("---\ntype: document\n")
 
 
 def test_document_without_a_note_is_counted_unmatched(tmp_path, monkeypatch):
@@ -196,6 +281,43 @@ def test_client_failure_degrades_to_zero(tmp_path, monkeypatch):
     assert _run(tmp_path, Boom([])) == 0
     assert errors[0]["msg"] == "engine.ingest.paperless_readback_failed"
     assert errors[0]["error"] == "TimeoutError()"
+
+
+def test_the_dokumente_doorway_follows_the_confirmed_type(tmp_path):
+    """End to end: the confirmed type moves the document to the right doorway —
+    and to ONE doorway, which a second paperless-sourced `category` fact would
+    not (the document would then be listed under both)."""
+    db_path = str(tmp_path / "solaris.db")
+    notes_dir = tmp_path / "notes"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    writer = OkfWriter(db_path=db_path, notes_dir=str(notes_dir))
+
+    def ingest():
+        ObsidianIngest(
+            VaultObsidianReader(str(notes_dir)),
+            writer,
+            db_path=db_path,
+            ingesting_uid="mdopp",
+        ).run()
+        return documents_portal_db.categories(db_path, "mdopp")
+
+    _note(
+        notes_dir,
+        "users/mdopp/okf/documents/scan.md",
+        category="other",
+        source_document="users/mdopp/uploads/scan.md",
+    )
+    assert ingest() == {"other": 1}
+
+    client = FakePaperless(
+        [_doc(7, "scan.pdf", document_type=5)], document_types={5: "Versicherungen"}
+    )
+    _run(notes_dir, client)
+
+    assert ingest() == {"insurance": 1}
 
 
 if __name__ == "__main__":  # pragma: no cover
