@@ -1252,6 +1252,7 @@ def build_app(
     import_data_dir: str = "/data/imports",
     immich_base_url: str = "",
     immich_api_key: str = "",
+    paperless_ui_url: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -2201,6 +2202,10 @@ def build_app(
                 # subscribe. Empty ⇒ Web Push is unconfigured, so the UI hides
                 # the notification bell.
                 "vapid_public_key": vapid_public_key,
+                # The public paperless Web-UI URL (#1043): the read-only
+                # Dokumente portal links here for full-text search + corrections.
+                # Empty ⇒ the portal hides the outbound link (no dead link).
+                "paperless_ui_url": paperless_ui_url,
             }
         )
 
@@ -2530,6 +2535,19 @@ def build_app(
             else skills.list_defs(skills_dir, kind)
         )
         return web.json_response({"ok": True, "kind": kind, "defs": defs})
+
+    async def napi_tool_defs(request: web.Request) -> web.Response:
+        """The tool catalog for native/device-token consumers (#1021, ADR 0011).
+
+        Same payload `GET /api/defs/tool` serves — `tool-id`, `tool-label`,
+        `tool-api-path`, `tool-search-path`, `tool-actions`, `tool-cell-schema` —
+        but on the proxy-bypassed `/napi/` surface (device-token-ONLY, wrapped in
+        `native(...)`), so an Android home-screen widget can consume a new `.tool`
+        with zero native code. Only the tool kind is mirrored here: the native
+        widget surface consumes tools, not the authoring kinds (command/hook/…)."""
+        return web.json_response(
+            {"ok": True, "kind": "tool", "defs": skills.list_tool_defs(skills_dir)}
+        )
 
     async def get_def(request: web.Request) -> web.Response:
         kind = _valid_kind(request)
@@ -4805,7 +4823,9 @@ def build_app(
             # Extract the document's text into the companion body off the request
             # path: pdftotext/OCR is slow, so run it in a thread and don't
             # await it — the HTTP response returns immediately; the nightly ingest
-            # re-runs it idempotently if this one is lost to a restart.
+            # re-runs it idempotently if this one is lost to a restart. The
+            # paperless push is deliberately NOT fired here — it's lazy-via-cron
+            # by design (#1042); see engine/ingest/paperless.py.
             companion = Path(notes_dir).resolve() / note_rel
             asyncio.get_event_loop().run_in_executor(
                 None, extract_into_companion, companion
@@ -5730,6 +5750,18 @@ def build_app(
     )
     app.router.add_get("/napi/device-tokens", native(device_token_list))
     app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))
+    # `.tool` plugin system on the native/device-token surface (#1021, ADR 0011):
+    # the catalog, each list-tool's declared `tool-api-path`, and the tool actions
+    # — all the same handlers as `/api/`, wrapped in `native(...)` so a device
+    # token alone authenticates and `resolve_uid` scopes to its owner. This lets a
+    # new `.tool` show up as an Android widget with no native code. `home`/`energy`
+    # already have their `/napi/portal/*` twins above; these add the rest.
+    app.router.add_get("/napi/defs/tool", native(napi_tool_defs))
+    app.router.add_get("/napi/portal/tasks", native(portal_tasks))
+    app.router.add_get("/napi/portal/persons", native(portal_persons))
+    app.router.add_get("/napi/portal/documents/search", native(portal_documents_search))
+    app.router.add_get("/napi/photo", native(photo_search))
+    app.router.add_post("/napi/action-callback", native(action_callback))
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
@@ -6038,6 +6070,7 @@ async def serve(
     import_data_dir: str = "/data/imports",
     immich_base_url: str = "",
     immich_api_key: str = "",
+    paperless_ui_url: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -6098,6 +6131,7 @@ async def serve(
         import_data_dir=import_data_dir,
         immich_base_url=immich_base_url,
         immich_api_key=immich_api_key,
+        paperless_ui_url=paperless_ui_url,
     )
     runner = web.AppRunner(app)
     await runner.setup()

@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: paperless
+  labels:
+    app: paperless
+  annotations:
+    servicebay.label: "Document Store (Paperless)"
+    servicebay.schema-version: "1"
+    # One host port: the paperless webserver (Web-UI + REST API). ServiceBay
+    # can't substitute a variable placeholder inside an annotation block scalar
+    # (#136) but DOES substitute in this inline annotation, so the port stays
+    # variable-driven.
+    servicebay.ports: "{{PAPERLESS_PORT}}/tcp"
+    # nginx proxies the Web-UI + API and Authelia forward-auth gates it (like
+    # ollama / the chat surface — see PAPERLESS_SUBDOMAIN in variables.json).
+    # file-share is depended on because the consume dir defaults under the
+    # Syncthing share so scans can be dropped in from any device (#930).
+    servicebay.dependencies: "nginx,auth,file-share"
+    # Health probe: paperless answers /api/ (200) once the webserver is up.
+    # ServiceBay can't substitute a variable inside a block scalar (#136), so
+    # the port is the literal default; an operator changing PAPERLESS_PORT must
+    # update this literal by hand too.
+    servicebay.healthcheck: |
+      url: http://127.0.0.1:8000/api/
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 5m
+spec:
+  # hostNetwork so NPM (also hostNetwork) proxies the webserver from the host
+  # loopback, and so the #931 PaperlessIngest adapter running in the solaris
+  # pod can reach the REST API at 127.0.0.1:{{PAPERLESS_PORT}} without DNS or
+  # bridge networking. redis + postgres bind loopback in the same netns, so the
+  # three containers talk over 127.0.0.1.
+  hostNetwork: true
+  restartPolicy: Always
+  containers:
+  # redis — paperless task broker (Celery). Loopback-only; no auth needed
+  # because it's reachable only from the shared host netns.
+  - name: redis
+    image: docker.io/library/redis:7
+    args: ["--bind", "127.0.0.1", "--port", "{{PAPERLESS_REDIS_PORT}}"]
+    volumeMounts:
+    - mountPath: /data
+      name: paperless-redis
+
+  # postgres — paperless metadata + full-text search index (tsvector). Bound
+  # to loopback; the password is a template variable (loopback-only, so it's a
+  # namespace boundary, not an internet-facing secret).
+  - name: postgres
+    image: docker.io/library/postgres:16
+    env:
+    - name: POSTGRES_DB
+      value: "paperless"
+    - name: POSTGRES_USER
+      value: "paperless"
+    - name: POSTGRES_PASSWORD
+      value: "{{PAPERLESS_DB_PASSWORD}}"
+    - name: PGPORT
+      value: "{{PAPERLESS_DB_PORT}}"
+    volumeMounts:
+    - mountPath: /var/lib/postgresql/data
+      name: paperless-pgdata
+
+  # webserver — the paperless-ngx app: Web-UI, the REST API the #931 adapter
+  # PATCHes extracted text into, the consume watcher, and the full-text search.
+  # OCR is deliberately SKIPPED (PAPERLESS_OCR_MODE=skip): the PoC #929 proved
+  # paperless's own Tesseract garbles rotated German scans, so Solaris's
+  # gemma4:12b vision extractor stays the fact+text source. #931 ingests each
+  # doc OCR-skipped, then PATCHes /api/documents/{id}/ content=<gemma text> and
+  # paperless re-indexes the clean text into full-text search.
+  - name: webserver
+    image: ghcr.io/paperless-ngx/paperless-ngx:beta
+    env:
+    - name: PAPERLESS_REDIS
+      value: "redis://127.0.0.1:{{PAPERLESS_REDIS_PORT}}"
+    - name: PAPERLESS_DBHOST
+      value: "127.0.0.1"
+    - name: PAPERLESS_DBPORT
+      value: "{{PAPERLESS_DB_PORT}}"
+    - name: PAPERLESS_DBNAME
+      value: "paperless"
+    - name: PAPERLESS_DBUSER
+      value: "paperless"
+    - name: PAPERLESS_DBPASS
+      value: "{{PAPERLESS_DB_PASSWORD}}"
+    - name: PAPERLESS_PORT
+      value: "{{PAPERLESS_PORT}}"
+    # Bind the gunicorn webserver to loopback — NPM + Authelia front it (never
+    # expose paperless directly on the LAN; it would bypass forward-auth).
+    - name: PAPERLESS_BIND_ADDR
+      value: "127.0.0.1"
+    # Public URL: paperless builds absolute links + CSRF-trusts this origin.
+    - name: PAPERLESS_URL
+      value: "https://{{PAPERLESS_SUBDOMAIN}}.{{PUBLIC_DOMAIN}}"
+    - name: PAPERLESS_CSRF_TRUSTED_ORIGINS
+      value: "https://{{PAPERLESS_SUBDOMAIN}}.{{PUBLIC_DOMAIN}}"
+    # SSO: Authelia forward-auth forwards the authenticated identity as the
+    # Remote-User header (WSGI: HTTP_REMOTE_USER). paperless auto-provisions +
+    # logs in that user, so there's no second login (same identity Solaris
+    # reads). Autologin off — the header is authoritative.
+    - name: PAPERLESS_ENABLE_HTTP_REMOTE_USER
+      value: "true"
+    - name: PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME
+      value: "HTTP_REMOTE_USER"
+    # DO NOT let paperless re-OCR: its Tesseract regresses rotated German
+    # scans to garble (PoC #929). The beta image dropped OCR_MODE=skip, so the
+    # equivalent is OCR_MODE=auto + ARCHIVE_FILE_GENERATION=never: Tesseract
+    # never runs an archive/OCR pass, and paperless indexes whatever text the
+    # document already carries (the gemma4 text #931 PATCHes in).
+    - name: PAPERLESS_OCR_MODE
+      value: "auto"
+    - name: PAPERLESS_ARCHIVE_FILE_GENERATION
+      value: "never"
+    # German UI + OCR language hints (harmless with OCR skipped; used for
+    # date parsing + the UI locale).
+    - name: PAPERLESS_OCR_LANGUAGE
+      value: "{{PAPERLESS_OCR_LANGUAGE}}"
+    - name: USERMAP_UID
+      value: "{{PAPERLESS_UID}}"
+    - name: USERMAP_GID
+      value: "{{PAPERLESS_GID}}"
+    - name: PAPERLESS_SECRET_KEY
+      value: "{{PAPERLESS_SECRET_KEY}}"
+    # Managed superuser (#1034): paperless is SSO-only (Authelia remote-user,
+    # no native login), so it had no API-token-bearing user and the #931
+    # ingest handoff no-op'd. paperless-ngx creates this superuser on first
+    # boot from PAPERLESS_ADMIN_USER/PASSWORD; the solaris post-deploy mints
+    # that user's DRF API token and stamps PAPERLESS_URL/TOKEN into the engine.
+    # The password is a managed secret persisted host-side (like the jellyfin
+    # solaris credential) — the render-time value is a placeholder the
+    # post-deploy reconciles against its persisted managed password.
+    - name: PAPERLESS_ADMIN_USER
+      value: "{{PAPERLESS_ADMIN_USER}}"
+    - name: PAPERLESS_ADMIN_PASSWORD
+      value: "{{PAPERLESS_ADMIN_PASSWORD}}"
+    - name: PAPERLESS_TIME_ZONE
+      value: "{{TZ}}"
+    # AI suggestions (#1050): paperless's on-demand classifier
+    # (get_ai_document_classification) builds correspondent/doc-type/tag
+    # suggestions from document.content[:4000] — the exact field #931/#1033
+    # PATCHes with clean gemma4 text, so it works on the pushed text without
+    # paperless's own (disabled) OCR. Off unless enabled; the #931 push adapter
+    # calls GET /api/documents/{id}/ai_suggestions/ after each push so the
+    # suggestions surface for human review in paperless's UI.
+    - name: PAPERLESS_AI_ENABLED
+      value: "{{PAPERLESS_AI_ENABLED}}"
+    ports:
+    - containerPort: {{PAPERLESS_PORT}}
+    volumeMounts:
+    # consume — the watched drop dir; a scan copied here is auto-ingested.
+    # Defaults under the file-share Syncthing share so scans land from any
+    # device; also the path #931 drops OCR-skipped docs into.
+    - mountPath: /usr/src/paperless/consume
+      name: paperless-consume
+    # media — the archived document blobs (originals + thumbnails).
+    - mountPath: /usr/src/paperless/media
+      name: paperless-media
+    # data — the search index, classifier model, and app data.
+    - mountPath: /usr/src/paperless/data
+      name: paperless-data
+
+  volumes:
+  - name: paperless-redis
+    hostPath:
+      path: {{DATA_DIR}}/paperless/redis
+      type: DirectoryOrCreate
+  - name: paperless-pgdata
+    hostPath:
+      path: {{DATA_DIR}}/paperless/pgdata
+      type: DirectoryOrCreate
+  # consume defaults under the file-share share so a scan dropped from any
+  # synced device is auto-ingested; #931 also writes OCR-skipped docs here.
+  - name: paperless-consume
+    hostPath:
+      path: {{DATA_DIR}}/file-share/data/paperless-consume
+      type: DirectoryOrCreate
+  - name: paperless-media
+    hostPath:
+      path: {{DATA_DIR}}/paperless/media
+      type: DirectoryOrCreate
+  - name: paperless-data
+    hostPath:
+      path: {{DATA_DIR}}/paperless/data
+      type: DirectoryOrCreate

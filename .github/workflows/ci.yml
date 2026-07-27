@@ -15,6 +15,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/ci.yml'
       - 'solaris-chat/**/static/**'
+      - 'solaris-chat/.importlinter'
   push:
     branches: [main]
     paths:
@@ -25,6 +26,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/ci.yml'
       - 'solaris-chat/**/static/**'
+      - 'solaris-chat/.importlinter'
 
 permissions:
   contents: read
@@ -75,6 +77,23 @@ jobs:
           python-version: "3.11"
       - run: pip install -e '.[test]'
       - run: pytest -q
+
+  import-linter:
+    name: import-linter (solaris-chat)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: solaris-chat
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      # Editable install so grimp can resolve solaris_chat's real import graph.
+      # Architecture-invariants ratchet (issue #1038): the contracts in
+      # solaris-chat/.importlinter start permissive and only tighten over time.
+      - run: pip install -e . import-linter
+      - run: lint-imports
 
   test-templates:
     name: pytest (templates)

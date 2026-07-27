@@ -175,6 +175,12 @@ spec:
     # link (no dead link when unset).
     - name: LOGOUT_URL
       value: "{{LOGOUT_URL}}"
+    # Optional PUBLIC paperless Web-UI URL the read-only Dokumente portal links
+    # to for full-text search + corrections (#1043). This is the operator's
+    # public `https://paperless.<domain>` host, NOT PAPERLESS_URL (the loopback
+    # REST endpoint the ingest adapter uses). Empty hides the link (no dead link).
+    - name: PAPERLESS_UI_URL
+      value: "{{PAPERLESS_UI_URL}}"
     # Where the server persists image attachments (#202).
     - name: ATTACHMENTS_DIR
       value: "/data/attachments"

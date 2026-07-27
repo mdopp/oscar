@@ -63,6 +63,11 @@
     "description": "Optional logout URL shown in the chat sidebar footer (e.g. your Authelia logout endpoint like https://auth.<domain>/logout). Leave empty to hide the logout link.",
     "default": ""
   },
+  "PAPERLESS_UI_URL": {
+    "type": "text",
+    "description": "Optional public paperless Web-UI URL the read-only Dokumente portal links residents to for full-text search + corrections (#1043). Set it to the paperless template's public host, e.g. https://paperless.<domain> (the PAPERLESS_SUBDOMAIN.<publicDomain> host behind Authelia). NOT the same as PAPERLESS_URL, which is the loopback REST endpoint (127.0.0.1:8000) the #931 ingest adapter PATCHes. Leave empty to hide the outbound link (no dead link when paperless isn't installed).",
+    "default": ""
+  },
   "FRAME_ANCESTORS": {
     "type": "text",
     "description": "CSP `frame-ancestors` source list controlling who may iframe the chat. Default `'self'` (no cross-origin embedding). For the ServiceBay maintenance embed (#209) set `'self' https://admin.dopp.cloud`. DEPLOY REQUIREMENT for cross-origin embedding: the Authelia session cookie on chat's NPM proxy must be `SameSite=None; Secure` (NPM/Authelia config, not a solaris change).",

@@ -222,6 +222,7 @@ async def _run() -> None:
         import_data_dir=settings.import_data_dir,
         immich_base_url=settings.immich_base_url,
         immich_api_key=settings.immich_api_key,
+        paperless_ui_url=settings.paperless_ui_url,
     )
 
 

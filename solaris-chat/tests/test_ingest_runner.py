@@ -82,6 +82,8 @@ class FakeSettings:
     jellyfin_password: str = ""
     jellyfin_library_owners: dict = field(default_factory=dict)
     imap_accounts: tuple = ()
+    paperless_url: str = ""
+    paperless_token: str = ""
 
 
 @pytest.fixture

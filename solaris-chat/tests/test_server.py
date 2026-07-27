@@ -1953,6 +1953,34 @@ def test_list_tool_defs_surfaces_the_declarative_plugin_surface(tmp_path):
     assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
 
 
+def test_cell_schema_lint_accepts_role_field_mappings():
+    # #1022: a renderer-agnostic schema maps semantic roles to bare field names.
+    assert skills.cell_schema_violations({"title": "title", "meta": ["due"]}) == []
+    assert (
+        skills.cell_schema_violations(
+            {
+                "title": "name",
+                "subtitle": "role",
+                "meta": ["phone", "email"],
+                "badge": "state",
+                "actions": ["contact.add"],
+            }
+        )
+        == []
+    )
+
+
+def test_cell_schema_lint_rejects_browser_only_leakage():
+    # #1022: HTML/CSS/handlers, unknown roles, and shape mismatches all fail —
+    # they would break a non-browser (RemoteViews) consumer.
+    assert skills.cell_schema_violations({"title": "<b>{{name}}</b>"})
+    assert skills.cell_schema_violations({"title": ".task-title"})  # CSS class
+    assert skills.cell_schema_violations({"onClick": "doThing()"})  # unknown role
+    assert skills.cell_schema_violations({"title": ["a", "b"]})  # role wants one field
+    assert skills.cell_schema_violations({"meta": "phone"})  # role wants a list
+    assert skills.cell_schema_violations([])  # not an object
+
+
 def test_shipped_pack_groups_into_the_four_kinds():
     # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
     # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.

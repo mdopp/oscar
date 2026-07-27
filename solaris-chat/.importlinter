@@ -1,0 +1,38 @@
+# Architecture-invariants ratchet for the Solaris Engine (issue #1038).
+#
+# Permissive start: only the layer boundaries that hold TODAY are gated, as
+# `forbidden` contracts (the loosest form — one banned direction each). Ratchet
+# tighter over time (add contracts, tighten to a `layers` contract); NEVER
+# loosen an existing one. project-standards catalog #5.
+#
+# Directions gated (all true at HEAD, verified 2026-07-23):
+#   - knowledge/ is the shared OKF sink; it must not reach up into the chat
+#     server surface, nor sideways into the ingest adapters that feed it.
+#   - ingest adapters must not reach up into the chat server surface.
+
+[importlinter]
+root_package = solaris_chat
+
+[importlinter:contract:knowledge-not-server]
+name = engine.knowledge must not import the chat server surface
+type = forbidden
+source_modules =
+    solaris_chat.engine.knowledge
+forbidden_modules =
+    solaris_chat.server
+
+[importlinter:contract:knowledge-not-ingest]
+name = engine.knowledge (the sink) must not import engine.ingest (the adapters)
+type = forbidden
+source_modules =
+    solaris_chat.engine.knowledge
+forbidden_modules =
+    solaris_chat.engine.ingest
+
+[importlinter:contract:ingest-not-server]
+name = engine.ingest adapters must not import the chat server surface
+type = forbidden
+source_modules =
+    solaris_chat.engine.ingest
+forbidden_modules =
+    solaris_chat.server

@@ -253,12 +253,26 @@ def person_directory(db_path: str, uid: str) -> list[dict[str, Any]] | None:
     return out
 
 
+def _vorgang_key(facts: dict[str, dict[str, Any]]) -> str:
+    """The Vorgang identifier for a document: its `policy_number` fact,
+    normalized (case/whitespace-folded) so `KR 74536202` and `kr74536202`
+    group as one Vorgang. Empty when the document carries no such identifier —
+    it then stands alone, never folded into a group."""
+    val = (facts.get("policy_number") or {}).get("value") or ""
+    return "".join(val.split()).casefold()
+
+
 def category_view(db_path: str, uid: str, category: str) -> list[dict[str, Any]] | None:
     """The table rows for one category: per document, its title + fact map.
 
     Each fact is `{value, confidence}`; per predicate the highest-confidence
     value wins (a human-confirmed 1.0 beats the agent-extracted 0.6), so a
-    corrected field displays as authoritative."""
+    corrected field displays as authoritative.
+
+    Each row also carries a `vorgang` key (the normalized `policy_number`, empty
+    when absent) so the portal can group documents that share a policy/contract
+    identifier — a renewal, its invoice and a cancellation letter — into one
+    Vorgang instead of scattering them as unrelated rows."""
     conn = _connect(db_path)
     if conn is None:
         return None
@@ -293,6 +307,7 @@ def category_view(db_path: str, uid: str, category: str) -> list[dict[str, Any]]
                     "title": doc["title"],
                     "facts": facts,
                     "source_document": facts.get("source_document", {}).get("value"),
+                    "vorgang": _vorgang_key(facts),
                 }
             )
     finally:

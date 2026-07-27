@@ -22,6 +22,8 @@ from .jellyfin import (
 )
 from .obsidian import ObsidianIngest, ObsidianIngestStats
 from .obsidian_reader import ObsidianReader, VaultNote, VaultObsidianReader
+from .paperless import push_companion, push_uploads
+from .paperless_client import PaperlessClient, RestPaperlessClient
 from .runner import run_ingest
 
 
@@ -52,4 +54,8 @@ __all__ = [
     "ObsidianReader",
     "VaultNote",
     "VaultObsidianReader",
+    "PaperlessClient",
+    "RestPaperlessClient",
+    "push_companion",
+    "push_uploads",
 ]

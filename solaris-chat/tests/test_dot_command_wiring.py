@@ -68,6 +68,22 @@ def test_migrated_tools_carry_declarative_kind_tool_defs():
     assert _has(r'def && def\["tool-label"\]')
 
 
+def test_shipped_tool_cell_schemas_are_renderer_agnostic():
+    # #1022: every shipped .tool's cell-schema is a renderer-agnostic role→field
+    # mapping (no HTML/CSS/DOM) so a non-browser consumer (Android RemoteViews)
+    # can render the same schema — enforced by the schema lint, not just intent.
+    from pathlib import Path
+
+    from solaris_chat.skills import cell_schema_violations, list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    for d in list_tool_defs(pack):
+        violations = cell_schema_violations(d["tool-cell-schema"])
+        assert violations == [], (
+            f"{d['tool-id']} cell-schema not renderer-agnostic: {violations}"
+        )
+
+
 def test_task_dispatches_through_the_generic_tool_registry_card():
     # #1005: the client fetches the tool registry (/api/defs/tool) into
     # toolRegistry at init and dispatches .task through buildGenericToolCard.

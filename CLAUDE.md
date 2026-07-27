@@ -80,3 +80,16 @@ These rules apply to every session, human or agent.
 - Capture **symptom + repro + starting-point files** — not a fix-plan or
   acceptance bullets. The fix is decided in the PR. Symptom-style issues age
   well; fix-plan-heavy bodies rot. See `.github/ISSUE_TEMPLATE/bug_report.md`.
+
+## Autoloop state
+
+- `.claude/state/work-queue.json` is **retired** — never `cat`/read/write it,
+  and never recreate it. It used to be re-read into context in full on every
+  autoloop tick (~82KB), which burns tokens for no reason and doesn't scale to
+  concurrent loop instances.
+- All autoloop state now goes through
+  `.claude/skills/autoloop-issues/queue.py` (`summary`/`candidates`/`plan`/
+  `next`/`claim`/`built`/`batch`/`verify-set`/`verify-get`/`park`/`note`/
+  `mirror`/`rebuild`) — durable state lives in GitHub (`autoloop:*` labels +
+  issue comments), a tiny gitignored `.claude/state/autoloop-cache.json` holds
+  only in-flight run state. See `.claude/skills/autoloop-issues/SKILL.md`.

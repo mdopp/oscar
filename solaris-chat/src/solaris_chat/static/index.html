@@ -723,16 +723,27 @@
     }
     .doc-table th { color: var(--muted); font-weight: 600; background: var(--panel-solid); }
     .doc-table .doc-title-cell { font-weight: 600; color: var(--ink); }
+    /* Vorgang grouping (#1052): a labelled band above the documents that share a
+       policy/contract number, so a renewal + its invoice read as one dossier. */
+    .doc-vorgang-head {
+      font-size: 12px; font-weight: 700; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.03em;
+    }
+    .doc-table .doc-vorgang-head {
+      background: var(--panel-solid); padding: 6px 10px; white-space: normal;
+    }
+    .doc-card-grouped { border-left: 3px solid var(--accent); }
     .doc-badge {
       display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 20px; padding: 0 7px;
     }
-    .doc-edit {
-      margin-left: 6px; color: var(--muted); cursor: pointer; font: inherit;
-      background: none; border: none; padding: 0;
+    /* Outbound link into the paperless Web-UI for search + corrections (#1043). */
+    .paperless-link {
+      display: inline-flex; align-items: center; gap: 6px; margin: 6px 0 10px;
+      color: var(--accent); font-weight: 600; text-decoration: none;
     }
-    .doc-edit:hover { color: var(--accent); }
+    .paperless-link:hover { text-decoration: underline; }
     /* Mobile card path (renderCategoryTable): one document = one card, values
        stacked, matching .notes-card tokens. The table is desktop-only. */
     .doc-card {
@@ -6712,6 +6723,9 @@
       // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
       var contextWindow = 131072;
+      // The public paperless Web-UI URL (#1043); empty ⇒ the read-only Dokumente
+      // portal hides its "In Paperless öffnen" link (no dead link).
+      var paperlessUiUrl = "";
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
@@ -6726,6 +6740,7 @@
               lo.href = j.logout_url; lo.hidden = false;
             }
             isAdmin = !!(j && j.is_admin);
+            paperlessUiUrl = (j && j.paperless_ui_url) || "";
             if (j && j.household_session_id) householdSessionId = j.household_session_id;
             wartungSessionId = (j && j.wartung_session_id) || "";
             document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
@@ -7503,6 +7518,21 @@
         "start_date", "renewal_date", "cancellation_deadline",
       ];
 
+      // An outbound link into the paperless Web-UI (#1043) — full-text search +
+      // corrections live there now (paperless owns storage/UI/search). Returns
+      // null when no public paperless URL is configured, so the portal simply
+      // omits the link rather than rendering a dead one.
+      function paperlessLink(label) {
+        if (!paperlessUiUrl) return null;
+        var a = document.createElement("a");
+        a.className = "paperless-link";
+        a.href = paperlessUiUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
+        return a;
+      }
+
       // The Dokumente overview: one tappable doorway per non-empty category,
       // count shown, most-populated first — mirrors renderNotesPage's Card 1.
       function renderDocumentsPage(card) {
@@ -7538,8 +7568,11 @@
             lead.className = "notes-card-lead";
             lead.textContent =
               "Deine Dokumente — nach Art geordnet. Tippe eine Kachel an, um die " +
-              "erfassten Angaben zu sehen und zu korrigieren.";
+              "erfassten Angaben zu sehen. Zum Suchen im Volltext oder Korrigieren " +
+              "öffne das Dokumentenarchiv.";
             mem.appendChild(lead);
+            var pl = paperlessLink("📂 Dokumentenarchiv öffnen");
+            if (pl) mem.appendChild(pl);
 
             var doors = document.createElement("div");
             doors.className = "notes-doorways";
@@ -7825,10 +7858,44 @@
         else docMobileMedia.addListener(onDocViewportChange);
       })();
 
+      // Order rows so documents of the same Vorgang (shared policy/contract
+      // identifier) sit together, and label each multi-document Vorgang so a
+      // renewal, its invoice and a cancellation letter read as one dossier
+      // rather than scattered rows. Returns [{vorgang, label, rows}]: a group
+      // per multi-doc Vorgang (label = its policy number), then one trailing
+      // group (label null) for every standalone document. Groups keep the
+      // server's title order; standalones keep it too.
+      function groupByVorgang(rows) {
+        var byKey = {};
+        var order = [];
+        rows.forEach(function (row) {
+          var key = row.vorgang || "";
+          if (!byKey[key]) { byKey[key] = []; if (key) order.push(key); }
+          byKey[key].push(row);
+        });
+        var groups = [];
+        order.forEach(function (key) {
+          var members = byKey[key];
+          if (members.length > 1) {
+            var num = (members[0].facts && members[0].facts.policy_number
+              && members[0].facts.policy_number.value) || key;
+            groups.push({ vorgang: key, label: num, rows: members });
+          }
+        });
+        var singles = [];
+        rows.forEach(function (row) {
+          var key = row.vorgang || "";
+          if (!key || byKey[key].length <= 1) singles.push(row);
+        });
+        if (singles.length) groups.push({ vorgang: "", label: null, rows: singles });
+        return groups;
+      }
+
       // A category's documents: on desktop a table (one row per document,
       // columns = the union of predicates minus category/source_document, title
       // first + an "Original" link last); on mobile each document is a stacked
-      // card. Built as real DOM — the markdown renderer can't produce tables.
+      // card. Documents sharing a Vorgang (policy/contract id) are grouped under
+      // a labelled heading. Built as real DOM — markdown can't produce tables.
       function renderCategoryTable(card, category) {
         activeCategoryView = { card: card, category: category };
         var meta = DOCUMENT_CATEGORY_META[category] || [category, "🗂️"];
@@ -7855,6 +7922,9 @@
             if (!j || !j.ok) { card.appendChild(errLine("Kategorie nicht verfügbar.")); return; }
             var rows = j.rows || [];
             if (!rows.length) { card.appendChild(errLine("Keine Einträge")); return; }
+
+            var pl = paperlessLink("📂 Im Dokumentenarchiv suchen & korrigieren");
+            if (pl) card.appendChild(pl);
 
             // Column set = union of predicates across rows, excluding the two
             // non-column facts, ordered by DOCUMENT_FIELD_ORDER then alphabetical.
@@ -7893,20 +7963,32 @@
         table.appendChild(thead);
 
         var tbody = document.createElement("tbody");
-        rows.forEach(function (row) {
-          var tr = document.createElement("tr");
-          var titleTd = document.createElement("td");
-          titleTd.className = "doc-title-cell";
-          titleTd.textContent = row.title || row.entity_id || "—";
-          tr.appendChild(titleTd);
-          cols.forEach(function (p) {
-            tr.appendChild(docCell(card, category, row, p, DOCUMENT_FIELD_LABEL[p] || p));
+        groupByVorgang(rows).forEach(function (group) {
+          if (group.label) {
+            var gtr = document.createElement("tr");
+            gtr.className = "doc-vorgang-row";
+            var gtd = document.createElement("td");
+            gtd.colSpan = cols.length + 2;
+            gtd.className = "doc-vorgang-head";
+            gtd.textContent = "Vorgang · " + group.label;
+            gtr.appendChild(gtd);
+            tbody.appendChild(gtr);
+          }
+          group.rows.forEach(function (row) {
+            var tr = document.createElement("tr");
+            var titleTd = document.createElement("td");
+            titleTd.className = "doc-title-cell";
+            titleTd.textContent = row.title || row.entity_id || "—";
+            tr.appendChild(titleTd);
+            cols.forEach(function (p) {
+              tr.appendChild(docCell(card, category, row, p, DOCUMENT_FIELD_LABEL[p] || p));
+            });
+            var origTd = document.createElement("td");
+            origTd.setAttribute("data-label", "Original");
+            origTd.appendChild(documentSourceNode(row));
+            tr.appendChild(origTd);
+            tbody.appendChild(tr);
           });
-          var origTd = document.createElement("td");
-          origTd.setAttribute("data-label", "Original");
-          origTd.appendChild(documentSourceNode(row));
-          tr.appendChild(origTd);
-          tbody.appendChild(tr);
         });
         table.appendChild(tbody);
         scroll.appendChild(table);
@@ -7918,32 +8000,41 @@
       // "Original öffnen" action, styled like the app's other list cards.
       function buildDocCards(card, category, rows, cols) {
         var frag = document.createDocumentFragment();
-        rows.forEach(function (row) {
-          var box = document.createElement("div");
-          box.className = "doc-card";
-          var title = document.createElement("div");
-          title.className = "doc-card-title";
-          title.textContent = row.title || row.entity_id || "—";
-          box.appendChild(title);
-          cols.forEach(function (p) {
-            var field = document.createElement("div");
-            field.className = "doc-card-field";
-            var label = document.createElement("span");
-            label.className = "doc-card-label";
-            label.textContent = DOCUMENT_FIELD_LABEL[p] || p;
-            field.appendChild(label);
-            field.appendChild(docFieldValue(card, category, row, p));
-            box.appendChild(field);
+        groupByVorgang(rows).forEach(function (group) {
+          if (group.label) {
+            var head = document.createElement("div");
+            head.className = "doc-vorgang-head";
+            head.textContent = "Vorgang · " + group.label;
+            frag.appendChild(head);
+          }
+          group.rows.forEach(function (row) {
+            var box = document.createElement("div");
+            box.className = "doc-card";
+            if (group.label) box.classList.add("doc-card-grouped");
+            var title = document.createElement("div");
+            title.className = "doc-card-title";
+            title.textContent = row.title || row.entity_id || "—";
+            box.appendChild(title);
+            cols.forEach(function (p) {
+              var field = document.createElement("div");
+              field.className = "doc-card-field";
+              var label = document.createElement("span");
+              label.className = "doc-card-label";
+              label.textContent = DOCUMENT_FIELD_LABEL[p] || p;
+              field.appendChild(label);
+              field.appendChild(docFieldValue(card, category, row, p));
+              box.appendChild(field);
+            });
+            var orig = document.createElement("div");
+            orig.className = "doc-card-field";
+            var origLabel = document.createElement("span");
+            origLabel.className = "doc-card-label";
+            origLabel.textContent = "Original";
+            orig.appendChild(origLabel);
+            orig.appendChild(documentSourceNode(row));
+            box.appendChild(orig);
+            frag.appendChild(box);
           });
-          var orig = document.createElement("div");
-          orig.className = "doc-card-field";
-          var origLabel = document.createElement("span");
-          origLabel.className = "doc-card-label";
-          origLabel.textContent = "Original";
-          orig.appendChild(origLabel);
-          orig.appendChild(documentSourceNode(row));
-          box.appendChild(orig);
-          frag.appendChild(box);
         });
         return frag;
       }
@@ -7976,11 +8067,10 @@
         return p;
       }
 
-      // One value cell: shows the fact value, an "unbestätigt" badge when the
-      // fact was agent-extracted (confidence < 1.0), and a "✎" quick-edit that
-      // POSTs a confirmed value then re-renders the whole table (clearing badges).
-      // The inline editor is a prompt() for now — a nicer in-cell editor is a
-      // follow-up.
+      // One value cell: shows the fact value and an "unbestätigt" badge when the
+      // fact was agent-extracted (confidence < 1.0). Read-only (#1043) — paperless
+      // now owns storage/UI/search, so corrections happen in the paperless Web-UI
+      // (the "In Paperless öffnen" link), not inline here.
       function docCell(card, category, row, predicate, label) {
         var td = document.createElement("td");
         td.setAttribute("data-label", label || DOCUMENT_FIELD_LABEL[predicate] || predicate);
@@ -7988,10 +8078,9 @@
         return td;
       }
 
-      // The value + "unbestätigt" badge + "✎" quick-edit for one fact, as a
-      // fragment shared by the table cell and the mobile card field. The ✎ POSTs
-      // a confirmed value then re-renders (clearing badges). The inline editor is
-      // a prompt() for now — a nicer in-cell editor is a follow-up.
+      // The value + "unbestätigt" badge for one fact, as a fragment shared by the
+      // table cell and the mobile card field. Read-only (#1043): no inline edit —
+      // corrections are made in the paperless Web-UI.
       function docFieldValue(card, category, row, predicate) {
         var frag = document.createDocumentFragment();
         var fact = (row.facts || {})[predicate];
@@ -8005,30 +8094,6 @@
           badge.textContent = "unbestätigt";
           frag.appendChild(badge);
         }
-        var edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "doc-edit";
-        edit.title = "Korrigieren";
-        edit.setAttribute("aria-label", "Korrigieren");
-        edit.textContent = "✎";
-        edit.addEventListener("click", function () {
-          var next = window.prompt(
-            (DOCUMENT_FIELD_LABEL[predicate] || predicate) + " korrigieren:",
-            value == null ? "" : String(value));
-          if (next == null) return;
-          fetch("/api/portal/documents/correct", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ entity_id: row.entity_id, predicate: predicate, value: next }),
-          })
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (res) {
-              if (res && res.ok) renderCategoryTable(card, category);
-              else window.alert("Korrektur fehlgeschlagen.");
-            })
-            .catch(function () { window.alert("Korrektur fehlgeschlagen."); });
-        });
-        frag.appendChild(edit);
         return frag;
       }
 

@@ -1498,6 +1498,238 @@ def apply_caldav_read_to_engine(data_dir: str, password: str) -> bool:
     return True
 
 
+# ── Paperless managed admin + DRF token converge (#1034) ─────────────────────
+# The #931 PaperlessIngest handoff no-op'd on the box: paperless is SSO-only
+# (Authelia remote-user, no native login), so there was no API-token-bearing
+# user and PAPERLESS_URL/TOKEN were empty in the engine. Option A (maintainer
+# 2026-07-23): provision a MANAGED paperless superuser (PAPERLESS_ADMIN_USER/
+# PASSWORD, template.yml) whose password we own host-side, then MINT that
+# admin's DRF API token via /api/token/ and STAMP PAPERLESS_URL + PAPERLESS_TOKEN
+# into the engine pod (the renderer prunes empty env, so we insert/patch like the
+# SYNC_DAV wiring). Persist the token too so it survives a render that prunes it.
+# Idempotent + best-effort + a clean no-op when paperless isn't installed.
+PAPERLESS_ADMIN_PASSWORD_FILE = ".paperless-admin-password"
+PAPERLESS_TOKEN_FILE = ".paperless-token"
+PAPERLESS_URL_DEFAULT = "http://127.0.0.1:8000"
+PAPERLESS_ADMIN_USER_DEFAULT = "solaris"
+PAPERLESS_CONTAINER = os.environ.get("PAPERLESS_CONTAINER", "paperless-webserver")
+
+
+def _persisted_paperless_password(data_dir: str) -> str | None:
+    """Read/mint the managed paperless admin password, persisted at
+    <data_dir>/solarisbay/.paperless-admin-password (0600).
+
+    Generates a strong URL-safe value once if absent, reuses it afterwards (so
+    every later deploy reconciles the SAME password). Returns None only when the
+    dir can't be written. Never logs the value. Mirrors
+    _persisted_jellyfin_password."""
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_ADMIN_PASSWORD_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    password = _secrets.token_urlsafe(24)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(password + "\n")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        jlog(
+            "warn",
+            "paperless",
+            "could not persist paperless admin password",
+            error=str(e),
+        )
+        return None
+    jlog("info", "paperless", "minted managed paperless admin password")
+    return password
+
+
+def _persist_paperless_token(data_dir: str, token: str) -> None:
+    """Persist the minted paperless DRF token at
+    <data_dir>/solarisbay/.paperless-token (0600) so it survives a render that
+    prunes PAPERLESS_TOKEN from the pod env. Best-effort; never logs the value."""
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_TOKEN_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        jlog("warn", "paperless", "could not persist paperless token", error=str(e))
+
+
+def _read_persisted_paperless_token(data_dir: str) -> str:
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_TOKEN_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def mint_paperless_token(
+    paperless_url: str, username: str, password: str
+) -> str | None:
+    """Mint the paperless admin's DRF API token by POSTing the managed admin
+    credentials to paperless `/api/token/` (DRF obtain_auth_token), which returns
+    {"token": "…"}. Returns the token, or None when paperless isn't reachable or
+    the credentials aren't (yet) accepted. Best-effort — never raises."""
+    status, body = post_json(
+        f"{paperless_url.rstrip('/')}/api/token/",
+        {"username": username, "password": password},
+        timeout=15,
+    )
+    token = body.get("token") if isinstance(body, dict) else None
+    if status == 200 and isinstance(token, str) and token:
+        return token
+    jlog(
+        "info",
+        "paperless",
+        "paperless token mint did not return a token",
+        status=status,
+    )
+    return None
+
+
+def create_paperless_superuser(username: str, password: str) -> bool:
+    """Create the managed paperless superuser via `manage.py createsuperuser
+    --noinput` inside the webserver container, with DJANGO_SUPERUSER_PASSWORD in
+    the exec env. paperless-ngx only bootstraps PAPERLESS_ADMIN_USER/PASSWORD on
+    first DB init, so an existing DB (or a pruned pod env) never gets the admin —
+    this creates it so the DRF token mint can succeed. Idempotent: a non-zero exit
+    means the user already exists, which is fine. Best-effort — never raises."""
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                "-e",
+                f"DJANGO_SUPERUSER_PASSWORD={password}",
+                PAPERLESS_CONTAINER,
+                "python3",
+                "manage.py",
+                "createsuperuser",
+                "--noinput",
+                "--username",
+                username,
+                "--email",
+                f"{username}@localhost",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog("info", "paperless", "createsuperuser did not run", error=str(e))
+        return False
+    if proc.returncode == 0:
+        jlog("info", "paperless", "created managed paperless superuser", user=username)
+        return True
+    # Non-zero exit is expected when the user already exists — not fatal.
+    jlog(
+        "info",
+        "paperless",
+        "createsuperuser non-zero exit (user likely already exists)",
+        user=username,
+        stderr=proc.stderr[:200],
+    )
+    return False
+
+
+def _patch_or_insert_paperless_env(src: str, url: str, token: str) -> tuple[str, int]:
+    """Wire PAPERLESS_URL + PAPERLESS_TOKEN into the engine container's env list
+    (pure). PATCH in place when present; else INSERT after the CALDAV_URL anchor
+    (the renderer prunes empty env). Returns (new_text, n) with n>0 when the
+    manifest now carries the token. Returns (src, 0) when the anchor is absent."""
+    new = _patch_or_insert_env(src, "PAPERLESS_URL", url)
+    if re.search(r"- name: PAPERLESS_TOKEN\n\s+value:", new):
+        new, n = _patch_env_value(new, "PAPERLESS_TOKEN", token)
+    else:
+        after = _insert_after_caldav_anchor(new, [("PAPERLESS_TOKEN", token)])
+        n = 1 if after != new else 0
+        new = after
+    return new, n
+
+
+def apply_paperless_credential_to_engine(data_dir: str, url: str, token: str) -> bool:
+    """Stamp PAPERLESS_URL + PAPERLESS_TOKEN into the deployed solaris.yml so the
+    #931 ingest handoff runs for real (#1034) — the renderer prunes empty env, so
+    we insert/patch like the SYNC_DAV wiring. Best-effort; returns True when the
+    manifest now carries the token."""
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog(
+            "warn", "paperless", "solaris.yml not found at expected path", path=pod_yml
+        )
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "paperless", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patch_or_insert_paperless_env(src, url, token)
+    if n == 0:
+        jlog(
+            "warn",
+            "paperless",
+            "could not wire PAPERLESS env into solaris.yml — no PAPERLESS_TOKEN "
+            "entry to patch nor a CALDAV_URL anchor to insert after",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "paperless", "could not write patched solaris.yml", error=str(e))
+        return False
+    jlog(
+        "info", "paperless", "stamped PAPERLESS_URL + PAPERLESS_TOKEN into solaris.yml"
+    )
+    return True
+
+
+def converge_paperless_credential(data_dir: str) -> bool:
+    """Make the #931 paperless-ingest handoff run for real (#1034, option A):
+    persist a managed paperless admin password, mint that admin's DRF API token
+    once paperless is reachable, and stamp PAPERLESS_URL + PAPERLESS_TOKEN into
+    the deployed solaris.yml (persisting the token so a later render can't prune
+    it). Idempotent + best-effort + a clean no-op when paperless isn't installed
+    or reachable. Returns True when the engine now carries a paperless token."""
+    password = _persisted_paperless_password(data_dir)
+    if not password:
+        return False
+    paperless_url = env("PAPERLESS_URL", PAPERLESS_URL_DEFAULT)
+    admin_user = env("PAPERLESS_ADMIN_USER", PAPERLESS_ADMIN_USER_DEFAULT)
+    token = mint_paperless_token(paperless_url, admin_user, password)
+    if not token:
+        # Mint failed — most often because the managed superuser doesn't exist
+        # yet (paperless only bootstraps PAPERLESS_ADMIN_USER/PASSWORD on first
+        # DB init, and that env is pruned on a re-install; #1036). Create it and
+        # retry the mint once before falling back.
+        if create_paperless_superuser(admin_user, password):
+            token = mint_paperless_token(paperless_url, admin_user, password)
+    if not token:
+        # paperless not installed / not up yet / creds not accepted — fall back
+        # to a previously persisted token so a transient outage doesn't drop the
+        # engine's paperless wiring; otherwise no-op cleanly.
+        token = _read_persisted_paperless_token(data_dir)
+        if not token:
+            jlog("info", "paperless", "no paperless token — ingest wiring stays off")
+            return False
+    else:
+        _persist_paperless_token(data_dir, token)
+    return apply_paperless_credential_to_engine(data_dir, paperless_url, token)
+
+
 def _radicale_rights_heredoc(ind: str) -> str:
     """The `cat > /config/rights <<'EOF' … EOF` shell heredoc, every line at the
     block scalar's `ind` (so YAML strips it to column 0 and the `EOF` delimiter
@@ -1613,6 +1845,115 @@ def converge_radicale_rights() -> bool:
         check=False,
         capture_output=True,
     )
+    return True
+
+
+# ── durable rights self-heal (#1023) ─────────────────────────────────────────
+# converge_radicale_rights() runs only on a solaris deploy, but radicale is a
+# ServiceBay-registry service: a radicale RE-RENDER / autoupdate regenerates
+# radicale.yml back to stock `owner_only` and wipes /config/rights, so `solaris`
+# 403s on PUT /<uid>/solaris/ and the calendar feature breaks until the next
+# `install_template solaris`. The engine (host-networked but IN a container)
+# can DETECT the revert via the DAV API, but re-patching radicale.yml on the
+# HOST and restarting the radicale systemd unit is a host operation the engine
+# can't do. So the self-heal is a host-side systemd `.timer` the post-deploy
+# installs, which periodically re-runs THIS SAME script in converge-only mode
+# (SOLARIS_CONVERGE_ONLY=1 → main() calls just converge_radicale_rights() and
+# exits). converge_radicale_rights() is already idempotent + drift-aware, so a
+# stock owner_only is re-converged and radicale restarted; an already-converged
+# manifest is a no-op. No second copy of the patch logic → no drift.
+RADICALE_RIGHTS_SERVICE = "solaris-radicale-rights"
+RADICALE_RIGHTS_CONVERGE_SCRIPT = "radicale-rights-converge.py"
+RADICALE_RIGHTS_TIMER_INTERVAL = "15min"
+
+
+def render_radicale_rights_service(script_path: str) -> str:
+    """Render the oneshot `.service` that re-runs the post-deploy in converge-
+    only mode (pure). SOLARIS_CONVERGE_ONLY=1 short-circuits main() to just the
+    radicale-rights converge."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Radicale rights self-heal (#1023)\n"
+        "After=radicale.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=SOLARIS_CONVERGE_ONLY=1\n"
+        f"ExecStart=/usr/bin/env python3 {script_path}\n"
+    )
+
+
+def render_radicale_rights_timer() -> str:
+    """Render the `.timer` that fires the rights-converge service on a fixed
+    cadence and shortly after boot (pure). Persistent= re-fires a missed run
+    after the box was off."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Radicale rights self-heal timer (#1023)\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=2min\n"
+        f"OnUnitActiveSec={RADICALE_RIGHTS_TIMER_INTERVAL}\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
+def install_radicale_rights_timer(data_dir: str) -> bool:
+    """Install the host-side self-heal timer (#1023): copy THIS script to a
+    durable data-dir path and write a `.service` + `.timer` that re-run it in
+    converge-only mode. Idempotent (rewrites only on drift) + best-effort — a
+    failure never blocks the deploy. Returns True when the timer is active."""
+    systemd_dir = os.path.expanduser("~/.config/systemd/user")
+    script_dst = os.path.join(data_dir, "solarisbay", RADICALE_RIGHTS_CONVERGE_SCRIPT)
+    try:
+        with open(os.path.realpath(__file__), encoding="utf-8") as f:
+            self_src = f.read()
+    except OSError as e:
+        jlog("warn", "radicale-rights", "could not read self for timer", error=str(e))
+        return False
+    try:
+        os.makedirs(os.path.dirname(script_dst), exist_ok=True)
+        with open(script_dst, "w", encoding="utf-8") as f:
+            f.write(self_src)
+        os.chmod(script_dst, 0o755)
+        os.makedirs(systemd_dir, exist_ok=True)
+        with open(
+            os.path.join(systemd_dir, f"{RADICALE_RIGHTS_SERVICE}.service"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(render_radicale_rights_service(script_dst))
+        with open(
+            os.path.join(systemd_dir, f"{RADICALE_RIGHTS_SERVICE}.timer"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(render_radicale_rights_timer())
+    except OSError as e:
+        jlog(
+            "warn", "radicale-rights", "could not install self-heal timer", error=str(e)
+        )
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    started = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", f"{RADICALE_RIGHTS_SERVICE}.timer"],
+        capture_output=True,
+        text=True,
+    )
+    if started.returncode != 0:
+        jlog(
+            "warn",
+            "radicale-rights",
+            "could not enable self-heal timer",
+            error=started.stderr[:300],
+        )
+        return False
+    jlog("info", "radicale-rights", "installed rights self-heal timer", path=script_dst)
     return True
 
 
@@ -2586,6 +2927,13 @@ def restart_solaris(sb_api: str) -> bool:
 
 
 def main() -> int:
+    # Converge-only mode (#1023): the self-heal timer re-runs THIS script to
+    # re-apply the radicale rights converge if a radicale re-render reverted them.
+    # Do just that and exit — none of the deploy-time HA/token/restart wiring.
+    if _truthy(env("SOLARIS_CONVERGE_ONLY")):
+        converge_radicale_rights()
+        return 0
+
     data_dir = env("DATA_DIR", "/mnt/data")
     sb_api = env("SB_API_URL", "http://localhost:3000").rstrip("/")
     host = env("HOST", "<server-ip>")
@@ -2622,6 +2970,11 @@ def main() -> int:
     # keeps owner_only's guarantee and additionally lets `solaris` write only the
     # per-resident `solaris` calendar. Restarts radicale itself on drift.
     converge_radicale_rights()
+    # Durable self-heal (#1023): a radicale re-render/autoupdate reverts the
+    # rights to stock owner_only until the next solaris deploy. Install a
+    # host-side timer that periodically re-runs this converge so the calendar
+    # feature heals without a full re-install.
+    install_radicale_rights_timer(data_dir)
     # Route household-wide dated items to the primary resident's calendar (#1011):
     # stamp HOUSEHOLD_CALENDAR_UID (persisted operator choice) into the pod env,
     # which the renderer otherwise prunes. The restart below picks it up.
@@ -2631,6 +2984,11 @@ def main() -> int:
     # fills, reusing the managed `solaris` DAV password. Renderer prunes these env
     # entries, so we stamp them; the restart below picks them up.
     apply_caldav_read_to_engine(data_dir, jellyfin_password)
+    # Make the #931 paperless-ingest handoff run for real (#1034, option A):
+    # persist a managed paperless admin password, mint that admin's DRF API token
+    # once paperless is reachable, and stamp PAPERLESS_URL + PAPERLESS_TOKEN into
+    # the pod env (the renderer prunes empty env). No-op when paperless is absent.
+    converge_paperless_credential(data_dir)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(

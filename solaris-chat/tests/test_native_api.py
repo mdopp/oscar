@@ -1395,3 +1395,64 @@ async def test_photo_search_filters_by_person_and_returns_rows(
     # Only the asset tagged with Anna matches the person filter.
     assert ids == ["a1"]
     assert j["photos"][0]["people"] == ["Anna"]
+
+
+# ---- /napi/defs/tool — the .tool catalog on the device-token surface (#1021) --
+
+
+def _write_tool_def(skills_dir: Path) -> None:
+    d = skills_dir / "task-tool"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        "---\n"
+        "name: solaris-task-tool\n"
+        "description: The .task tool.\n"
+        "kind: tool\n"
+        "tool-id: task\n"
+        "tool-label: Aufgabe\n"
+        "command: .task\n"
+        "tool-api-path: /api/portal/tasks?done=1\n"
+        "tool-actions: task.set_status, task.add\n"
+        'tool-cell-schema: {"title": "title", "meta": ["due"]}\n'
+        "---\n\n# Task\n",
+        encoding="utf-8",
+    )
+
+
+def _defs_app(tmp_path, db):
+    skills_dir = tmp_path / "skills"
+    _write_tool_def(skills_dir)
+    return build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        skills_dir=str(skills_dir),
+    )
+
+
+async def test_napi_defs_tool_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_defs_app(tmp_path, db))
+    # Proxy-bypassed: a spoofable Remote-User must NOT reach the catalog.
+    r = await client.get("/napi/defs/tool", headers={"Remote-User": "mdopp"})
+    assert r.status == 401
+
+
+async def test_napi_defs_tool_valid_token_serves_catalog(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_defs_app(tmp_path, db))
+    r = await client.get(
+        "/napi/defs/tool", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    j = await r.json()
+    # Same payload as /api/defs/tool: the declarative plugin surface (#1021).
+    assert j["ok"] is True and j["kind"] == "tool"
+    tool = j["defs"][0]
+    assert tool["tool-id"] == "task"
+    assert tool["tool-api-path"] == "/api/portal/tasks?done=1"
+    assert tool["tool-actions"] == ["task.set_status", "task.add"]
+    assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}

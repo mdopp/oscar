@@ -116,6 +116,57 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
     return out
 
 
+# The `tool-cell-schema` contract is renderer-AGNOSTIC (#1022, ADR 0011): the
+# schema maps item fields to SEMANTIC ROLES, never to markup — so a DOM renderer
+# (`renderListCell`) and a non-browser one (Android RemoteViews: no HTML/CSS/JS,
+# a fixed set of view types, click → PendingIntent) can both render it. The
+# closed role vocabulary a role maps a field to; `actions` references action ids
+# only. Anything outside this is browser-only and native must skip/degrade — so
+# we forbid it here rather than let it silently break a native consumer.
+_CELL_SCHEMA_STRING_ROLES = ("title", "subtitle", "badge", "state", "icon")
+_CELL_SCHEMA_LIST_ROLES = ("meta", "actions")
+_CELL_SCHEMA_ROLES = _CELL_SCHEMA_STRING_ROLES + _CELL_SCHEMA_LIST_ROLES
+
+
+def cell_schema_violations(schema: dict[str, Any]) -> list[str]:
+    """Renderer-agnostic-schema lint for a `tool-cell-schema` (#1022, ADR 0011).
+
+    Returns the reasons a schema would NOT render on a non-browser consumer —
+    empty means clean. Enforced: only the closed role vocabulary
+    (`title`/`subtitle`/`badge`/`state`/`icon` map to one field; `meta`/`actions`
+    are field lists); a role maps a bare field name, never an HTML/CSS/`<…>`
+    string or an inline handler. `actions` names `action.id`s the def declares in
+    `tool-actions`, not JS. This is the promise that one `SKILL.md` drives both a
+    PWA card and a native widget."""
+    out: list[str] = []
+    if not isinstance(schema, dict):
+        return ["schema must be a JSON object of role→field mappings"]
+
+    def _looks_like_markup(value: str) -> bool:
+        # A field name is a plain key; markup/CSS/handlers leak the browser.
+        return any(c in value for c in "<>{};") or value.strip().startswith(".")
+
+    for role, value in schema.items():
+        if role not in _CELL_SCHEMA_ROLES:
+            out.append(f"unknown role '{role}' (not in the closed vocabulary)")
+            continue
+        fields = value if isinstance(value, list) else [value]
+        if role in _CELL_SCHEMA_LIST_ROLES and not isinstance(value, list):
+            out.append(f"role '{role}' must be a list of field names")
+            continue
+        if role in _CELL_SCHEMA_STRING_ROLES and isinstance(value, list):
+            out.append(f"role '{role}' must be a single field name, not a list")
+            continue
+        for field in fields:
+            if not isinstance(field, str) or not field:
+                out.append(f"role '{role}' maps a non-string / empty field")
+            elif _looks_like_markup(field):
+                out.append(
+                    f"role '{role}' field '{field}' looks like markup, not a field name"
+                )
+    return out
+
+
 def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
     """The declarative `.tool` plugin surface (#1004, ADR 0011) read off a
     tool-kind def's flat frontmatter.

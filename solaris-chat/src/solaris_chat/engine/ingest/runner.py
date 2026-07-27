@@ -24,6 +24,7 @@ from solaris_chat.logging import log
 
 from ..knowledge import PendingEmbeddingQueue, embed_worker, projection
 from ..knowledge.writer import OkfWriter
+from ..ollama import OllamaChat
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
 from .exports import ExportsIngest
@@ -33,6 +34,8 @@ from .immich_client import RestImmichClient
 from .jellyfin import JellyfinMusicIngest, RestJellyfinMusicClient
 from .obsidian import ObsidianIngest
 from .obsidian_reader import VaultObsidianReader
+from .paperless import push_uploads
+from .paperless_client import RestPaperlessClient
 from .prune import (
     prune_empty_note_shells,
     prune_legacy_music_artifacts,
@@ -64,6 +67,7 @@ async def run_ingest(settings: Settings) -> None:
     await _run_caldav(settings, writer, uid)
     await _run_jellyfin(settings, writer, uid)
     await _run_imap(settings, writer)
+    await _run_paperless(settings)
 
     # One-shot prune (#878, ADR 0002/B7): drop the pre-switch per-item OKF
     # markdown + concepts + okf_vectors rows so a legacy song/album/band/photo
@@ -272,6 +276,22 @@ async def _run_imap(settings: Settings, writer: OkfWriter) -> None:
                 account=f"{account.username}@{account.host}/{account.folder}",
                 error=str(e),
             )
+
+
+async def _run_paperless(settings: Settings) -> None:
+    if not (settings.paperless_url and settings.paperless_token):
+        log.info("engine.ingest.paperless_skipped", reason="unconfigured")
+        return
+    base = settings.paperless_url.rstrip("/")
+    if not await _wait_for_health("paperless", f"{base}/api/"):
+        return
+    try:
+        client = RestPaperlessClient(settings.paperless_url, settings.paperless_token)
+        ollama = OllamaChat(settings.ollama_url)
+        pushed = await push_uploads(settings.notes_dir, ollama, client)
+        log.info("engine.ingest.paperless_run", pushed=pushed)
+    except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
+        log.error("engine.ingest.paperless_failed", error=str(e))
 
 
 def _load_cursor(settings: Settings, source: str) -> str:

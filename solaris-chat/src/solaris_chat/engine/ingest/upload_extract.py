@@ -36,6 +36,11 @@ _MAX_VISION_PAGES = 4
 # 300 dpi so the vision model can read small table cells (a Bausparkonto
 # Kontoauszug's amounts) that 150 dpi left too blurry.
 _VISION_DPI = "300"
+# Longest-edge pixels for the downscaled page image the paperless push (#931)
+# feeds to gemma4:12b: the PoC found the 300-dpi ~5-8 MB pages return an EMPTY
+# vision response, while a ~300 KB downscaled image transcribes cleanly. 1500 px
+# keeps a text page well under that while staying legible.
+_DOWNSCALE_LONG_EDGE = "1500"
 
 # First N pages only — a huge scan must not turn one upload into a minutes-long
 # OCR job on the ingest thread.
@@ -198,6 +203,60 @@ def _page_images(path: Path) -> list[str]:
     if ext in _IMAGE_EXTS:
         return [base64.b64encode(path.read_bytes()).decode()]
     return []
+
+
+def companion_media(notes_dir: str, companion_rel: str) -> tuple[bytes, str] | None:
+    """The raw upload file behind a companion as `(bytes, filename)`, or None.
+
+    What the paperless push (#931) POSTs verbatim (paperless stores the original,
+    OCR-skipped). Never raises — a missing/unreadable file degrades to no push."""
+    try:
+        media = _sibling_media(Path(notes_dir) / companion_rel)
+        if media is None:
+            return None
+        return media.read_bytes(), media.name
+    except OSError as e:
+        log.error("ingest.upload_extract.media_read_failed", error=str(e))
+        return None
+
+
+def downscaled_vision_image(notes_dir: str, companion_rel: str) -> str | None:
+    """A single ~300 KB base64 PNG of the companion's first page, for the
+    paperless push's vision call. The PoC found the full-res page images return
+    an EMPTY gemma response, so this renders a small first page instead. Returns
+    None on any failure (the push then skips the vision text). Never raises."""
+    try:
+        media = _sibling_media(Path(notes_dir) / companion_rel)
+        if media is None:
+            return None
+        ext = media.suffix.lower()
+        if ext == ".pdf":
+            with tempfile.TemporaryDirectory() as tmp:
+                prefix = str(Path(tmp) / "pg")
+                _run(
+                    [
+                        "pdftoppm",
+                        "-png",
+                        "-scale-to",
+                        _DOWNSCALE_LONG_EDGE,
+                        "-f",
+                        "1",
+                        "-l",
+                        "1",
+                        str(media),
+                        prefix,
+                    ]
+                )
+                pages = sorted(Path(tmp).glob("pg*.png"))
+                if not pages:
+                    return None
+                return base64.b64encode(pages[0].read_bytes()).decode()
+        if ext in _IMAGE_EXTS:
+            return base64.b64encode(media.read_bytes()).decode()
+        return None
+    except Exception as e:  # noqa: BLE001 — the push must never crash on a bad file.
+        log.error("ingest.upload_extract.downscale_failed", error=str(e))
+        return None
 
 
 def extract_into_companion(companion_md: Path) -> bool:

@@ -162,3 +162,47 @@ def test_no_anchor_leaves_file_untouched(pd):
     new, n = pd._patched_radicale_rights_yaml(no_anchor)
     assert n == 0
     assert new == no_anchor
+
+
+# ── durable self-heal timer (#1023) ──────────────────────────────────────────
+# A radicale re-render reverts the rights to owner_only until the next solaris
+# deploy. The self-heal is a host-side systemd timer that re-runs this script in
+# converge-only mode; the render_* helpers are pure, so they're unit-tested.
+
+
+def test_rights_service_reruns_self_in_converge_only_mode(pd):
+    service = pd.render_radicale_rights_service("/mnt/data/solarisbay/x.py")
+    assert "Type=oneshot" in service
+    assert "Environment=SOLARIS_CONVERGE_ONLY=1" in service
+    assert "ExecStart=/usr/bin/env python3 /mnt/data/solarisbay/x.py" in service
+    # Ordered after radicale so a co-boot restart doesn't race the pod's config.
+    assert "After=radicale.service" in service
+
+
+def test_rights_timer_fires_on_a_cadence_and_after_boot(pd):
+    timer = pd.render_radicale_rights_timer()
+    assert f"OnUnitActiveSec={pd.RADICALE_RIGHTS_TIMER_INTERVAL}" in timer
+    assert "OnBootSec=" in timer
+    # Persistent so a run missed while the box was off fires on the next boot.
+    assert "Persistent=true" in timer
+    assert "WantedBy=timers.target" in timer
+
+
+def test_converge_only_main_runs_just_the_converge(pd, monkeypatch):
+    # SOLARIS_CONVERGE_ONLY short-circuits main() to the rights converge alone —
+    # none of the deploy-time HA/token/restart wiring runs (the timer re-runs
+    # this script, and must NOT re-adopt tokens or restart the pod).
+    calls: list[str] = []
+    monkeypatch.setenv("SOLARIS_CONVERGE_ONLY", "1")
+    monkeypatch.setattr(
+        pd, "converge_radicale_rights", lambda: calls.append("converge")
+    )
+    monkeypatch.setattr(
+        pd,
+        "install_voice_pipeline",
+        lambda *a, **k: calls.append("voice"),
+    )
+    monkeypatch.setattr(pd, "restart_solaris", lambda *a, **k: calls.append("restart"))
+    rc = pd.main()
+    assert rc == 0
+    assert calls == ["converge"]
