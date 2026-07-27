@@ -2,7 +2,7 @@
 
 The `voice_embeddings` table is provisioned by the baseline Alembic
 migration (`schema/migrations/versions/20260516_0001_baseline.py`):
-one row per resident `uid`, BLOB embedding (256 × float32 = 1024 B),
+one row per resident `uid`, BLOB embedding (192 × float32 = 768 B),
 `sample_count` averaged over enrolment, and `enrolled_via`.
 
 This module owns the read/write contract; the resolver in
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-EMBEDDING_DIM = 256
+EMBEDDING_DIM = 192
 EMBEDDING_BYTES = EMBEDDING_DIM * 4  # float32
 
 
