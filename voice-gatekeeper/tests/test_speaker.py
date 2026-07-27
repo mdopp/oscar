@@ -383,3 +383,24 @@ def test_embedding_dim_matches_the_ecapa_model():
 
     assert EMBEDDING_DIM == 192
     assert EMBEDDING_BYTES == 768
+
+
+def test_advertised_languages_follow_the_system_language(monkeypatch):
+    """Satellites were told "de" no matter what the pipeline actually
+    transcribes. The advertised set now follows SOLARIS_LANGUAGE (#1057)."""
+    from gatekeeper.__main__ import _advertised_languages
+    from gatekeeper.config import system_language_from_env
+
+    monkeypatch.delenv("SOLARIS_LANGUAGE", raising=False)
+    assert system_language_from_env() == "de"
+    assert _advertised_languages() == ["de", "en"]
+
+    monkeypatch.setenv("SOLARIS_LANGUAGE", "EN")
+    assert system_language_from_env() == "en"
+    assert _advertised_languages() == ["en"]
+
+    monkeypatch.setenv("SOLARIS_LANGUAGE", "fr")
+    assert _advertised_languages() == ["fr", "en"]
+
+    monkeypatch.setenv("SOLARIS_LANGUAGE", "   ")
+    assert system_language_from_env() == "de"

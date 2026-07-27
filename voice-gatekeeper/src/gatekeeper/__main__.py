@@ -13,11 +13,18 @@ from wyoming.info import AsrModel, AsrProgram, Attribution, Info, TtsProgram
 from wyoming.server import AsyncServer
 
 from . import __version__ as GATEKEEPER_VERSION
-from .config import settings
+from .config import settings, system_language_from_env
 from .handler import GatekeeperHandler
 from .solaris import SolarisClient
 from .mcp_server import serve as serve_mcp
 from .push import serve as serve_push
+
+
+def _advertised_languages() -> list[str]:
+    """What we tell satellites we understand: the configured system language,
+    plus English, which the Whisper models handle regardless (#1057)."""
+    lang = system_language_from_env()
+    return [lang] if lang == "en" else [lang, "en"]
 
 
 def _info() -> Info:
@@ -52,7 +59,7 @@ def _info() -> Info:
                         ),
                         installed=True,
                         version=GATEKEEPER_VERSION,
-                        languages=["de", "en"],
+                        languages=_advertised_languages(),
                     )
                 ],
             )

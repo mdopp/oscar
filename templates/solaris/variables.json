@@ -303,5 +303,14 @@
       "false"
     ],
     "default": "true"
+  },
+  "SOLARIS_LANGUAGE": {
+    "type": "select",
+    "default": "de",
+    "options": [
+      "de",
+      "en"
+    ],
+    "description": "Sprache des Sprach-Stacks (#1057): speist Whisper (STT), die TTS-Bruecke, die Home-Assistant-Assist-Pipeline und die vom Gatekeeper angekuendigten Sprachen aus EINER Einstellung. WHISPER_LANGUAGE ueberschreibt sie weiterhin fuer die Spracherkennung allein. Aendert NICHT die Sprache der Prompts/Skills — die Soul ist deutsch geschrieben; eine echte Uebersetzung ist ein eigenes Thema."
   }
 }
