@@ -105,6 +105,11 @@ rationale [`docs/solaris-concept.md`](docs/solaris-concept.md).
 - **Database image source** (`database/`) — Alembic schema-init container
   that runs `alembic upgrade head` against `solaris.db` on every pod
   start. Built into `ghcr.io/mdopp/solaris-schema-init:latest`.
+- **Wakeword trainer image source** (`wakeword-trainer/`) — the GPU
+  companion that claims queued `wakeword_training_runs` and trains the
+  on-device microWakeWord "Solaris" model. The engine can only enqueue;
+  training needs TensorFlow and the GPU. Built into
+  `ghcr.io/mdopp/solaris-wakeword-trainer:latest`.
 
 ## Install
 
@@ -134,6 +139,7 @@ solarisbay/
 ├── solaris-chat/                   # Docker image source (the Solaris Engine)
 ├── voice-gatekeeper/               # Docker image source (Wyoming bridge)
 ├── database/                       # Docker image source (alembic)
+├── wakeword-trainer/               # Docker image source (microWakeWord GPU)
 ├── stacks/
 │   └── solarisbay/
 │       └── stack.yml               # templates: [ollama, solaris]
@@ -144,8 +150,9 @@ solarisbay/
 ## Image build
 
 `.github/workflows/build-images.yml` publishes
-`ghcr.io/mdopp/solaris-chat`, `ghcr.io/mdopp/solaris-gatekeeper` (+ `-ml`)
-and `ghcr.io/mdopp/solaris-schema-init` on release tags (`v*`, via
+`ghcr.io/mdopp/solaris-chat`, `ghcr.io/mdopp/solaris-gatekeeper` (+ `-ml`),
+`ghcr.io/mdopp/solaris-schema-init` and
+`ghcr.io/mdopp/solaris-wakeword-trainer` on release tags (`v*`, via
 release-please) and pushes to `main`.
 
 ## License
