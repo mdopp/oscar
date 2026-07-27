@@ -91,6 +91,16 @@ class PaperlessClient(Protocol):
         correspondent/doc-type/tag suggestions for human review in its UI."""
         ...
 
+    async def list_documents(self) -> list[dict[str, Any]]:
+        """Every stored document, each with its `correspondent`/`document_type`
+        id (or None) and `original_file_name` — the read side of #1051."""
+        ...
+
+    async def list_names(self, resource: str) -> dict[int, str]:
+        """`{id: name}` for a lookup list (`correspondents`/`document_types`),
+        so a document's id references resolve to the resident's own names."""
+        ...
+
 
 class RestPaperlessClient:
     """aiohttp wrapper over the paperless-ngx REST API (token auth)."""
@@ -165,6 +175,33 @@ class RestPaperlessClient:
                 headers=self._headers,
             ) as resp:
                 await _raise_for_status(resp)
+
+    async def list_documents(self) -> list[dict[str, Any]]:
+        return await self._get_all("/api/documents/")
+
+    async def list_names(self, resource: str) -> dict[int, str]:
+        rows = await self._get_all(f"/api/{resource}/")
+        return {
+            int(r["id"]): str(r.get("name") or "").strip() for r in rows if r.get("id")
+        }
+
+    async def _get_all(self, path: str) -> list[dict[str, Any]]:
+        """Every row of a paginated paperless list endpoint (follows `next`)."""
+        url = f"{self._base_url}{path}"
+        params: dict[str, str] = {"page_size": "100"}
+        rows: list[dict[str, Any]] = []
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            while url:
+                async with client.get(
+                    url, params=params, headers=self._headers
+                ) as resp:
+                    await _raise_for_status(resp)
+                    payload = await resp.json()
+                rows.extend(payload.get("results") or [])
+                # The `next` link already carries page + page_size.
+                url = payload.get("next") or ""
+                params = {}
+        return rows
 
     async def trigger_ai_suggestions(self, document_id: int) -> None:
         # Synchronous DRF action (no Celery signal fires it on add/update, #1050):

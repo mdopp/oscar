@@ -24,6 +24,7 @@ from .obsidian import ObsidianIngest, ObsidianIngestStats
 from .obsidian_reader import ObsidianReader, VaultNote, VaultObsidianReader
 from .paperless import push_companion, push_uploads
 from .paperless_client import PaperlessClient, RestPaperlessClient
+from .paperless_readback import read_back
 from .runner import run_ingest
 
 
@@ -58,4 +59,5 @@ __all__ = [
     "RestPaperlessClient",
     "push_companion",
     "push_uploads",
+    "read_back",
 ]

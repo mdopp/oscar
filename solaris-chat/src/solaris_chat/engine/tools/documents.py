@@ -20,7 +20,9 @@ from solaris_chat.logging import log
 
 _CLASSIFIED_MARKER = "<!-- classified -->"
 
-_CATEGORIES = [
+# The document `category` vocabulary: the Dokumente doorways, and what a
+# paperless document type converges onto (#1051).
+CATEGORIES = [
     "insurance",
     "contract",
     "invoice",
@@ -87,7 +89,7 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
         src = str(args.get("source_document") or "").strip().lstrip("/")
         category = str(args.get("category") or "").strip()
         title = str(args.get("title") or "").strip()
-        if not src or category not in _CATEGORIES or not title:
+        if not src or category not in CATEGORIES or not title:
             return json.dumps(
                 {
                     "ok": False,
@@ -143,7 +145,7 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
                 "type": "string",
                 "description": "exakter vault-relativer Pfad der Companion-Notiz",
             },
-            "category": {"type": "string", "enum": _CATEGORIES},
+            "category": {"type": "string", "enum": CATEGORIES},
             "title": {
                 "type": "string",
                 "description": "kurzer sprechender Titel, z.B. 'ERGO Rechtsschutz'",
