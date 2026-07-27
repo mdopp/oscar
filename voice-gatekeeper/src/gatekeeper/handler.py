@@ -45,6 +45,12 @@ from .enroll_stash import (
     increment_collected,
     take_embeddings,
 )
+from .wakeword_stash import (
+    claim_active_request as claim_wakeword_request,
+    record_sample as record_wakeword_sample,
+    sample_path as wakeword_sample_path,
+    write_sample as write_wakeword_sample,
+)
 from .solaris import SolarisClient
 from .rooms_store import get_room
 from .speaker import average_embeddings, get_extractor, resolve_speaker
@@ -221,8 +227,55 @@ class GatekeeperHandler(AsyncEventHandler):
             )
             log.info("gatekeeper.stt_provider.stash", trace_id=self.trace_id, uid=uid)
             await self._capture_enrollment()
+            await self._capture_wakeword_sample()
 
         await self.write_event(Transcript(text=transcript).event())
+
+    async def _capture_wakeword_sample(self) -> None:
+        """Wake-word capture (#1060): while the onboarding wizard has a
+        wake-word request open, write THIS turn's PCM as the resident's next
+        `.wav` sample and count it. The count is bumped only after the file
+        exists, so the wizard's countdown can't run ahead of the audio — with no
+        gatekeeper capturing (speaker walked away, engine-only box) nothing
+        counts and the wizard says so instead of promising samples. No-op when
+        no request is active."""
+        if self._audio_start is None or not self._audio_buffer:
+            return
+        request = await asyncio.to_thread(
+            claim_wakeword_request, settings.solaris_db_path
+        )
+        if request is None:
+            return
+
+        pcm = b"".join(c.audio for c in self._audio_buffer)
+        path = wakeword_sample_path(
+            settings.solaris_db_path, request.uid, request.collected_count + 1
+        )
+        try:
+            await asyncio.to_thread(
+                write_wakeword_sample,
+                path,
+                pcm,
+                rate=self._audio_start.rate,
+                width=self._audio_start.width,
+                channels=self._audio_start.channels,
+            )
+        except OSError as exc:
+            log.error(
+                "gatekeeper.wakeword.write_error",
+                trace_id=self.trace_id,
+                error=str(exc),
+            )
+            return
+        collected = await asyncio.to_thread(
+            record_wakeword_sample, settings.solaris_db_path, request.uid
+        )
+        log.info(
+            "gatekeeper.wakeword.captured",
+            trace_id=self.trace_id,
+            collected=collected,
+            target=request.target_count,
+        )
 
     async def _capture_enrollment(self) -> None:
         """Reverse enroll-stash (#376): when the engine has opened an enrol
