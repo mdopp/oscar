@@ -5710,6 +5710,13 @@ def build_app(
         # auto-triggered — speaker-ID routing into it is #351 (blocked).
         if engine_guest is not None:
             facade_clients["solaris-guest"] = engine_guest
+        # The enrolment profile has to be registered here or the facade's
+        # isolation branch can never fire: it looks the client up by name and
+        # silently no-ops when it is missing. That left the wakeword dialog on
+        # the household profile — full soul, device registry and HA tools —
+        # which is exactly the context pollution the profile exists to stop.
+        if engine_enrollment is not None:
+            facade_clients["solaris-enrollment"] = engine_enrollment
         add_facade_routes(
             app,
             clients=facade_clients,

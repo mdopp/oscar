@@ -1676,3 +1676,34 @@ async def test_enrollment_say_is_persisted_once_and_hidden_from_the_prompt(db, s
         pass
     sent = [str(m.get("content", "")) for m in fake.calls[-1]["messages"]]
     assert not any("erkannt" in c for c in sent)
+
+
+def test_as_question_replaces_trailing_punctuation():
+    """The Voice PE mic stays open on a trailing '?', but appending one after a
+    full stop produced "Bitte antworte mit Ja oder Nein.?" on the box."""
+    from solaris_chat.engine.facade import _as_question
+
+    assert _as_question("Bitte antworte mit Ja oder Nein.") == (
+        "Bitte antworte mit Ja oder Nein?"
+    )
+    assert _as_question("Sag mir noch einen Satz!") == "Sag mir noch einen Satz?"
+    assert _as_question("Und weiter...") == "Und weiter?"
+    assert _as_question("Wie heisst du") == "Wie heisst du?"
+    assert _as_question("Alles klar?") == "Alles klar?"  # untouched
+    assert _as_question("Fertig.  ") == "Fertig?"
+
+
+def test_room_markers_are_stripped_from_every_replayed_turn():
+    """HA replays the whole conversation on the guest path, and each turn
+    carried its own `[room: X]` marker. Only the newest one was cleaned, so the
+    model saw the internal marker on all the others."""
+    from solaris_chat.engine.facade import _strip_room_from_messages
+
+    messages = [
+        {"role": "user", "content": "[room: Küche] Licht an"},
+        {"role": "assistant", "content": "Klar."},
+        {"role": "user", "content": "[room: Bad] und hier?"},
+    ]
+    _strip_room_from_messages(messages)
+
+    assert [m["content"] for m in messages] == ["Licht an", "Klar.", "und hier?"]
