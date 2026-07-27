@@ -51,7 +51,7 @@ class EnrollRequest:
 
 
 # Per-uid in-process accumulation of the captured per-turn embeddings. The raw
-# biometric PCM is embedded the moment it's captured and only the 256-d vectors
+# biometric PCM is embedded the moment it's captured and only the 192-d vectors
 # are held here (never the audio, never the DB) until N are collected and
 # averaged into the durable `voice_embeddings` row. Keyed by candidate uid; one
 # onboarding runs at a time in a household, but a dict keeps concurrent requests

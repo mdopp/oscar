@@ -317,21 +317,20 @@ async def test_resolve_uid_no_enrolments_stays_household_not_guest(
     assert await h._resolve_uid() == "household"
 
 
-def test_speaker_id_enabled_from_env_opt_in(monkeypatch):
+def test_speaker_id_enabled_from_env_default_on(monkeypatch):
     """Single predicate shared by config.speaker_id_enabled and
-    speaker.get_extractor: off unless explicitly enabled. Speaker-ID stores
-    per-resident voice fingerprints, so unset/empty stays off, matching the
-    template's `SOLARIS_SPEAKER_ID_ENABLED` default. Guards the branch bug
-    where the config forced True while get_extractor still required
-    1/true/yes/on, so speaker-ID silently did nothing."""
+    speaker.get_extractor: enabled unless explicitly disabled, so a household
+    box recognises residents out of the box. Guards the branch bug where the
+    config forced True while get_extractor still required 1/true/yes/on, so
+    speaker-ID silently did nothing."""
     from gatekeeper.config import speaker_id_enabled_from_env
 
     monkeypatch.delenv("SOLARIS_SPEAKER_ID_ENABLED", raising=False)
-    assert speaker_id_enabled_from_env() is False
-    for on in ("1", "true", "yes", "on", "TRUE", "On"):
+    assert speaker_id_enabled_from_env() is True
+    for on in ("", "1", "true", "yes", "on", "TRUE", "On"):
         monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", on)
         assert speaker_id_enabled_from_env() is True
-    for off in ("", "0", "false", "no", "off", "OFF", "False", "whatever"):
+    for off in ("0", "false", "no", "off", "OFF", "False"):
         monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", off)
         assert speaker_id_enabled_from_env() is False
 
@@ -371,3 +370,16 @@ async def test_resolve_uid_enabled_but_no_extractor_falls_back_household(
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
     assert await h._resolve_uid() == "household"
+
+
+def test_embedding_dim_matches_the_ecapa_model():
+    """`speechbrain/spkrec-ecapa-voxceleb` emits 192 floats. If this constant
+    drifts from that, `SpeechBrainExtractor.extract` fails its shape check and
+    returns None for every turn — speaker-ID then silently resolves everyone to
+    default_uid and enrolment can never store an embedding, with no error
+    anywhere. Verified live on the box: the model returned shape (192,) while
+    this said 256."""
+    from gatekeeper.embeddings_store import EMBEDDING_BYTES, EMBEDDING_DIM
+
+    assert EMBEDDING_DIM == 192
+    assert EMBEDDING_BYTES == 768

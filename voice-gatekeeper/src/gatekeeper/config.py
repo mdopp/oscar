@@ -11,19 +11,19 @@ import json
 import os
 from dataclasses import dataclass, field
 
-# Truthy values that turn speaker-ID + live enrolment ON. Speaker-ID stores
-# per-resident voice fingerprints, so it stays opt-in: unset/empty means OFF,
-# matching the template's `SOLARIS_SPEAKER_ID_ENABLED` default.
-_SPEAKER_ID_ENABLED = {"1", "true", "yes", "on"}
+# Falsy values that turn speaker-ID + live enrolment OFF. Everything else
+# (including unset/empty) leaves them ON — a household box wants residents
+# recognised out of the box; deployments opt out via the template variable.
+_SPEAKER_ID_DISABLED = {"0", "false", "no", "off"}
 
 
 def speaker_id_enabled_from_env() -> bool:
-    """Single source of truth for "is speaker-ID on": off unless
-    SOLARIS_SPEAKER_ID_ENABLED is set to an explicit truthy value. Shared with
+    """Single source of truth for "is speaker-ID on": enabled unless
+    SOLARIS_SPEAKER_ID_ENABLED is set to an explicit falsy value. Shared with
     `gatekeeper.speaker.get_extractor` so the config flag and the extractor
     loader can never disagree."""
     raw = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
-    return raw in _SPEAKER_ID_ENABLED
+    return raw not in _SPEAKER_ID_DISABLED
 
 
 @dataclass(frozen=True)
