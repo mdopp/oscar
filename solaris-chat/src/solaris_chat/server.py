@@ -117,6 +117,18 @@ ANDROID_APK_URL = (
 # header (untrusted here). Minting stays on the interactive-Authelia `/api/` path.
 NATIVE_PREFIX = "/napi/"
 
+# Idle-keepalive interval for the portal SSE stream (#1093). Two things drop an
+# idle stream, and the shorter one sets this: (a) the NPM proxy in front of chat,
+# `proxy_read_timeout 600s` (read off the box's proxy_host conf on 2026-07-28 —
+# it lives in mdopp/servicebay, not here, so treat it as observed, not owned);
+# (b) mobile-carrier NAT, which expires idle TCP bindings after a few minutes and
+# kills the stream SILENTLY — no error, just no more events. (b) is unmeasurable
+# from this repo, so this stays a conservative fraction of the commonly-cited
+# ~2 min carrier floor rather than anything near the proxy's 600s. The native
+# app holds this connection open 24/7 from its foreground service, so every ping
+# is a CPU + radio wake-up: 90s is 40 wake-ups/hour instead of 240.
+_SSE_HEARTBEAT_S = 90
+
 # Self-contained confirm page for /pair-device (#751). Inline HTML/CSS in the
 # server.py style of the other simple routes. The `{devices}` slot is the
 # server-rendered paired-devices list; the confirm form POSTs same-origin (the
@@ -1852,14 +1864,17 @@ def build_app(
                     await _send_event(resp, kind, event.get("data") or {})
 
         async def _heartbeat_ping() -> None:
-            # Without traffic this stream sits idle; nginx (NPM) closes it after
-            # its 60s proxy_read_timeout and external HA changes are then lost
-            # until a reconnect. A ~15s SSE comment (comments aren't events, so
-            # clients ignore them) keeps the connection under that timeout. A
-            # failed write means the client is gone: raise so gather() unwinds
-            # and the finally cancels the pumps.
+            # Without traffic this stream sits idle and something between us and
+            # the client eventually drops it, losing external HA changes until a
+            # reconnect. An SSE comment (comments aren't events, so clients ignore
+            # them) keeps it alive — see _SSE_HEARTBEAT_S for what sets the
+            # interval. One interval serves both clients: the browser reconnects
+            # freely and falls back to its 12s poll, so the mobile NAT window is
+            # the binding constraint and the browser is covered by it. A failed
+            # write means the client is gone: raise so gather() unwinds and the
+            # finally cancels the pumps.
             while True:
-                await asyncio.sleep(15)
+                await asyncio.sleep(_SSE_HEARTBEAT_S)
                 await resp.write(b": ping\n\n")
 
         own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
@@ -4601,8 +4616,8 @@ def build_app(
         uid = _interactive_uid(request)
         if uid is None:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-        run = wakeword_training_store.latest_run(solaris_db_path)
-        if run and run["status"] in wakeword_training_store.PENDING_STATUSES:
+        run = wakeword_training_store.pending_run(solaris_db_path)
+        if run:
             return web.json_response(
                 {
                     "ok": False,

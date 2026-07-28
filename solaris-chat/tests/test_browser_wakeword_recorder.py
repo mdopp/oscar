@@ -28,6 +28,7 @@ the microphone is a browser check.
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import wave
@@ -37,6 +38,7 @@ import pytest
 from solaris_chat import wakeword_requests_store, wakeword_samples_store
 from solaris_chat.engine import enrollment_fsm
 from solaris_chat.engine.tools import register as register_tools
+from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.server import STATIC_DIR, build_app
 
 _HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -423,6 +425,35 @@ async def test_a_second_run_is_refused_while_one_is_pending(
     assert body["run"]["status"] == pending
     # Hours of GPU are not queued twice — not even by another resident.
     assert _runs(db) == [(1, "lena", pending)]
+
+
+async def test_the_tap_and_the_voice_command_share_one_household_run(
+    aiohttp_client, app, db
+):
+    """Both surfaces ask the same store rule (#1089). A resident who taps the
+    button and then says "trainier das Wakeword" must be told a run is already
+    going — not handed hours of duplicate GPU work."""
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    trigger = next(
+        t
+        for t in build_wakeword_tools(db, lambda: "household")
+        if t.name == "trigger_wakeword_training"
+    )
+
+    await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+    spoken = json.loads(await trigger.handler({"uid": "max"}))
+
+    assert spoken["training_queued"] is False
+    assert "läuft aber schon" in spoken["say"]
+    assert "eingeplant" not in spoken["say"]
+    assert _runs(db) == [(1, "lena", "queued")]
+
+    refused = await client.post(
+        "/api/wakeword/training", headers={"Remote-User": "max"}
+    )
+    assert refused.status == 409
+    assert _runs(db) == [(1, "lena", "queued")]
 
 
 @pytest.mark.parametrize("terminal", ["done", "failed"])

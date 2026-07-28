@@ -73,3 +73,14 @@ def latest_run(db_path: str) -> dict | None:
     except sqlite3.OperationalError:
         return None
     return dict(row) if row else None
+
+
+def pending_run(db_path: str) -> dict | None:
+    """The household's in-flight run (`queued` or `running`), or None.
+
+    The one rule both the browser tap and the voice tool ask before enqueueing,
+    so the two paths cannot drift apart again (#1089). A crashed run does not
+    wedge this: the trainer marks orphaned `running` rows `failed` on restart.
+    """
+    run = latest_run(db_path)
+    return run if run and run["status"] in PENDING_STATUSES else None
