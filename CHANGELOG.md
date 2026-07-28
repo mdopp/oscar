@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.1](https://github.com/mdopp/solarisbay/compare/v0.36.0...v0.36.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **chat:** cap mcp below 2.0 and reconcile the mobile-app push doc ([#1108](https://github.com/mdopp/solarisbay/issues/1108)) ([67af6da](https://github.com/mdopp/solarisbay/commit/67af6da2410b539f6c967d5de4b98e16b8e9783c)), closes [#1095](https://github.com/mdopp/solarisbay/issues/1095) [#1102](https://github.com/mdopp/solarisbay/issues/1102) [#1106](https://github.com/mdopp/solarisbay/issues/1106)
+* **template:** read the trainer image identity as JSON instead of a Go template ([#1104](https://github.com/mdopp/solarisbay/issues/1104)) ([37001bc](https://github.com/mdopp/solarisbay/commit/37001bc0fc7c9b7b9e2f7cd20ea4c20a092d4042)), closes [#1092](https://github.com/mdopp/solarisbay/issues/1092)
+
 ## [0.36.0](https://github.com/mdopp/solarisbay/compare/v0.35.0...v0.36.0) (2026-07-28)
 
 
