@@ -602,7 +602,9 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         # running last week's recipe while the chat surface offers a button for
         # the new one — it would train, report success, and silently leave the
         # residents' own recordings out. `newer` costs one registry check per
-        # start, and this unit starts rarely and then runs for hours.
+        # start, and this unit starts rarely and then runs for hours. It only
+        # decides what a start pulls, never that one happens — the restart
+        # itself comes from refresh_wakeword_trainer_image (#1092).
         "Pull=newer\n"
         "\n"
         "[Service]\n"
@@ -617,6 +619,105 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+
+
+# Read the training queue from inside the chat container: it owns solaris.db,
+# and the host-side file belongs to the rootless container's subuid, so the
+# post-deploy cannot open it directly. Read-only so a probe can never disturb a
+# run. Any failure (container down, table not migrated yet) exits non-zero and
+# is treated as "unknown" by the caller.
+WAKEWORD_QUEUE_PROBE = (
+    "import os, sqlite3;"
+    "db = os.environ.get('SOLARIS_DB_PATH') or '/var/lib/solaris/solaris.db';"
+    "cx = sqlite3.connect('file:%s?mode=ro' % db, uri=True);"
+    'print(cx.execute("SELECT COUNT(*) FROM wakeword_training_runs'
+    " WHERE status IN ('queued', 'running')\").fetchone()[0])"
+)
+
+
+def _podman_out(args: list[str], timeout: int = 15) -> str:
+    """Run a podman command and return its stdout, '' on any failure."""
+    try:
+        proc = subprocess.run(
+            ["podman", *args], capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def wakeword_runs_in_flight() -> int | None:
+    """How many training runs are `queued` or `running`; None when the queue
+    can't be read. None is deliberately NOT treated as idle — a run we cannot
+    see is a run we must not abort."""
+    out = _podman_out(["exec", CHAT_CONTAINER, "python3", "-c", WAKEWORD_QUEUE_PROBE])
+    try:
+        return int(out)
+    except ValueError:
+        return None
+
+
+def _image_id(ref: list[str]) -> str:
+    return _podman_out(ref).split("\n")[0].removeprefix("sha256:")
+
+
+def refresh_wakeword_trainer_image() -> bool:
+    """Restart the trainer onto a rebuilt image — the half `Pull=newer` cannot
+    do on its own (#1092).
+
+    `install_unit` restarts only on unit-FILE drift, and the unit names
+    `:latest`, never a digest, so a rebuilt image drifts nothing and the deploy
+    logs `current and active — no-op`; podman's default pull policy is
+    `missing`, so the container keeps the layer it started with. Box-observed:
+    registry `:latest` at 36c336b while the container still ran 8b960af.
+    `Pull=newer` fixes what a restart pulls, but it never causes one.
+
+    A blanket restart is not an option: a training run takes hours and would be
+    thrown away. So restart only when the queue is idle AND the image really
+    moved. The pull happens here rather than inside `systemctl restart` so the
+    restart itself is instant and the image is proven present first. Returns
+    True when the trainer was restarted."""
+    if not service_active(WAKEWORD_TRAINER_UNIT):
+        return False
+    in_flight = wakeword_runs_in_flight()
+    if in_flight != 0:
+        jlog(
+            "info",
+            "voice-unit",
+            "wakeword-trainer: not idle — leaving the running image in place",
+            in_flight="unknown" if in_flight is None else in_flight,
+        )
+        return False
+    running = _image_id(["inspect", "--format", "{{.Image}}", WAKEWORD_TRAINER_UNIT])
+    # A multi-GB TF-CUDA base, but only the changed layers travel.
+    _podman_out(["pull", "--quiet", WAKEWORD_TRAINER_IMAGE], timeout=1800)
+    latest = _image_id(
+        ["image", "inspect", "--format", "{{.Id}}", WAKEWORD_TRAINER_IMAGE]
+    )
+    if not running or not latest or running == latest:
+        jlog("info", "voice-unit", "wakeword-trainer: image current — no restart")
+        return False
+    restarted = subprocess.run(
+        ["systemctl", "--user", "restart", f"{WAKEWORD_TRAINER_UNIT}.service"],
+        capture_output=True,
+        text=True,
+    )
+    if restarted.returncode != 0:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: restart onto the new image failed",
+            error=restarted.stderr[:300],
+        )
+        return False
+    jlog(
+        "info",
+        "voice-unit",
+        "wakeword-trainer: idle and stale — restarted onto the new image",
+        was=running[:12],
+        now=latest[:12],
+    )
+    return True
 
 
 def install_wakeword_trainer_unit(data_dir: str) -> bool:
@@ -641,7 +742,12 @@ def install_wakeword_trainer_unit(data_dir: str) -> bool:
             error=str(e),
         )
         return False
-    return install_unit(WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir))
+    installed = install_unit(
+        WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir)
+    )
+    if installed:
+        refresh_wakeword_trainer_image()
+    return installed
 
 
 def install_whisper_unit(data_dir: str) -> bool:

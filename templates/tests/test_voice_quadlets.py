@@ -208,6 +208,112 @@ def test_wakeword_trainer_unit_picks_up_a_rebuilt_image(pd):
     assert "Pull=newer\n" in unit
 
 
+# The line above is necessary but NOT sufficient, which is exactly how #1090
+# shipped green and #1092 came back: `Pull=newer` decides what a start pulls, it
+# never causes a start. The tests below cover the half that actually makes a
+# deploy effective — the conditional restart.
+
+
+class _FakePodman:
+    """Stand-in for subprocess.run covering the podman/systemctl calls the
+    trainer refresh makes. `running`/`latest` are image ids."""
+
+    def __init__(self, running: str, latest: str, in_flight: str = "0"):
+        self.running, self.latest, self.in_flight = running, latest, in_flight
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(list(args))
+        out, rc = "", 0
+        if args[:2] == ["podman", "exec"]:
+            out, rc = (self.in_flight, 0) if self.in_flight is not None else ("", 1)
+        elif args[:2] == ["podman", "inspect"]:
+            out = self.running
+        elif args[:3] == ["podman", "image", "inspect"]:
+            out = self.latest
+        return type("_P", (), {"returncode": rc, "stdout": out, "stderr": ""})()
+
+    @property
+    def restarted(self) -> bool:
+        return any(c[:3] == ["systemctl", "--user", "restart"] for c in self.calls)
+
+    @property
+    def pulled(self) -> bool:
+        return any(c[:2] == ["podman", "pull"] for c in self.calls)
+
+
+def test_wakeword_trainer_queue_probe_is_valid_python(pd):
+    # Shipped as a `python3 -c` string into the chat container; a syntax error
+    # would read as "queue unknown" forever and silently disable the refresh.
+    compile(pd.WAKEWORD_QUEUE_PROBE, "queue_probe.py", "exec")
+    assert "wakeword_training_runs" in pd.WAKEWORD_QUEUE_PROBE
+    assert "mode=ro" in pd.WAKEWORD_QUEUE_PROBE
+
+
+def test_idle_trainer_is_restarted_onto_a_rebuilt_image(pd, monkeypatch):
+    """The #1092 case: unit file unchanged, registry moved, nothing training."""
+    fake = _FakePodman(running="sha256:aaaa111122223333", latest="bbbb444455556666")
+    monkeypatch.setattr(pd, "service_active", lambda unit: True)
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    assert pd.refresh_wakeword_trainer_image() is True
+    assert fake.pulled and fake.restarted
+
+
+def test_trainer_is_not_restarted_while_a_run_is_in_flight(pd, monkeypatch):
+    # A run takes hours; restarting would throw it away (trainer.py then marks
+    # the orphaned row failed — honest, but the hours are gone).
+    fake = _FakePodman(running="aaaa", latest="bbbb", in_flight="1")
+    monkeypatch.setattr(pd, "service_active", lambda unit: True)
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    assert pd.refresh_wakeword_trainer_image() is False
+    assert not fake.restarted
+    # Not even the pull — a multi-GB download mid-run is disk churn for nothing.
+    assert not fake.pulled
+
+
+def test_trainer_is_not_restarted_when_the_queue_cannot_be_read(pd, monkeypatch):
+    # Unknown is not idle: a run we cannot see is a run we must not abort.
+    fake = _FakePodman(running="aaaa", latest="bbbb", in_flight=None)
+    monkeypatch.setattr(pd, "service_active", lambda unit: True)
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    assert pd.refresh_wakeword_trainer_image() is False
+    assert not fake.restarted
+
+
+def test_trainer_is_not_restarted_when_the_image_is_current(pd, monkeypatch):
+    # The common deploy: idle, but nothing new to run. No pointless churn.
+    fake = _FakePodman(running="sha256:aaaa1111", latest="aaaa1111")
+    monkeypatch.setattr(pd, "service_active", lambda unit: True)
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    assert pd.refresh_wakeword_trainer_image() is False
+    assert not fake.restarted
+
+
+def test_trainer_refresh_skips_an_inactive_unit(pd, monkeypatch):
+    # install_unit already (re)starts an inactive unit — Pull=newer covers it.
+    monkeypatch.setattr(pd, "service_active", lambda unit: False)
+    monkeypatch.setattr(
+        pd.subprocess, "run", lambda *a, **k: pytest.fail("must not probe or pull")
+    )
+    assert pd.refresh_wakeword_trainer_image() is False
+
+
+def test_install_wakeword_trainer_unit_refreshes_a_stale_image(
+    pd, monkeypatch, tmp_path
+):
+    # The wiring: a no-op install must still reach the staleness check, or the
+    # whole fix never runs on the deploy that needs it.
+    called = []
+    monkeypatch.setattr(pd, "cdi_available", lambda: True)
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(pd, "install_unit", lambda unit, content: True)
+    monkeypatch.setattr(
+        pd, "refresh_wakeword_trainer_image", lambda: called.append(True) or False
+    )
+    assert pd.install_wakeword_trainer_unit(str(tmp_path)) is True
+    assert called == [True]
+
+
 def test_install_wakeword_trainer_unit_skips_without_cdi(pd, monkeypatch):
     monkeypatch.setattr(pd, "cdi_available", lambda: False)
     monkeypatch.setattr(
@@ -244,6 +350,7 @@ def test_install_wakeword_trainer_unit_creates_work_dir_on_gpu(
     monkeypatch.setattr(
         pd, "install_unit", lambda unit, content: written.append(unit) or True
     )
+    monkeypatch.setattr(pd, "refresh_wakeword_trainer_image", lambda: False)
     assert pd.install_wakeword_trainer_unit(str(tmp_path)) is True
     assert written == [pd.WAKEWORD_TRAINER_UNIT]
     # Quadlet Volume= does not create the host dir (unlike kube DirectoryOrCreate).
