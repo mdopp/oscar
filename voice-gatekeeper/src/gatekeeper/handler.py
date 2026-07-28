@@ -38,11 +38,13 @@ from wyoming.server import AsyncEventHandler
 from .config import settings
 from .embeddings_store import list_embeddings, touch_last_seen, upsert_embedding
 from .enroll_stash import (
+    MAX_ENROLL_SAMPLES,
     add_embedding,
     capture_lock,
     claim_active_request,
     finish_request,
     increment_collected,
+    restore_embeddings,
     take_embeddings,
 )
 from .wakeword_stash import (
@@ -53,7 +55,14 @@ from .wakeword_stash import (
 )
 from .solaris import SolarisClient
 from .rooms_store import get_room
-from .speaker import average_embeddings, get_extractor, resolve_speaker
+from .speaker import (
+    REASON_COLLISION,
+    average_embeddings,
+    drop_outliers,
+    get_extractor,
+    resolve_speaker,
+    verify_enrollment,
+)
 from .tts import synthesize_to_writer
 from .uid_stash import stash_uid
 
@@ -283,7 +292,14 @@ class GatekeeperHandler(AsyncEventHandler):
         embed it in-process. Once the target sample count is reached, average the
         embeddings, upsert the resident's `voice_embeddings` row, and write the
         result back. No-op when speaker-ID is off (no extractor → the engine side
-        times the request out honestly) or no request is active."""
+        times the request out honestly) or no request is active.
+
+        The average is not written on trust (#1083): outlier samples are dropped
+        and the profile re-averaged, then every retained sample is resolved the
+        way a real turn would be. Only a profile that finds its own resident is
+        stored — otherwise the request stays open for another sentence (capped at
+        MAX_ENROLL_SAMPLES) or fails, so "erfolgreich gespeichert" is never said
+        over a profile that doesn't carry."""
         extractor = get_extractor()
         if extractor is None or self._audio_start is None or not self._audio_buffer:
             return
@@ -334,13 +350,91 @@ class GatekeeperHandler(AsyncEventHandler):
             # this serialised loser has nothing to average — no-op, not a crash.
             return
         try:
-            averaged = await asyncio.to_thread(average_embeddings, embeddings)
+            kept = await asyncio.to_thread(drop_outliers, embeddings)
+            averaged = await asyncio.to_thread(average_embeddings, kept)
+            enrolled = await asyncio.to_thread(
+                list_embeddings, settings.solaris_db_path
+            )
+            check = await asyncio.to_thread(
+                verify_enrollment,
+                kept,
+                averaged,
+                uid=request.uid,
+                # A re-enrolment compares against the NEW profile, so the
+                # resident's own stale row must not be a candidate.
+                candidates=[row for row in enrolled if row.uid != request.uid],
+                threshold=settings.speaker_id_threshold,
+                collision_threshold=settings.speaker_collision_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 — enrol failure → honest result
+            await asyncio.to_thread(
+                finish_request,
+                settings.solaris_db_path,
+                request.uid,
+                ok=False,
+                result=str(exc),
+            )
+            log.error(
+                "gatekeeper.enroll.failed", trace_id=self.trace_id, error=str(exc)
+            )
+            return
+
+        # Scores and counts only — naming the resident a sample collided with
+        # would put one resident's identity in another's onboarding trail.
+        log.info(
+            "gatekeeper.enroll.selftest",
+            trace_id=self.trace_id,
+            kept=len(kept),
+            dropped=len(embeddings) - len(kept),
+            reason=check.reason or "ok",
+            min_score=round(check.min_score, 4),
+            threshold=settings.speaker_id_threshold,
+            collision_threshold=settings.speaker_collision_threshold,
+        )
+
+        if check.reason == REASON_COLLISION:
+            # A sample resolving to a different resident is a privacy failure,
+            # not a quality one: enrolling would let Solaris read that
+            # resident's notes to this one. Terminal, and never an upsert.
+            await asyncio.to_thread(
+                finish_request,
+                settings.solaris_db_path,
+                request.uid,
+                ok=False,
+                result="self-test: collision",
+            )
+            log.error("gatekeeper.enroll.collision", trace_id=self.trace_id)
+            return
+
+        if not check.ok or len(kept) < request.target_samples:
+            if collected >= MAX_ENROLL_SAMPLES:
+                await asyncio.to_thread(
+                    finish_request,
+                    settings.solaris_db_path,
+                    request.uid,
+                    ok=False,
+                    result="self-test: weak profile",
+                )
+                log.warn("gatekeeper.enroll.weak", trace_id=self.trace_id)
+                return
+            # The profile doesn't carry yet. Keep the consistent samples and
+            # leave the request `capturing` — the wizard then asks for another
+            # sentence instead of announcing a success that isn't one.
+            restore_embeddings(request.uid, kept)
+            log.info(
+                "gatekeeper.enroll.more_samples",
+                trace_id=self.trace_id,
+                collected=collected,
+            )
+            return
+
+        try:
             await asyncio.to_thread(
                 upsert_embedding,
                 settings.solaris_db_path,
                 request.uid,
                 averaged,
-                sample_count=len(embeddings),
+                sample_count=len(kept),
                 enrolled_via="voice",
             )
         except Exception as exc:  # noqa: BLE001 — enrol failure → honest result
@@ -360,11 +454,9 @@ class GatekeeperHandler(AsyncEventHandler):
             settings.solaris_db_path,
             request.uid,
             ok=True,
-            result=str(len(embeddings)),
+            result=str(len(kept)),
         )
-        log.info(
-            "gatekeeper.enroll.ok", trace_id=self.trace_id, samples=len(embeddings)
-        )
+        log.info("gatekeeper.enroll.ok", trace_id=self.trace_id, samples=len(kept))
 
     async def _resolve_uid(self) -> str:
         """Phase 2 speaker resolution. Falls back to default_uid on any

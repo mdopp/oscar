@@ -24,9 +24,14 @@ from gatekeeper.embeddings_store import (
     upsert_embedding,
 )
 from gatekeeper.speaker import (
+    REASON_COLLISION,
+    REASON_WEAK,
     average_embeddings,
     cosine_match,
+    drop_outliers,
+    leave_one_out_scores,
     resolve_speaker,
+    verify_enrollment,
 )
 
 
@@ -137,6 +142,200 @@ def test_average_embeddings_rejects_zero_sum():
     other = (-half).astype("<f4")
     with pytest.raises(ValueError):
         average_embeddings([half.tobytes(), other.tobytes()])
+
+
+def _near(seed: int, *, base: bytes, spread: float = 0.3) -> bytes:
+    """A sample from the same speaker/sitting: the base direction plus `spread`
+    of a unit-length nudge, so the samples cluster the way one sitting does."""
+    rng = np.random.default_rng(seed)
+    nudge = _norm(rng.standard_normal(EMBEDDING_DIM, dtype="<f4"))
+    return _norm(np.frombuffer(base, dtype="<f4") + spread * nudge).tobytes()
+
+
+def _at_cosine(base: bytes, target: float, *, seed: int) -> bytes:
+    """An embedding at exactly `target` cosine similarity to `base`: an
+    independent direction, Gram-Schmidt'd off `base`, mixed back in at the right
+    ratio. Lets a test place a rival profile precisely between the recognition
+    threshold and the stricter collision bar."""
+    rng = np.random.default_rng(seed)
+    b = np.frombuffer(base, dtype="<f4")
+    v = rng.standard_normal(EMBEDDING_DIM, dtype="<f4")
+    orth = _norm(v - float(np.dot(v, b)) * b)
+    return _norm(target * b + np.sqrt(1.0 - target * target) * orth).tobytes()
+
+
+def test_leave_one_out_holds_the_sample_out(tmp_path: Path):
+    """The held-out sample must not be part of the mean it is measured against —
+    otherwise it pulls the mean toward itself and hides the outlier we hunt."""
+    base = _emb(1)
+    samples = [_near(2, base=base), _near(3, base=base), _emb(42)]  # last = stranger
+    scores = leave_one_out_scores(samples)
+    assert len(scores) == 3
+    # The stranger scores far below the two that belong together.
+    assert scores[2] < min(scores[0], scores[1]) - 0.3
+
+
+def test_leave_one_out_needs_three_samples():
+    """With two samples each is measured against the other, both scores are
+    identical, and nothing can stand out — no verdict to give."""
+    base = _emb(1)
+    assert leave_one_out_scores([_near(2, base=base), _near(3, base=base)]) == []
+
+
+def test_drop_outliers_removes_the_stranger_and_keeps_the_sitting():
+    base = _emb(1)
+    good = [_near(i, base=base) for i in (2, 3, 4)]
+    stranger = _emb(42)
+    kept = drop_outliers([*good, stranger])
+    assert kept == good  # order preserved, stranger gone
+    # A coherent sitting survives untouched.
+    assert drop_outliers(good) == good
+
+
+def test_verify_enrollment_accepts_a_profile_that_finds_its_resident(tmp_path: Path):
+    db = _seed_db(tmp_path)
+    upsert_embedding(db, "max", _emb(42), sample_count=1, enrolled_via="test")
+    base = _emb(1)
+    samples = [_near(i, base=base) for i in (2, 3, 4)]
+    check = verify_enrollment(
+        samples,
+        average_embeddings(samples),
+        uid="lena",
+        candidates=list_embeddings(db),
+        threshold=0.55,
+        collision_threshold=0.65,
+    )
+    assert check.ok is True
+    assert check.reason == ""
+    assert check.min_score > 0.55
+
+
+def test_verify_enrollment_flags_a_profile_that_does_not_carry():
+    """No candidate clears the threshold — the household fallback a real turn
+    would take. That's "collect more samples", not success."""
+    samples = [_emb(1), _emb(2), _emb(3)]  # unrelated directions
+    check = verify_enrollment(
+        samples,
+        average_embeddings(samples),
+        uid="lena",
+        candidates=[],
+        threshold=0.9,
+        collision_threshold=0.95,
+    )
+    assert check.ok is False
+    assert check.reason == REASON_WEAK
+
+
+def test_verify_enrollment_flags_a_cross_resident_collision(tmp_path: Path):
+    """A sample resolving to a DIFFERENT resident is a privacy failure: enrolling
+    would let Solaris hand one resident's data to another. It must never read as
+    ok, and the verdict must not carry the other resident's uid."""
+    db = _seed_db(tmp_path)
+    base = _emb(1)
+    samples = [base, _near(2, base=base, spread=0.4)]
+    # Max is already enrolled with exactly the first sample's embedding.
+    upsert_embedding(db, "max", base, sample_count=3, enrolled_via="test")
+
+    check = verify_enrollment(
+        samples,
+        average_embeddings(samples),
+        uid="lena",
+        candidates=list_embeddings(db),
+        threshold=0.55,
+        collision_threshold=0.65,
+    )
+    assert check.ok is False
+    assert check.reason == REASON_COLLISION
+    assert "max" not in check.reason
+
+
+def test_verify_enrollment_reads_the_match_not_the_returned_uid():
+    """`resolve_speaker` returns its default_uid on a household fallback. If the
+    enrolling resident IS that default, a fallback would look like a hit — so the
+    verdict is taken off the match. A profile below threshold stays weak even
+    when the uid is the household default."""
+    samples = [_emb(1), _emb(2), _emb(3)]
+    profile = average_embeddings(samples)
+    for uid in ("lena", "michael"):  # michael == the box's DEFAULT_UID
+        check = verify_enrollment(
+            samples,
+            profile,
+            uid=uid,
+            candidates=[],
+            threshold=0.95,
+            collision_threshold=0.95,
+        )
+        assert check.ok is False and check.reason == REASON_WEAK
+
+
+def _rival_case(tmp_path: Path, cosine: float):
+    """A sitting whose averaged profile sits at `cosine` from an already-enrolled
+    resident — the knob the collision bar is judged on."""
+    db = _seed_db(tmp_path)
+    base = _emb(1)
+    samples = [_near(i, base=base, spread=0.15) for i in (2, 3, 4)]
+    profile = average_embeddings(samples)
+    upsert_embedding(
+        db,
+        "max",
+        _at_cosine(profile, cosine, seed=9),
+        sample_count=3,
+        enrolled_via="test",
+    )
+    return samples, profile, list_embeddings(db)
+
+
+def test_collision_bar_is_not_the_recognition_threshold(tmp_path: Path):
+    """A merely similar-sounding household member must still be able to enrol.
+    The profile-vs-profile comparison runs on the stricter collision bar, so a
+    rival at 0.60 — above the 0.55 recognition threshold, below the 0.65
+    collision bar — is not a collision.
+
+    The second half is the direction check: collapse the two bars back onto 0.55
+    and the same enrolment is refused. Higher bar = fewer refusals; inverting it
+    would silently disable the protection while still reading as ok."""
+    samples, profile, candidates = _rival_case(tmp_path, 0.60)
+
+    separate = verify_enrollment(
+        samples,
+        profile,
+        uid="lena",
+        candidates=candidates,
+        threshold=0.55,
+        collision_threshold=0.65,
+    )
+    assert separate.ok is True
+    assert separate.reason == ""
+
+    collapsed = verify_enrollment(
+        samples,
+        profile,
+        uid="lena",
+        candidates=candidates,
+        threshold=0.55,
+        collision_threshold=0.55,
+    )
+    assert collapsed.ok is False
+    assert collapsed.reason == REASON_COLLISION
+
+
+def test_collision_bar_still_refuses_a_near_identical_profile(tmp_path: Path):
+    """The point of the looser bar is not to stop failing closed: a profile that
+    really is the enrolled resident is still refused, because storing it would
+    merge two residents into one identity."""
+    samples, profile, candidates = _rival_case(tmp_path, 0.85)
+
+    check = verify_enrollment(
+        samples,
+        profile,
+        uid="lena",
+        candidates=candidates,
+        threshold=0.55,
+        collision_threshold=0.65,
+    )
+    assert check.ok is False
+    assert check.reason == REASON_COLLISION
+    assert check.min_score > 0.65
 
 
 def test_upsert_rejects_wrong_dim(tmp_path: Path):

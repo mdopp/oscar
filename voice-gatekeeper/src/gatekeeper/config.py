@@ -16,6 +16,24 @@ from dataclasses import dataclass, field
 # recognised out of the box; deployments opt out via the template variable.
 _SPEAKER_ID_DISABLED = {"0", "false", "no", "off"}
 
+# The enrolment self-test (#1083) compares the profile it is about to store
+# against every already-enrolled resident. That comparison gets its own bar,
+# deliberately NOT the recognition threshold above: at 0.55 a merely
+# similar-sounding household member — a sibling, a parent and child — is
+# unenrollable, which is a real household failing honestly but pointlessly.
+#
+# Direction matters, so spelling it out: these are cosine similarities, higher =
+# more similar. A HIGHER collision bar is STRICTER about what counts as "already
+# enrolled" and therefore refuses FEWER enrolments; only a near-identical profile
+# is turned away. A genuine collision still fails closed — two residents must
+# never be silently merged into one identity.
+#
+# 0.65 is a chosen starting point, not a measured one: this repo has no
+# distance data from real household voices yet. `gatekeeper.enroll.selftest`
+# logs the score each verdict turned on, so the number can be tuned on the box
+# via SOLARIS_SPEAKER_COLLISION_THRESHOLD without a rebuild.
+DEFAULT_COLLISION_THRESHOLD = 0.65
+
 
 def system_language_from_env() -> str:
     """The language the voice stack runs in (#1057).
@@ -26,6 +44,20 @@ def system_language_from_env() -> str:
     pipeline actually transcribes.
     """
     return (os.environ.get("SOLARIS_LANGUAGE", "").strip() or "de").lower()
+
+
+def speaker_collision_threshold_from_env() -> float:
+    """The profile-vs-profile collision bar for the enrolment self-test —
+    separate from SOLARIS_SPEAKER_ID_THRESHOLD (see DEFAULT_COLLISION_THRESHOLD
+    for why, and for which direction is stricter)."""
+    try:
+        return float(
+            os.environ.get(
+                "SOLARIS_SPEAKER_COLLISION_THRESHOLD", str(DEFAULT_COLLISION_THRESHOLD)
+            )
+        )
+    except ValueError:
+        return DEFAULT_COLLISION_THRESHOLD
 
 
 def speaker_id_enabled_from_env() -> bool:
@@ -55,6 +87,7 @@ class Settings:
     solaris_db_path: str
     speaker_id_enabled: bool
     speaker_id_threshold: float
+    speaker_collision_threshold: float
     voice_pe_devices: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -104,6 +137,7 @@ class Settings:
             ),
             speaker_id_enabled=speaker_id_enabled_from_env(),
             speaker_id_threshold=threshold,
+            speaker_collision_threshold=speaker_collision_threshold_from_env(),
             voice_pe_devices=devices,
         )
 

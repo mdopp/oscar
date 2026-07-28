@@ -295,6 +295,11 @@
     "description": "Cosine-similarity threshold (0..1) above which a voice turn is attributed to an enrolled resident; below it Solaris falls back to DEFAULT_UID. Higher = stricter. Default 0.55.",
     "default": "0.55"
   },
+  "SOLARIS_SPEAKER_COLLISION_THRESHOLD": {
+    "type": "text",
+    "description": "Cosine-similarity bar (0..1) at which a NEW voice profile counts as the same person as an already-enrolled resident, so enrolment is refused instead of merging two residents into one identity. Only used by the enrolment self-test, never by normal turns. Higher = only a near-identical profile is refused, so fewer enrolments are blocked. Default 0.65 — a starting point, not a measured value.",
+    "default": "0.65"
+  },
   "SOLARIS_DEBUG_MODE": {
     "type": "select",
     "description": "Initial debug-mode default for the `system_settings.debug_mode.active` row. `true` during build phases, flip to `false` for productive household use.",

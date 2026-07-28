@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from dataclasses import dataclass
+from statistics import median
 from typing import Iterable, Protocol
 
 from .config import speaker_id_enabled_from_env
@@ -238,3 +239,126 @@ def average_embeddings(samples: list[bytes]) -> bytes:
         raise ValueError("averaged embedding has zero norm — samples likely silence")
     mean = (mean / norm).astype("<f4")
     return mean.tobytes()
+
+
+# How far below the group's median a leave-one-out score may sit before the
+# sample counts as an outlier. Samples from one sitting share distance, room and
+# time of day, so they cluster tightly; one that falls this much further off is a
+# cough, a second speaker or a clipped sentence, and averaging it in drags the
+# profile toward audio that isn't the resident.
+LOO_OUTLIER_MARGIN = 0.15
+
+# Leave-one-out needs a meaningful "rest of the group": with two samples each is
+# measured against the other, both scores are identical, and nothing can stand
+# out as the outlier.
+_LOO_MIN_SAMPLES = 3
+
+REASON_WEAK = "weak"
+REASON_COLLISION = "collision"
+
+
+@dataclass(frozen=True)
+class EnrollmentCheck:
+    ok: bool
+    reason: str  # "" when ok, else REASON_WEAK / REASON_COLLISION
+    min_score: float  # the score the verdict turns on — the distance to threshold
+
+
+def leave_one_out_scores(samples: list[bytes]) -> list[float]:
+    """Cosine of each enrolment sample against the mean of the *others*.
+
+    Holding the sample out is the point: a sample that is itself part of the mean
+    pulls the mean toward itself, hiding the very outlier we are looking for.
+    Returns [] when there are too few samples for the comparison to mean
+    anything.
+    """
+    if len(samples) < _LOO_MIN_SAMPLES:
+        return []
+    scores: list[float] = []
+    for i, sample in enumerate(samples):
+        rest = average_embeddings([s for j, s in enumerate(samples) if j != i])
+        match = cosine_match(
+            sample,
+            [
+                VoiceEmbedding(
+                    uid="", embedding_bytes=rest, sample_count=len(samples) - 1
+                )
+            ],
+            threshold=0.0,
+        )
+        scores.append(match.score if match is not None else -1.0)
+    return scores
+
+
+def drop_outliers(samples: list[bytes]) -> list[bytes]:
+    """Keep the enrolment samples that agree with the rest of the sitting, so the
+    profile is averaged over a coherent set. At least half the samples always
+    survive (the floor is derived from the median)."""
+    scores = leave_one_out_scores(samples)
+    if not scores:
+        return list(samples)
+    floor = median(scores) - LOO_OUTLIER_MARGIN
+    return [s for s, score in zip(samples, scores) if score >= floor]
+
+
+def verify_enrollment(
+    samples: list[bytes],
+    profile: bytes,
+    *,
+    uid: str,
+    candidates: Iterable[VoiceEmbedding],
+    threshold: float,
+    collision_threshold: float,
+) -> EnrollmentCheck:
+    """Resolve every retained sample the way a real turn would — against the
+    freshly averaged profile *and* every other enrolled resident.
+
+    Two failures are possible and mean different things. Nothing clears the
+    threshold: the profile doesn't carry yet, so collect more samples. A sample
+    resolves to a *different* resident: a collision, and enrolling anyway would
+    let Solaris hand one resident's data to another — a privacy failure, never a
+    quality one.
+
+    Two bars, and they are not interchangeable. `threshold` is the ordinary
+    recognition threshold and is what the per-sample resolve below runs on — that
+    loop must behave exactly like a real turn. `collision_threshold` is the
+    stricter, higher profile-vs-profile bar (see
+    `config.DEFAULT_COLLISION_THRESHOLD`): raising it refuses fewer enrolments,
+    because only a near-identical profile then counts as the same person.
+
+    The verdict is read off `match`, never off the uid `resolve_speaker` returns:
+    `default_uid` may be the enrolling resident, which would make a
+    household fallback look like success.
+    """
+    others = list(candidates)
+    # The centroid of a resident's own samples is by construction closer to each
+    # of them than anyone else's row is, so the per-sample resolve below can miss
+    # the collision that matters most: a new profile sitting on top of an
+    # enrolled one. Every later turn would then be a coin toss between the two
+    # residents, so measure the profile against them directly first — on the
+    # collision bar, not the recognition one.
+    if others:
+        rival = cosine_match(profile, others, threshold=collision_threshold)
+        if rival is not None and rival.above_threshold:
+            return EnrollmentCheck(
+                ok=False, reason=REASON_COLLISION, min_score=rival.score
+            )
+    # Own profile last: `cosine_match` keeps the first of equally-scoring
+    # candidates, so a dead heat with another resident resolves to them and
+    # fails closed as a collision.
+    rows = [
+        *others,
+        VoiceEmbedding(uid=uid, embedding_bytes=profile, sample_count=len(samples)),
+    ]
+    reason = ""
+    min_score = 1.0
+    for sample in samples:
+        _, match = resolve_speaker(sample, rows, threshold=threshold, default_uid="")
+        if match is None:
+            return EnrollmentCheck(ok=False, reason=REASON_WEAK, min_score=-1.0)
+        min_score = min(min_score, match.score)
+        if not match.above_threshold:
+            reason = reason or REASON_WEAK
+        elif match.uid != uid:
+            reason = REASON_COLLISION
+    return EnrollmentCheck(ok=not reason, reason=reason, min_score=min_score)
