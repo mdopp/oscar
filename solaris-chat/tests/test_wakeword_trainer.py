@@ -98,6 +98,61 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pending", ["queued", "running"])
+async def test_voice_does_not_queue_a_second_run_beside_a_pending_one(
+    tmp_path, pending
+):
+    """One model wakes the box for everyone, so a run already in flight covers
+    these recordings too — by voice, by tap, by another resident (#1089). The
+    reply has to say that instead of claiming a fresh run started."""
+    db_path = str(tmp_path / "solaris_test.db")
+    _create_queue_table(db_path)
+    tools = build_wakeword_tools(db_path, lambda: "household")
+    trigger_tool = next(t for t in tools if t.name == "trigger_wakeword_training")
+
+    first = json.loads(await trigger_tool.handler({"uid": "alex"}))
+    assert first["training_queued"] is True
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE wakeword_training_runs SET status = ?", (pending,))
+        conn.commit()
+
+    second = json.loads(await trigger_tool.handler({"uid": "marco"}))
+
+    assert second["training_queued"] is False
+    assert second["already_running"] is True
+    assert second["run_id"] == first["run_id"]
+    assert "läuft aber schon" in second["say"]
+    assert "eingeplant" not in second["say"]
+    assert second["say"].rstrip().endswith("?")
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT id, uid, status FROM wakeword_training_runs ORDER BY id"
+        ).fetchall() == [(1, "alex", pending)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["done", "failed"])
+async def test_voice_queues_again_once_the_previous_run_finished(tmp_path, terminal):
+    db_path = str(tmp_path / "solaris_test.db")
+    _create_queue_table(db_path)
+    tools = build_wakeword_tools(db_path, lambda: "household")
+    trigger_tool = next(t for t in tools if t.name == "trigger_wakeword_training")
+
+    await trigger_tool.handler({"uid": "alex"})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE wakeword_training_runs SET status = ?", (terminal,))
+        conn.commit()
+
+    again = json.loads(await trigger_tool.handler({"uid": "alex"}))
+
+    assert again["training_queued"] is True
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT id, uid, status FROM wakeword_training_runs ORDER BY id"
+        ).fetchall() == [(1, "alex", terminal), (2, "alex", "queued")]
+
+
+@pytest.mark.asyncio
 async def test_training_not_queued_when_table_missing(tmp_path):
     """Without the 0029 queue table there is nothing for the GPU trainer to
     claim. Claiming a run that was never queued would leave the resident

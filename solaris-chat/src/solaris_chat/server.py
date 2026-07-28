@@ -4601,8 +4601,8 @@ def build_app(
         uid = _interactive_uid(request)
         if uid is None:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-        run = wakeword_training_store.latest_run(solaris_db_path)
-        if run and run["status"] in wakeword_training_store.PENDING_STATUSES:
+        run = wakeword_training_store.pending_run(solaris_db_path)
+        if run:
             return web.json_response(
                 {
                     "ok": False,

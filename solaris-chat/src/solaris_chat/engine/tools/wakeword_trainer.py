@@ -344,9 +344,36 @@ def build_wakeword_tools(
             if s.get("resident_uid") == uid
         ]
 
-        run_id = wakeword_training_store.enqueue_run(db_path, uid)
-
         thanks = f"Danke, {display_name}! " if uid != "household" else ""
+
+        # One model wakes the box for everyone, so a run already in flight —
+        # whoever started it, by voice or by tap — is the one that will fold in
+        # these recordings too. Queueing a second one buys nothing and costs
+        # hours of GPU.
+        pending = wakeword_training_store.pending_run(db_path)
+        if pending is not None:
+            say = (
+                f"{thanks}Deine {len(samples)} Sprachproben für „Solaris“ sind gespeichert. "
+                f"Ein Training läuft aber schon — ein zweites bringt nichts, weil der "
+                f"laufende Durchgang deine Aufnahmen schon mitnimmt. Kann ich sonst "
+                f"noch etwas für dich tun?"
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "uid": uid,
+                    "display_name": display_name,
+                    "spelled_uid": spelled_uid,
+                    "samples_count": len(samples),
+                    "training_queued": False,
+                    "already_running": True,
+                    "run_id": pending["id"],
+                    "say": say,
+                },
+                ensure_ascii=False,
+            )
+
+        run_id = wakeword_training_store.enqueue_run(db_path, uid)
 
         if run_id is not None:
             # No "ich melde mich": nothing notifies the resident when a run
