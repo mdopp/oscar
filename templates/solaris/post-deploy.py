@@ -596,6 +596,14 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         "# the feature/augmentation phase does not fit podman's stock 64 MB.\n"
         "ShmSize=8g\n"
         "AutoUpdate=registry\n"
+        # Box-observed after #1074 shipped: a deploy leaves this unit on the
+        # image it started with, because the unit file does not drift and
+        # podman's default pull policy is `missing`. The trainer then keeps
+        # running last week's recipe while the chat surface offers a button for
+        # the new one — it would train, report success, and silently leave the
+        # residents' own recordings out. `newer` costs one registry check per
+        # start, and this unit starts rarely and then runs for hours.
+        "Pull=newer\n"
         "\n"
         "[Service]\n"
         "Restart=on-failure\n"
