@@ -19,6 +19,7 @@ import re
 import sqlite3
 import time
 import uuid
+import wave
 import zipfile
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ from solaris_chat import (
     skills,
     topics_store,
     trace_store,
+    wakeword_requests_store,
+    wakeword_samples_store,
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
@@ -892,6 +895,30 @@ _UPLOAD_REQUEST_MAX_BYTES = _UPLOAD_MAX_FILES * _UPLOAD_MAX_BYTES + 8 * 1024 * 1
 # binaries — can surface the upload).
 _UPLOAD_SUBDIR = "uploads"
 _UPLOAD_UNSAFE_RE = re.compile(r"[^A-Za-z0-9äöüÄÖÜß._ -]+")
+
+# Browser wake-word recorder (#1081). The page captures raw PCM, downsamples to
+# 16 kHz mono int16 and encodes the WAV itself — the chat image is
+# `python:3.12-slim` with no ffmpeg, so nothing here can transcode, and this is
+# exactly the format the trainer and the gatekeeper's own samples use.
+_WAKEWORD_RATE = 16000
+_WAKEWORD_MIN_FRAMES = _WAKEWORD_RATE // 4  # 0.25 s — shorter is a mis-tap
+_WAKEWORD_MAX_FRAMES = _WAKEWORD_RATE * 4  # 4 s — one word, not a sentence
+_WAKEWORD_MAX_BYTES = _WAKEWORD_MAX_FRAMES * 2 + 4096
+
+
+def _wakeword_pcm_frames(data: bytes) -> int | None:
+    """Frame count of a 16 kHz mono 16-bit WAV, or None for anything else."""
+    try:
+        with wave.open(io.BytesIO(data)) as wav:
+            if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (
+                1,
+                2,
+                _WAKEWORD_RATE,
+            ):
+                return None
+            return wav.getnframes()
+    except (wave.Error, EOFError):
+        return None
 
 
 def _sanitize_upload_name(filename: str, mime: str) -> str:
@@ -4316,6 +4343,164 @@ def build_app(
         ok = device_token_store.revoke(solaris_db_path, owner, token_id)
         return web.json_response({"ok": ok}, status=200 if ok else 404)
 
+    # ---- Browser wake-word recorder (#1081) --------------------------------
+    # The Voice PE detects "Solaris" on-device and consumes it as an activation,
+    # so the wake word can never reach the server as content. The chat surface
+    # (browser AND the TWA app, which is the same surface) has a microphone and
+    # no wake-word gate, so the samples are recorded here instead. uid ALWAYS
+    # comes from the Authelia session — never from the request — so a resident
+    # can only ever write into their own set.
+
+    def _wakeword_target(uid: str) -> int:
+        req = wakeword_requests_store.get_request(solaris_db_path, uid) or {}
+        return int(
+            req.get("target_count") or wakeword_requests_store.WAKEWORD_TARGET_SAMPLES
+        )
+
+    def _wakeword_stored(uid: str, target: int) -> list[int]:
+        """The sample indices that really exist on disk — the counter follows
+        these files, so a re-record or a replayed upload can't double-count."""
+        return [
+            i
+            for i in range(1, target + 1)
+            if os.path.exists(
+                wakeword_samples_store.sample_path(solaris_db_path, uid, i)
+            )
+        ]
+
+    async def wakeword_samples_state(request: web.Request) -> web.Response:
+        """How far the caller's own "Solaris" recordings have got (#1081)."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        target = _wakeword_target(uid)
+        stored = _wakeword_stored(uid, target)
+        return web.json_response(
+            {"ok": True, "target": target, "collected": len(stored), "samples": stored}
+        )
+
+    async def wakeword_sample_upload(request: web.Request) -> web.Response:
+        """Store one browser-recorded "Solaris" sample (#1081).
+
+        `multipart/form-data` with an `index` field (1..target, sent BEFORE the
+        file) and a `file` part holding a 16 kHz mono 16-bit WAV. Writing the
+        same index again replaces that recording — that is how "neu aufnehmen"
+        works — and the counter is recomputed from the files on disk, so a
+        re-record or a retried upload never counts twice (#1080). This endpoint
+        is the single writer of `collected_count` on this path.
+        """
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response(
+                {"ok": False, "error": "Die Aufnahme kam nicht richtig an."}, status=400
+            )
+        try:
+            reader = await request.multipart()
+        except (ValueError, AssertionError):
+            return web.json_response(
+                {"ok": False, "error": "Die Aufnahme kam nicht richtig an."}, status=400
+            )
+        target = _wakeword_target(uid)
+        index = 0
+        data = bytearray()
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "index":
+                raw = (await part.text()).strip()
+                index = int(raw) if raw.isdigit() else 0
+                continue
+            if part.name != "file":
+                await part.read()
+                continue
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > _WAKEWORD_MAX_BYTES:
+                    return web.json_response(
+                        {
+                            "ok": False,
+                            "error": "Die Aufnahme ist zu lang. Sag bitte nur das Wort „Solaris“.",
+                        },
+                        status=413,
+                    )
+        if not 1 <= index <= target:
+            return web.json_response(
+                {"ok": False, "error": "Diese Aufnahme-Nummer gibt es nicht."},
+                status=400,
+            )
+        frames = _wakeword_pcm_frames(bytes(data))
+        if frames is None:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "Diese Aufnahme hat das falsche Format und wurde nicht gespeichert.",
+                },
+                status=415,
+            )
+        if frames < _WAKEWORD_MIN_FRAMES:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "Die Aufnahme war zu kurz. Sag bitte deutlich „Solaris“.",
+                },
+                status=400,
+            )
+        if frames > _WAKEWORD_MAX_FRAMES:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "Die Aufnahme ist zu lang. Sag bitte nur das Wort „Solaris“.",
+                },
+                status=413,
+            )
+        dest = Path(wakeword_samples_store.sample_path(solaris_db_path, uid, index))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(bytes(data))
+        wakeword_samples_store.add_sample(
+            solaris_db_path,
+            sample_id=f"sample_{uid}_{index}",
+            filename=str(dest),
+            wakeword_id="solaris",
+            resident_uid=uid,
+            intended_phrase="Solaris",
+            stt_transcript="",
+            is_valid=True,
+        )
+        collected = len(_wakeword_stored(uid, target))
+        wakeword_requests_store.set_browser_progress(
+            solaris_db_path, uid, collected, target
+        )
+        log.info("wakeword.browser.stored", uid=uid, index=index, collected=collected)
+        return web.json_response(
+            {
+                "ok": True,
+                "index": index,
+                "target": target,
+                "collected": collected,
+                "done": collected >= target,
+            }
+        )
+
+    async def wakeword_sample_audio(request: web.Request) -> web.Response:
+        """Play back one of the caller's OWN recordings (#1081)."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        raw = request.match_info["index"]
+        target = _wakeword_target(uid)
+        if not raw.isdigit() or not 1 <= int(raw) <= target:
+            raise web.HTTPNotFound()
+        path = Path(wakeword_samples_store.sample_path(solaris_db_path, uid, int(raw)))
+        if not path.exists():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": "audio/wav"})
+
     def _import_llm_classifier():
         """A sync ``folder -> label`` backed by the household LLM for the classify
         step (fail-open to ""). Runs inside `asyncio.to_thread`, so `asyncio.run`
@@ -5626,6 +5811,9 @@ def build_app(
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
     app.router.add_post("/api/push/subscribe", push_subscribe)
     app.router.add_post("/api/push/unsubscribe", push_unsubscribe)
+    app.router.add_get("/api/wakeword/samples", wakeword_samples_state)
+    app.router.add_post("/api/wakeword/samples", wakeword_sample_upload)
+    app.router.add_get("/api/wakeword/samples/{index}", wakeword_sample_audio)
     app.router.add_post("/api/device-tokens", device_token_create)
     app.router.add_get("/api/device-tokens", device_token_list)
     app.router.add_delete("/api/device-tokens/{id}", device_token_revoke)

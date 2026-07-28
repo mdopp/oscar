@@ -1375,6 +1375,30 @@
     .model-row .btn-primary { padding: 7px 16px; }
     .model-current { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
 
+    /* Weckwort-Recorder (#1081): eine große Aufnahmetaste, ein sichtbarer
+       Zähler, und pro Aufnahme Anhören/Neu aufnehmen. Mobile-first — die Taste
+       füllt die Kartenbreite und ist mit dem Daumen erreichbar. */
+    .ww-count { font-size: 22px; font-weight: 700; margin: 14px 0 2px; }
+    .ww-bar { height: 8px; border-radius: 999px; background: var(--bubble-sol); overflow: hidden; margin-bottom: 14px; }
+    .ww-bar i { display: block; height: 100%; width: 0; background: var(--accent-grad); transition: width .25s var(--ease); }
+    .ww-rec {
+      width: 100%; min-height: 56px; border-radius: var(--radius); font-size: 17px;
+      font-weight: 600; background: var(--accent-grad); color: var(--accent-ink);
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+    }
+    .ww-rec:disabled { opacity: .5; cursor: default; }
+    .ww-rec.recording { background: var(--danger); color: #fff; }
+    .ww-rec .dot { width: 12px; height: 12px; border-radius: 50%; background: currentColor; }
+    .ww-rec.recording .dot { animation: ww-pulse 1s infinite; }
+    @keyframes ww-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    .ww-hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+    .ww-list { list-style: none; padding: 0; margin: 16px 0 0; }
+    .ww-list li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .ww-list li .n { flex: 1 1 auto; }
+    .ww-list li button { min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 13px; }
+    .ww-list li button:hover { color: var(--ink); background: var(--bubble-sol); }
+    .ww-done { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-top: 14px; background: var(--bubble-sol); }
+
     .seg { display: flex; gap: 4px; }
     .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
     .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
@@ -1994,6 +2018,27 @@
           </div>
           <p class="model-current" id="voice-current"></p>
           <span class="editor-status" id="voice-status"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-wakeword" class="view">
+      <div class="pane">
+        <div class="doc">
+          <h2>Weckwort „Solaris“</h2>
+          <p class="lead">Damit Solaris deine Stimme beim Weckwort besser erkennt, nimm hier zehnmal
+             das Wort <strong>„Solaris“</strong> auf — ganz normal gesprochen, wie zu Hause.
+             Jede Aufnahme dauert nur eine Sekunde. Du kannst jede einzeln anhören und neu aufnehmen.</p>
+          <div class="ww-count" id="ww-count">0 von 10</div>
+          <div class="ww-bar"><i id="ww-bar"></i></div>
+          <button type="button" class="ww-rec" id="ww-rec"><span class="dot"></span><span id="ww-rec-label">Aufnahme starten</span></button>
+          <p class="ww-hint" id="ww-hint">Tippe auf die Taste und sag „Solaris“.</p>
+          <ul class="ww-list" id="ww-list"></ul>
+          <div class="ww-done" id="ww-done" hidden>
+            <strong>Fertig — alle 10 Aufnahmen sind gespeichert.</strong>
+            <p class="ww-hint">Solaris trainiert das Weckwort damit im Hintergrund. Du kannst
+               einzelne Aufnahmen jederzeit neu aufnehmen.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -4478,6 +4523,7 @@
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
+        ["/weckwort", "Weckwort „Solaris“ mit deiner Stimme aufnehmen"],
         ["/thinking", "Show, collapse, or hide thinking blocks"],
         ["/voice", "Solaris's spoken voice (admins)", true],
         ["/model", "Everyday-chat model — Schnell/Gründlich (admins)", true]
@@ -4565,6 +4611,7 @@
           return;
         }
         if (cmd === "thinking") { openSettingCard("prefs"); return; }
+        if (cmd === "weckwort" || cmd === "wakeword") { openSettingCard("wakeword"); return; }
         if (cmd === "model" || cmd === "voice") {
           if (isAdmin) {
             openSettingCard(cmd);
@@ -6823,11 +6870,12 @@
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
         model: document.getElementById("view-model"),
-        voice: document.getElementById("view-voice")
+        voice: document.getElementById("view-voice"),
+        wakeword: document.getElementById("view-wakeword")
       };
       var settingTitles = {
         skills: "Skills", commands: "Commands", scheduler: "Scheduler", hooks: "Hooks", soul: "Soul", tools: "Tools",
-        prefs: "Chat", model: "Model", voice: "Voice"
+        prefs: "Chat", model: "Model", voice: "Voice", wakeword: "Weckwort „Solaris“"
       };
       var skillsLoaded = false, soulLoaded = false;
 
@@ -6841,6 +6889,7 @@
         else if (name === "prefs") { syncThinkingSeg(); }
         else if (name === "model") { loadModel(); loadVram(); }
         else if (name === "voice") { loadVoice(); }
+        else if (name === "wakeword") { loadWakeword(); }
       }
 
       // Post a setting pane as a card in the log. There's a single live copy of
@@ -9674,6 +9723,7 @@
       var SETTINGS_ENTRIES = [
         ["model", "/model", "Everyday-chat model & VRAM (admins)", true],
         ["voice", "/voice", "Solaris's spoken voice (admins)", true],
+        ["wakeword", "/weckwort", "Weckwort „Solaris“ mit deiner Stimme aufnehmen"],
         ["skills", "/skills", "Skills Solaris draws on"],
         ["soul", "/soul", "Solaris's durable identity"],
         ["persona", "/persona", "Persona & speed for the next new chat"],
@@ -10680,6 +10730,195 @@
             modelStatus.textContent = e.message === "forbidden" ? "Only admins can change the model." : "Could not change the model. Please try again.";
           })
           .finally(function () { modelApply.disabled = false; });
+      });
+
+      // ---- Weckwort-Recorder (#1081) ----
+      // Die Voice PE erkennt „Solaris" auf dem Gerät und verbraucht das Wort als
+      // Aktivierung — über die Sprachbox kann es nie als Inhalt ankommen. Die
+      // Chat-Oberfläche (Browser UND App, dieselbe Fläche via TWA) hat ein
+      // Mikrofon ohne Weckwort-Schranke, also wird hier aufgenommen.
+      //
+      // Das Format ist der springende Punkt: MediaRecorder liefert webm/opus,
+      // und das Chat-Image hat kein ffmpeg. Also nehmen wir rohes PCM über einen
+      // ScriptProcessorNode ab, rechnen auf 16 kHz Mono int16 herunter und
+      // schreiben die WAV-Datei hier im Browser — genau das Format, das der
+      // Trainer erwartet.
+      var wwCountEl = document.getElementById("ww-count");
+      var wwBarEl = document.getElementById("ww-bar");
+      var wwRecBtn = document.getElementById("ww-rec");
+      var wwRecLabel = document.getElementById("ww-rec-label");
+      var wwHint = document.getElementById("ww-hint");
+      var wwListEl = document.getElementById("ww-list");
+      var wwDoneEl = document.getElementById("ww-done");
+      var WW_TARGET = 10;
+      var wwStored = [];
+      var wwSlot = 0;          // >0 = diese Nummer wird neu aufgenommen
+      var wwBusy = false;
+      var wwClipMs = 1600;   // ein Wort — der Server nimmt 0,25 s bis 4 s an
+
+      function wwSetHint(text, kind) {
+        wwHint.textContent = text;
+        wwHint.className = "ww-hint" + (kind ? " editor-status " + kind : "");
+      }
+      function wwNextIndex() {
+        if (wwSlot) return wwSlot;
+        for (var i = 1; i <= WW_TARGET; i++) {
+          if (wwStored.indexOf(i) === -1) return i;
+        }
+        return 0;
+      }
+      function wwRender() {
+        var n = wwStored.length;
+        wwCountEl.textContent = n + " von " + WW_TARGET;
+        wwBarEl.style.width = Math.round((n / WW_TARGET) * 100) + "%";
+        wwDoneEl.hidden = n < WW_TARGET;
+        var next = wwNextIndex();
+        wwRecBtn.disabled = wwBusy || !next;
+        wwRecLabel.textContent = wwBusy
+          ? "Ich höre zu…"
+          : wwSlot
+            ? "Aufnahme " + wwSlot + " neu aufnehmen"
+            : next
+              ? "Aufnahme " + next + " starten"
+              : "Alle Aufnahmen sind da";
+        wwListEl.textContent = "";
+        wwStored.forEach(function (i) {
+          var li = document.createElement("li");
+          var name = document.createElement("span");
+          name.className = "n"; name.textContent = "Aufnahme " + i;
+          var play = document.createElement("button");
+          play.type = "button"; play.textContent = "Anhören";
+          play.addEventListener("click", function () {
+            new Audio("/api/wakeword/samples/" + i + "?t=" + Date.now()).play()
+              .catch(function () { wwSetHint("Diese Aufnahme lässt sich gerade nicht abspielen.", "warn"); });
+          });
+          var again = document.createElement("button");
+          again.type = "button"; again.textContent = "Neu aufnehmen";
+          again.addEventListener("click", function () {
+            wwSlot = i;
+            wwSetHint("Tippe auf die Taste und sag „Solaris“ — Aufnahme " + i + " wird ersetzt.");
+            wwRender();
+          });
+          li.appendChild(name); li.appendChild(play); li.appendChild(again);
+          wwListEl.appendChild(li);
+        });
+      }
+      function loadWakeword() {
+        wwSlot = 0; wwBusy = false;
+        wwSetHint("Tippe auf die Taste und sag „Solaris“.");
+        wwRender();
+        return fetch("/api/wakeword/samples")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { wwSetHint("Der Stand der Aufnahmen ließ sich nicht laden. Lade die Seite neu.", "err"); return; }
+            WW_TARGET = j.target || WW_TARGET;
+            wwStored = j.samples || [];
+            wwRender();
+          })
+          .catch(function () { wwSetHint("Der Stand der Aufnahmen ließ sich nicht laden. Lade die Seite neu.", "err"); });
+      }
+
+      // 16 kHz Mono int16 als WAV — dasselbe Format, das der Gatekeeper schreibt.
+      function wwEncodeWav(samples) {
+        var buf = new ArrayBuffer(44 + samples.length * 2);
+        var view = new DataView(buf);
+        function str(off, s) { for (var i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); }
+        str(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVE");
+        str(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true); view.setUint32(24, 16000, true);
+        view.setUint32(28, 16000 * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+        str(36, "data"); view.setUint32(40, samples.length * 2, true);
+        for (var i = 0; i < samples.length; i++) {
+          var s = Math.max(-1, Math.min(1, samples[i]));
+          view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        }
+        return new Blob([buf], { type: "audio/wav" });
+      }
+      function wwDownsample(chunks, length, rate) {
+        var flat = new Float32Array(length), at = 0;
+        chunks.forEach(function (c) { flat.set(c, at); at += c.length; });
+        if (rate === 16000) return flat;
+        var ratio = rate / 16000;
+        var out = new Float32Array(Math.floor(flat.length / ratio));
+        for (var i = 0; i < out.length; i++) {
+          // Mittelwert über das Quellfenster statt Nearest-Neighbour: sonst
+          // klingt die Probe bei 48 kHz Eingang hörbar rau.
+          var from = Math.floor(i * ratio), to = Math.min(flat.length, Math.floor((i + 1) * ratio));
+          var sum = 0;
+          for (var k = from; k < to; k++) sum += flat[k];
+          out[i] = to > from ? sum / (to - from) : 0;
+        }
+        return out;
+      }
+      function wwRecordClip() {
+        return navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false } })
+          .then(function (stream) {
+            var Ctx = window.AudioContext || window.webkitAudioContext;
+            var ctx = new Ctx();
+            // Autoplay policy: a context created off a resolved promise can come
+            // up suspended, and a suspended context never fires onaudioprocess.
+            if (ctx.state === "suspended") ctx.resume();
+            var src = ctx.createMediaStreamSource(stream);
+            var node = ctx.createScriptProcessor(4096, 1, 1);
+            var chunks = [], total = 0;
+            node.onaudioprocess = function (e) {
+              var d = e.inputBuffer.getChannelData(0);
+              chunks.push(new Float32Array(d)); total += d.length;
+            };
+            src.connect(node); node.connect(ctx.destination);
+            return new Promise(function (resolve) {
+              setTimeout(function () {
+                node.disconnect(); src.disconnect();
+                stream.getTracks().forEach(function (t) { t.stop(); });
+                var rate = ctx.sampleRate;
+                ctx.close();
+                resolve(wwEncodeWav(wwDownsample(chunks, total, rate)));
+              }, wwClipMs);
+            });
+          });
+      }
+      wwRecBtn.addEventListener("click", function () {
+        if (wwBusy) return;
+        var index = wwNextIndex();
+        if (!index) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          wwSetHint("Diese Ansicht darf nicht auf das Mikrofon zugreifen. Öffne Solaris in der App oder im Browser.", "err");
+          return;
+        }
+        wwBusy = true; wwRecBtn.classList.add("recording");
+        wwSetHint("Sag jetzt „Solaris“.");
+        wwRender();
+        wwRecordClip()
+          .then(function (blob) {
+            wwSetHint("Wird gespeichert…");
+            var form = new FormData();
+            form.append("index", String(index));
+            form.append("file", blob, "sample.wav");
+            return fetch("/api/wakeword/samples", { method: "POST", body: form })
+              .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); });
+          })
+          .then(function (res) {
+            if (!res.body || !res.body.ok) {
+              throw new Error(res.body && res.body.error ? res.body.error : "Die Aufnahme konnte nicht gespeichert werden. Versuche es noch einmal.");
+            }
+            WW_TARGET = res.body.target || WW_TARGET;
+            if (wwStored.indexOf(res.body.index) === -1) wwStored.push(res.body.index);
+            wwStored.sort(function (a, b) { return a - b; });
+            wwSlot = 0;
+            wwSetHint(res.body.done
+              ? "Danke — alle Aufnahmen sind da."
+              : "Gespeichert. Noch " + (WW_TARGET - wwStored.length) + " Mal.", "ok");
+          })
+          .catch(function (e) {
+            var denied = e && (e.name === "NotAllowedError" || e.name === "NotFoundError" || e.name === "SecurityError");
+            wwSetHint(denied
+              ? "Solaris darf nicht auf dein Mikrofon zugreifen. Erlaube den Zugriff in den Einstellungen deines Browsers oder Handys und tippe dann noch einmal auf die Taste."
+              : (e && e.message) || "Die Aufnahme hat nicht geklappt. Versuche es noch einmal.", "err");
+          })
+          .finally(function () {
+            wwBusy = false; wwRecBtn.classList.remove("recording");
+            wwRender();
+          });
       });
 
       // ---- Voice (admin; one Kokoro voice for all output, #368) ----
