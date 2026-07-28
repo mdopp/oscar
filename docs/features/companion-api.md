@@ -99,6 +99,12 @@ no "process fully dead + push + no third-party" option on Android; this is it.
 
 - `GET /napi/portal/events` — device-token authed, `Content-Type: text/event-stream`,
   long-lived (socket-connect timeout 20s, **no** read timeout; reconnect on drop).
+- **Keepalive (#1093)** — while idle the server writes an SSE comment `: ping` every
+  **90s** (a comment, not an event: parsers drop it). It exists to keep the proxy and
+  any carrier NAT from expiring the binding, and it is the client's only liveness
+  signal — a NAT drop kills the stream *silently*, so a client that waits on a socket
+  with no read timeout waits forever. A client that wants to notice should treat
+  **>3 min of total silence** (two missed pings) as a dead stream and reconnect.
 - One multiplexed stream per resident (`uid`), in-process pub/sub (`EventBus`), per-resident privacy.
 - **Event kinds** (`event: <kind>` + `data: <json>`):
   - `card_state` — an HA entity changed (fan-out from the HA watcher) → update the card / **wake the device widget**.

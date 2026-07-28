@@ -21,7 +21,7 @@ import pytest
 from solaris_chat import favorites_store
 from solaris_chat.engine import ha_watch, store
 from solaris_chat.engine.notify import EventBus, emit_chat, inject
-from solaris_chat.server import build_app
+from solaris_chat.server import _SSE_HEARTBEAT_S, build_app
 
 _SCHEMA = """
 CREATE TABLE favorites (
@@ -190,14 +190,14 @@ async def test_sse_delivers_household_pins(aiohttp_client, tmp_path):
 async def test_sse_emits_heartbeat_and_tears_down_on_disconnect(
     aiohttp_client, tmp_path, monkeypatch
 ):
-    """The idle stream sends a `: ping` SSE comment so nginx's 60s idle timeout
-    never closes it, and closing the client tears the handler down cleanly (no
-    leaked heartbeat/pump tasks, no exception escaping)."""
-    # Fast-forward the heartbeat's 15s wait so the ping fires within the test.
+    """The idle stream sends a `: ping` SSE comment so neither the proxy nor a
+    carrier NAT drops it, and closing the client tears the handler down cleanly
+    (no leaked heartbeat/pump tasks, no exception escaping)."""
+    # Fast-forward the heartbeat's wait so the ping fires within the test.
     real_sleep = asyncio.sleep
 
     async def _fast_sleep(delay):
-        await real_sleep(0 if delay >= 15 else delay)
+        await real_sleep(0 if delay >= _SSE_HEARTBEAT_S else delay)
 
     monkeypatch.setattr("solaris_chat.server.asyncio.sleep", _fast_sleep)
     bus = EventBus()
