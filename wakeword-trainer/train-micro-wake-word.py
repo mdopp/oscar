@@ -45,14 +45,18 @@ provisions the work dir and runs this script. Phase 2 (flash) stays manual.
        voices (multi-speaker; varied length/noise scales). German is
        load-bearing: trained_languages=["de"]; English pronunciation tanks
        recall on a German speaker.
-    2. features  — augment (RIR + ambient/music background) and compute the
+    2. real      — fold the household's OWN "Solaris" recordings (the ten the
+       wizard collects per resident, #1074) into the same positive dir, so they
+       ride the identical augmentation path. Per household, not per resident:
+       one model wakes the box for everyone.
+    3. features  — augment (RIR + ambient/music background) and compute the
        streaming spectrogram feature mmaps (training/validation/testing).
-    3. negatives — fetch microWakeWord's pre-generated negative spectrogram
+    4. negatives — fetch microWakeWord's pre-generated negative spectrogram
        datasets (speech / dinner_party / no_speech + *_eval) from HF
        kahrendt/microwakeword (no 17 GB ACAV download — these are ready-made).
-    4. train     — mixednet, then convert+quantize to the streaming INT8 tflite
+    5. train     — mixednet, then convert+quantize to the streaming INT8 tflite
        and run the ROC test (recall + false-accepts/hour at each cutoff).
-    5. export    — pick the probability cutoff at a target false-accepts/hour,
+    6. export    — pick the probability cutoff at a target false-accepts/hour,
        estimate the tensor arena, and write solaris.tflite + solaris.json.
 
   VOICES (German, into piper-sample-generator/voices/):
@@ -66,6 +70,8 @@ provisions the work dir and runs this script. Phase 2 (flash) stays manual.
 
   TUNING (the real cost is iteration, per upstream):
     --positive-samples  more = better recall, slower gen
+    --real-oversample   how many copies of each resident recording join the
+                        positive set (see DEFAULT_REAL_OVERSAMPLE — unverified)
     --steps             more training steps usually help until it plateaus
     negative/positive class weights + sampling weights in the written yaml are
     the biggest quality levers; bump negative_class_weight if it false-accepts.
@@ -74,11 +80,14 @@ provisions the work dir and runs this script. Phase 2 (flash) stays manual.
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import pathlib
 import shutil
+import sqlite3
 import subprocess
 import sys
+import wave
 
 import yaml
 
@@ -99,6 +108,38 @@ DEFAULT_VOICES = [
     "de_DE-ramona-low.onnx",
     "de_DE-pavoque-low.onnx",
 ]
+
+# Where the engine and the gatekeeper write the residents' own recordings, and
+# the queue DB that says which of them the recorder judged usable. Both the pod
+# and the trainer Quadlet mount the same host dir at /var/lib/solaris, so these
+# paths mean the same file in both containers.
+DEFAULT_SAMPLES_DB = pathlib.Path("/var/lib/solaris/solaris.db")
+USER_SAMPLES_SUBPATH = ("wakeword", "user_samples")
+
+# Resident recordings are copied into the synthetic positives dir under this
+# prefix — it can never collide with generate_positives' "%06d.wav" sequence.
+REAL_PREFIX = "real_"
+
+# What a usable recording looks like. Same contract the browser recorder and the
+# gatekeeper write (#1081): 16 kHz mono 16-bit, one spoken word.
+SAMPLE_RATE = 16000
+MIN_FRAMES = SAMPLE_RATE // 4  # 0.25 s
+MAX_FRAMES = SAMPLE_RATE * 4  # 4 s
+# int16 peak below this is a muted mic or room tone, not a spoken wake word.
+SILENCE_PEAK = 500
+CLIPPED_LEVEL = 32700
+MAX_CLIPPED_SHARE = 0.01
+
+# How many copies of each resident recording join the positive set.
+#
+# UNVERIFIED — nobody has yet run a full training with real samples, and this
+# ratio can only be judged by how the resulting model behaves on the household's
+# voices. It is a starting point, not a tuned constant. The reasoning: ten
+# recordings against --positive-samples 2000 is 0.5% of the positive set, a
+# rounding error the model never learns from; x20 makes them ~9%. Copies are not
+# dead weight — the augmenter draws RIR/background/EQ/gain per clip, so each
+# copy becomes a different training example.
+DEFAULT_REAL_OVERSAMPLE = 20
 
 
 def _run(cmd: list[str], cwd: pathlib.Path | None = None) -> None:
@@ -159,6 +200,115 @@ def generate_positives(work: pathlib.Path, voices: list[str], n: int) -> pathlib
         shutil.rmtree(phrase_dir, ignore_errors=True)
     sys.stdout.write(f"Generated {idx} positive clips -> {out}\n")
     return out
+
+
+def rejected_samples(db_path: pathlib.Path) -> set[str]:
+    """Recording *filenames* the recorder already marked `is_valid = 0`.
+
+    Keyed by basename, not by the stored absolute path: the path is written by
+    whichever container recorded the clip, and matching on the name (which
+    carries the uid: `sample_<uid>_<n>.wav`) survives any prefix difference.
+    A missing DB/table means nothing is known to be bad, not that nothing is.
+    """
+    if not db_path.exists():
+        return set()
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT filename FROM wakeword_samples WHERE is_valid = 0"
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
+    finally:
+        conn.close()
+    return {pathlib.PurePath(r[0]).name for r in rows if r[0]}
+
+
+def reject_reason(wav_path: pathlib.Path) -> str | None:
+    """Why this recording must stay out of the positive set, or None if it may
+    join it. A silent, clipped or misencoded clip teaches the model that the
+    wake word sounds like nothing at all, so it is worse than one clip fewer."""
+    try:
+        with wave.open(str(wav_path), "rb") as wav:
+            fmt = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
+            if fmt != (1, 2, SAMPLE_RATE):
+                return (
+                    f"{fmt[2]} Hz/{fmt[0]}ch/{fmt[1] * 8}-bit, want 16 kHz mono 16-bit"
+                )
+            frames = wav.getnframes()
+            pcm = wav.readframes(frames)
+    except (wave.Error, EOFError, OSError) as err:
+        return f"unreadable: {type(err).__name__}: {err}"
+    if frames < MIN_FRAMES:
+        return f"too short: {frames / SAMPLE_RATE:.2f}s"
+    if frames > MAX_FRAMES:
+        return f"too long: {frames / SAMPLE_RATE:.2f}s"
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % samples.itemsize])
+    if sys.byteorder == "big":
+        samples.byteswap()  # WAV PCM is little-endian
+    if not samples:
+        return "no audio data"
+    peak = max(max(samples), -min(samples))
+    if peak < SILENCE_PEAK:
+        return f"silent: peak {peak}"
+    clipped = sum(1 for s in samples if s >= CLIPPED_LEVEL or s <= -CLIPPED_LEVEL)
+    if clipped > len(samples) * MAX_CLIPPED_SHARE:
+        return f"clipped: {clipped / len(samples):.1%} of frames at full scale"
+    return None
+
+
+def fold_real_positives(
+    work: pathlib.Path,
+    samples_root: pathlib.Path,
+    db_path: pathlib.Path,
+    oversample: int,
+) -> tuple[int, int]:
+    """Copy every resident's own recordings into the synthetic positives dir.
+
+    The wake word is per household, not per resident — one model wakes the box
+    for everyone — so this takes every uid's samples, not only the one that
+    triggered the run. Returns (clips folded in, residents they came from);
+    (0, 0) when nobody has recorded anything, which trains on synthetics alone.
+
+    The feature phase splits the positives train/validation/test at random, so
+    copies of one recording land on both sides: the ROC table's recall is
+    optimistic for the household's own voices. Judge the model on the box.
+    """
+    out = work / "generated_samples"
+    out.mkdir(parents=True, exist_ok=True)
+    # A recording the resident deleted must not survive on the work volume from
+    # an earlier run, so the previous fold is dropped before the new one.
+    for stale in out.glob(f"{REAL_PREFIX}*.wav"):
+        stale.unlink()
+    if oversample < 1 or not samples_root.is_dir():
+        sys.stdout.write(
+            f"No resident recordings folded in from {samples_root} "
+            f"(oversample x{oversample}) — training on synthetic positives only\n"
+        )
+        return 0, 0
+
+    rejected = rejected_samples(db_path)
+    residents: set[str] = set()
+    used = 0
+    for wav in sorted(samples_root.glob("*/*.wav")):
+        uid = wav.parent.name
+        if wav.name in rejected:
+            sys.stdout.write(f"  skip {uid}/{wav.name}: recorder marked it invalid\n")
+            continue
+        reason = reject_reason(wav)
+        if reason is not None:
+            sys.stdout.write(f"  skip {uid}/{wav.name}: {reason}\n")
+            continue
+        for copy in range(oversample):
+            shutil.copyfile(wav, out / f"{REAL_PREFIX}{uid}_{wav.stem}_{copy:03d}.wav")
+        residents.add(uid)
+        used += 1
+    sys.stdout.write(
+        f"Folded {used} real clip(s) from {len(residents)} resident(s) into {out} "
+        f"as {used * oversample} positives (oversample x{oversample})\n"
+    )
+    return used, len(residents)
 
 
 def build_features(work: pathlib.Path, mww: pathlib.Path) -> None:
@@ -348,6 +498,24 @@ def main(argv: list[str] | None = None) -> int:
         help="where the produced streaming tflite is shipped",
     )
     ap.add_argument("--positive-samples", type=int, default=2000)
+    ap.add_argument(
+        "--samples-db",
+        type=pathlib.Path,
+        default=DEFAULT_SAMPLES_DB,
+        help="solaris.db — says which resident recordings the recorder rejected",
+    )
+    ap.add_argument(
+        "--user-samples",
+        type=pathlib.Path,
+        default=None,
+        help="dir of <uid>/*.wav resident recordings (default: next to --samples-db)",
+    )
+    ap.add_argument(
+        "--real-oversample",
+        type=int,
+        default=DEFAULT_REAL_OVERSAMPLE,
+        help="copies of each resident recording in the positive set (0 disables)",
+    )
     ap.add_argument("--steps", type=int, default=12000)
     ap.add_argument("--cutoff", type=float, default=0.95)
     ap.add_argument(
@@ -358,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--phase",
-        choices=["all", "generate", "features", "negatives", "train", "export"],
+        choices=["all", "generate", "real", "features", "negatives", "train", "export"],
         default="all",
     )
     args = ap.parse_args(argv)
@@ -366,9 +534,14 @@ def main(argv: list[str] | None = None) -> int:
     work = pathlib.Path(args.work)
     mww = work / "microWakeWord"
     voices = args.voice or DEFAULT_VOICES
+    samples_root = args.user_samples or args.samples_db.parent.joinpath(
+        *USER_SAMPLES_SUBPATH
+    )
 
     if args.phase in ("all", "generate"):
         generate_positives(work, voices, args.positive_samples)
+    if args.phase in ("all", "real"):
+        fold_real_positives(work, samples_root, args.samples_db, args.real_oversample)
     if args.phase in ("all", "features"):
         build_features(work, mww)
     if args.phase in ("all", "negatives"):
