@@ -36,6 +36,10 @@ DB_PATH = os.environ.get("SOLARIS_DB_PATH", "/var/lib/solaris/solaris.db")
 WORK_DIR = os.environ.get("WAKEWORD_WORK_DIR", "/work")
 POLL_SECONDS = int(os.environ.get("WAKEWORD_POLL_SECONDS", "30"))
 TRAINING_STEPS = os.environ.get("WAKEWORD_TRAINING_STEPS", "12000")
+# Copies of each resident recording in the positive set (#1074). Empty = leave
+# the training script's own default; duplicating the number here would let the
+# two drift.
+REAL_OVERSAMPLE = os.environ.get("WAKEWORD_REAL_OVERSAMPLE", "")
 
 # The image ships the sources under /opt, but the training script's recipe
 # expects them inside the work dir — and the work dir is the volume that
@@ -220,18 +224,25 @@ def provision_work(work: Path) -> None:
 def train(work: Path) -> Path:
     """Run all training phases and return the produced streaming tflite."""
     out = work / "out" / "solaris-micro.tflite"
-    _run(
-        [
-            sys.executable,
-            str(TRAIN_SCRIPT),
-            "--work",
-            str(work),
-            "--out",
-            str(out),
-            "--steps",
-            TRAINING_STEPS,
-        ]
-    )
+    # --samples-db is the same DB this poller claims runs from, and the
+    # residents' recordings sit next to it under wakeword/user_samples — one
+    # host dir the pod and this container both mount at /var/lib/solaris, so
+    # the paths mean the same files here as where they were written (#1074).
+    cmd = [
+        sys.executable,
+        str(TRAIN_SCRIPT),
+        "--work",
+        str(work),
+        "--out",
+        str(out),
+        "--steps",
+        TRAINING_STEPS,
+        "--samples-db",
+        DB_PATH,
+    ]
+    if REAL_OVERSAMPLE:
+        cmd += ["--real-oversample", REAL_OVERSAMPLE]
+    _run(cmd)
     return out
 
 
