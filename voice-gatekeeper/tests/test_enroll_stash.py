@@ -82,13 +82,21 @@ async def _turn(handler: GatekeeperHandler):
 
 
 def _new_handler(
-    db: str, monkeypatch, *, extractor: object | None, threshold: float = 0.55
+    db: str,
+    monkeypatch,
+    *,
+    extractor: object | None,
+    threshold: float = 0.55,
+    collision_threshold: float = 0.65,
 ) -> GatekeeperHandler:
     monkeypatch.setattr(
         handler_mod,
         "settings",
         dataclasses.replace(
-            handler_mod.settings, solaris_db_path=db, speaker_id_threshold=threshold
+            handler_mod.settings,
+            solaris_db_path=db,
+            speaker_id_threshold=threshold,
+            speaker_collision_threshold=collision_threshold,
         ),
     )
     monkeypatch.setattr(handler_mod, "get_extractor", lambda: extractor)
@@ -337,6 +345,23 @@ def _emb(seed: int, *, base: bytes | None = None, spread: float = 0.3) -> bytes:
     return v.tobytes()
 
 
+def _at_cosine(base: bytes, target: float, *, seed: int) -> bytes:
+    """A 192-d unit vector at exactly `target` cosine similarity to `base`: an
+    independent direction, Gram-Schmidt'd off `base`, mixed back in. Lets a test
+    place a rival voice precisely between the recognition threshold and the
+    stricter collision bar."""
+    import numpy as np
+
+    def unit(v):
+        return (v / np.linalg.norm(v)).astype("<f4")
+
+    rng = np.random.default_rng(seed)
+    b = np.frombuffer(base, dtype="<f4")
+    v = rng.standard_normal(192, dtype="<f4")
+    orth = unit(v - float(np.dot(v, b)) * b)
+    return unit(target * b + np.sqrt(1.0 - target * target) * orth).tobytes()
+
+
 class _ScriptedExtractor:
     """Returns the next embedding of a script, one per turn."""
 
@@ -466,6 +491,52 @@ async def test_cross_resident_collision_fails_and_never_overwrites(
     conn.close()
     assert [r[0] for r in rows] == ["max"]  # no lena profile, max unchanged
     assert bytes(rows[0][1]) == voice
+    enroll_stash.take_embeddings("lena")
+
+
+async def test_similar_sounding_second_resident_still_enrols(tmp_path, monkeypatch):
+    """Lena sounds like Max — a sibling, a parent and child — but is not Max. Her
+    profile lands above the 0.55 recognition threshold against his row and below
+    the 0.65 collision bar, and she must be able to enrol: refusing her would
+    make a whole household member unusable. This is also the plumbing check that
+    the handler feeds the collision comparison its OWN threshold; passing
+    speaker_id_threshold there turns this back into a refusal."""
+    db = _db(tmp_path)
+    enroll_stash.take_embeddings("lena")
+    voice = _emb(7)
+    lena = _at_cosine(voice, 0.60, seed=5)
+    samples = [_emb(s, base=lena, spread=0.1) for s in (1, 2, 3)]
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO voice_embeddings (uid, embedding, sample_count, enrolled_via) "
+        "VALUES ('max', ?, 3, 'voice')",
+        (voice,),
+    )
+    conn.commit()
+    conn.close()
+    _open_request(db, "lena", 3)
+
+    extractor = _ScriptedExtractor(samples)
+    for _ in range(3):
+        await _turn(_new_handler(db, monkeypatch, extractor=extractor))
+
+    # The profile really is in the contested band — not trivially far from Max.
+    from gatekeeper.speaker import average_embeddings, cosine_match
+    from gatekeeper.embeddings_store import VoiceEmbedding
+
+    rival = cosine_match(
+        average_embeddings(samples),
+        [VoiceEmbedding(uid="max", embedding_bytes=voice, sample_count=3)],
+        threshold=0.0,
+    )
+    assert rival is not None and 0.55 < rival.score < 0.65
+
+    status, _ = _request_row(db, "lena")
+    assert status == "done"
+    conn = sqlite3.connect(db)
+    uids = [r[0] for r in conn.execute("SELECT uid FROM voice_embeddings ORDER BY uid")]
+    conn.close()
+    assert uids == ["lena", "max"]
     enroll_stash.take_embeddings("lena")
 
 

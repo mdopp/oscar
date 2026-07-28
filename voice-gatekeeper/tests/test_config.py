@@ -77,6 +77,37 @@ def test_engine_url_and_token_read(monkeypatch):
     assert s.engine_token == "k"
 
 
+def test_collision_threshold_defaults_stricter_than_recognition(monkeypatch):
+    """The enrolment self-test's profile-vs-profile bar is its own number (#1083).
+    Cosine similarity, so stricter = higher = fewer enrolments refused: at the
+    recognition threshold a merely similar-sounding household member could not
+    enrol at all."""
+    monkeypatch.delenv("SOLARIS_SPEAKER_ID_THRESHOLD", raising=False)
+    monkeypatch.delenv("SOLARIS_SPEAKER_COLLISION_THRESHOLD", raising=False)
+    s = _fresh_settings(monkeypatch, {})
+    assert s.speaker_id_threshold == 0.55
+    assert s.speaker_collision_threshold == 0.65
+    assert s.speaker_collision_threshold > s.speaker_id_threshold
+
+
+def test_collision_threshold_is_env_overridable(monkeypatch):
+    # Tunable on the box without a rebuild — the default is a starting point,
+    # not a measured value.
+    s = _fresh_settings(monkeypatch, {"SOLARIS_SPEAKER_COLLISION_THRESHOLD": "0.8"})
+    assert s.speaker_collision_threshold == 0.8
+    # Garbage must not silently become 0.0, which would refuse every enrolment.
+    s = _fresh_settings(monkeypatch, {"SOLARIS_SPEAKER_COLLISION_THRESHOLD": "nope"})
+    assert s.speaker_collision_threshold == 0.65
+
+
+def test_collision_threshold_moves_independently(monkeypatch):
+    """Tuning the recognition threshold must not drag the collision bar with it —
+    they answer different questions."""
+    s = _fresh_settings(monkeypatch, {"SOLARIS_SPEAKER_ID_THRESHOLD": "0.7"})
+    assert s.speaker_id_threshold == 0.7
+    assert s.speaker_collision_threshold == 0.65
+
+
 def test_settings_has_single_engine_url_no_admin_gateway(monkeypatch):
     # Voice routes to the household profile only: residents speak to Solaris,
     # never the admin persona. The gatekeeper carries exactly one engine URL

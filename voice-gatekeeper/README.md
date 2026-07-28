@@ -44,6 +44,7 @@ Long-term target: fold the Phase 0/1 pass-through path into the Solaris Engine c
 | `SOLARIS_DB_PATH` | `/var/lib/solaris/solaris.db` | SQLite file (Phase 2: `voice_embeddings` read/write) |
 | `SOLARIS_SPEAKER_ID_ENABLED` | empty | Set to `1`/`true` to turn on Phase-2 speaker resolution. Off by default — the stock image has no ECAPA model anyway. |
 | `SOLARIS_SPEAKER_ID_THRESHOLD` | `0.55` | Cosine similarity threshold above which a k-NN match is accepted. Below it, the resolver falls back to `DEFAULT_UID` (and logs the score). |
+| `SOLARIS_SPEAKER_COLLISION_THRESHOLD` | `0.65` | Enrolment self-test only: cosine similarity at which a newly captured profile counts as an already-enrolled resident, so enrolment is refused rather than merging two residents into one identity. Higher = only a near-identical profile is refused. Deliberately stricter than `SOLARIS_SPEAKER_ID_THRESHOLD`; the default is a starting point, not a measured value. |
 | `SOLARIS_SPEAKER_MODEL_CACHE` | `/var/lib/solaris/models/spkrec-ecapa` | Where SpeechBrain caches the pretrained ECAPA weights. ~80 MB on first start. |
 | `SOLARIS_DEBUG_MODE` | `false` | Initial verbose-mode default (runtime override comes from `system_settings.debug_mode` in `solaris.db`) |
 

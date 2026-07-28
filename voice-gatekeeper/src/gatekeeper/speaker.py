@@ -308,6 +308,7 @@ def verify_enrollment(
     uid: str,
     candidates: Iterable[VoiceEmbedding],
     threshold: float,
+    collision_threshold: float,
 ) -> EnrollmentCheck:
     """Resolve every retained sample the way a real turn would — against the
     freshly averaged profile *and* every other enrolled resident.
@@ -318,6 +319,13 @@ def verify_enrollment(
     let Solaris hand one resident's data to another — a privacy failure, never a
     quality one.
 
+    Two bars, and they are not interchangeable. `threshold` is the ordinary
+    recognition threshold and is what the per-sample resolve below runs on — that
+    loop must behave exactly like a real turn. `collision_threshold` is the
+    stricter, higher profile-vs-profile bar (see
+    `config.DEFAULT_COLLISION_THRESHOLD`): raising it refuses fewer enrolments,
+    because only a near-identical profile then counts as the same person.
+
     The verdict is read off `match`, never off the uid `resolve_speaker` returns:
     `default_uid` may be the enrolling resident, which would make a
     household fallback look like success.
@@ -327,9 +335,10 @@ def verify_enrollment(
     # of them than anyone else's row is, so the per-sample resolve below can miss
     # the collision that matters most: a new profile sitting on top of an
     # enrolled one. Every later turn would then be a coin toss between the two
-    # residents, so measure the profile against them directly first.
+    # residents, so measure the profile against them directly first — on the
+    # collision bar, not the recognition one.
     if others:
-        rival = cosine_match(profile, others, threshold=threshold)
+        rival = cosine_match(profile, others, threshold=collision_threshold)
         if rival is not None and rival.above_threshold:
             return EnrollmentCheck(
                 ok=False, reason=REASON_COLLISION, min_score=rival.score

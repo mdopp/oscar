@@ -364,6 +364,7 @@ class GatekeeperHandler(AsyncEventHandler):
                 # resident's own stale row must not be a candidate.
                 candidates=[row for row in enrolled if row.uid != request.uid],
                 threshold=settings.speaker_id_threshold,
+                collision_threshold=settings.speaker_collision_threshold,
             )
         except Exception as exc:  # noqa: BLE001 — enrol failure → honest result
             await asyncio.to_thread(
@@ -388,6 +389,7 @@ class GatekeeperHandler(AsyncEventHandler):
             reason=check.reason or "ok",
             min_score=round(check.min_score, 4),
             threshold=settings.speaker_id_threshold,
+            collision_threshold=settings.speaker_collision_threshold,
         )
 
         if check.reason == REASON_COLLISION:
