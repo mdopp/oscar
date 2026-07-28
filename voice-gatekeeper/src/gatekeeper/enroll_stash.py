@@ -36,6 +36,13 @@ from pathlib import Path
 # unrelated speaker into the candidate's profile.
 ENROLL_TTL_SECONDS = 120
 
+# Upper bound on captured turns for one request. The post-enrol self-test decides
+# when a profile carries, so the wizard asks for as many sentences as it takes
+# rather than a fixed three — but not forever: past this, enrolment fails
+# honestly. Matches the engine wizard's own extra-sentence budget
+# (target 3 + _MAX_EXTRA_SAMPLE_TURNS).
+MAX_ENROLL_SAMPLES = 6
+
 STATUS_PENDING = "pending"
 STATUS_CAPTURING = "capturing"
 STATUS_DONE = "done"
@@ -74,6 +81,15 @@ def add_embedding(uid: str, embedding: bytes) -> int:
     """Append one captured-turn embedding for this uid; return the count held."""
     bucket = _pending_embeddings.setdefault(uid, [])
     bucket.append(embedding)
+    return len(bucket)
+
+
+def restore_embeddings(uid: str, embeddings: list[bytes]) -> int:
+    """Put samples that survived the self-test back in the buffer so the next
+    onboarding turn adds to them instead of starting the sitting over. Prepends,
+    because a concurrent turn for the same uid may have captured meanwhile."""
+    bucket = _pending_embeddings.setdefault(uid, [])
+    bucket[:0] = embeddings
     return len(bucket)
 
 
