@@ -1411,6 +1411,12 @@
     .ww-list li button:hover { color: var(--ink); background: var(--bubble-sol); }
     .ww-list li .ww-wave { height: 34px; margin-top: 7px; }
     .ww-done { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-top: 14px; background: var(--bubble-sol); }
+    /* Training (#1088): ein Lauf dauert Stunden, also steht unter der Taste
+       immer in Worten, was der Lauf gerade macht — nicht nur eine Farbe. */
+    .ww-train { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-top: 12px; }
+    .ww-train-btn { width: 100%; min-height: 48px; margin-top: 12px; }
+    .ww-train-state { display: block; margin: 10px 0 0; }
+    .ww-train-state:empty { display: none; }
 
     .seg { display: flex; gap: 4px; }
     .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
@@ -2059,9 +2065,19 @@
           <ul class="ww-list" id="ww-list"></ul>
           <div class="ww-done" id="ww-done" hidden>
             <strong>Fertig — alle 10 Aufnahmen sind gespeichert.</strong>
-            <p class="ww-hint">Trainiert wird damit noch nichts: Das Training ist ein eigener
-               Schritt, den jemand ausdrücklich startet, und es benutzt deine Aufnahmen bisher
-               nicht. Du kannst jede Aufnahme jederzeit neu aufnehmen.</p>
+            <p class="ww-hint">Beim Training lernt Solaris deine Aufnahmen mit. Los geht das
+               Training aber nur, wenn du es unten startest. Du kannst jede Aufnahme jederzeit
+               neu aufnehmen.</p>
+          </div>
+          <div class="ww-train" id="ww-train" hidden>
+            <strong>Training</strong>
+            <p class="ww-hint">Solaris lernt dabei aus allen Aufnahmen im Haushalt, auch aus
+               deinen. Die Grafikkarte rechnet daran <strong>ein paar Stunden</strong> — du kannst
+               diese Seite so lange zumachen. Am Ende ist eine neue Wakeword-Datei fertig. Damit
+               der Lautsprecher wirklich anders zuhört, muss die Datei danach noch jemand von Hand
+               auf das Gerät spielen.</p>
+            <button type="button" class="btn-primary ww-train-btn" id="ww-train-btn">Wakeword jetzt trainieren</button>
+            <p class="editor-status ww-train-state" id="ww-train-state" aria-live="polite"></p>
           </div>
         </div>
       </div>
@@ -10776,6 +10792,9 @@
       var wwHint = document.getElementById("ww-hint");
       var wwListEl = document.getElementById("ww-list");
       var wwDoneEl = document.getElementById("ww-done");
+      var wwTrainEl = document.getElementById("ww-train");
+      var wwTrainBtn = document.getElementById("ww-train-btn");
+      var wwTrainState = document.getElementById("ww-train-state");
       var wwLiveEl = document.getElementById("ww-live");
       var wwLiveLeft = document.getElementById("ww-live-left");
       var wwClockEl = document.getElementById("ww-clock");
@@ -10788,6 +10807,10 @@
       var WW_COLS = 120;     // Spalten der Tonkurve — 1,6 s / 120 ≈ 13 ms je Spalte
       var wwPeaks = {};      // Nummer -> Spalten [min, max], damit ein Re-Render nichts neu lädt
       var wwDecodeCtx = null;
+      var wwRun = null;      // der neueste Trainingslauf im Haushalt, so wie der Server ihn kennt
+      var wwTrainBusy = false;
+      var wwTrainTimer = 0;
+      var WW_TRAIN_POLL_MS = 30000;
 
       // Die Kurve wird aus Spalten-Extremen gezeichnet, nicht aus Einzelwerten:
       // ein Ausschlag zwischen zwei Abtastpunkten darf nicht verschwinden, sonst
@@ -10924,11 +10947,100 @@
             flag.textContent = "Kurve nicht ladbar";
           });
         });
+        wwTrainRender();
       }
+
+      // ---- Training, nur auf ausdrückliche Nachfrage (#1088) ----
+      // Ein Lauf dauert Stunden. Die Karte darf den Zustand deshalb nicht nur
+      // vom eigenen Tippen kennen: sie liest ihn beim Öffnen und fragt weiter
+      // nach, solange etwas eingereiht ist oder läuft.
+      function wwTrainPending() {
+        return !!wwRun && (wwRun.status === "queued" || wwRun.status === "running");
+      }
+      function wwWhen(iso) {
+        if (!iso) return "";
+        var d = new Date(iso);
+        return isNaN(d.getTime()) ? "" : d.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
+      }
+      function wwRunLine(run) {
+        if (!run) return ["", ""];
+        var when = wwWhen(run.finished_at || run.started_at || run.requested_at);
+        if (run.status === "queued") {
+          return ["Eingereiht" + (when ? " um " + when : "") + " — das Training fängt an, sobald die Grafikkarte es abholt.", ""];
+        }
+        if (run.status === "running") {
+          return ["Läuft" + (when ? " seit " + when : "") + " — das dauert ein paar Stunden. Du kannst diese Seite zumachen.", ""];
+        }
+        if (run.status === "done") {
+          return ["Fertig" + (when ? " seit " + when : "") + ": Die neue Wakeword-Datei ist gebaut. Damit der Lautsprecher sie benutzt, muss sie noch jemand von Hand aufspielen.", "ok"];
+        }
+        if (run.status === "failed") {
+          // Der Grund kommt roh vom Trainer und ist oft englisch — als Zitat
+          // gekennzeichnet, damit klar ist: das sagt die Maschine, nicht Solaris.
+          var why = run.result ? " Der Trainer meldet: „" + run.result + "“." : "";
+          return ["Fehlgeschlagen" + (when ? " am " + when : "") + "." + why + " Du kannst es noch einmal versuchen.", "err"];
+        }
+        return ["", ""];
+      }
+      function wwTrainRender() {
+        var complete = wwStored.length >= WW_TARGET;
+        wwTrainEl.hidden = !complete && !wwRun;
+        wwTrainBtn.hidden = !complete;
+        wwTrainBtn.disabled = wwTrainBusy || wwTrainPending();
+        wwTrainBtn.textContent = wwTrainPending() ? "Training läuft schon" : "Wakeword jetzt trainieren";
+        var line = wwTrainBusy ? ["Wird eingereiht…", ""] : wwRunLine(wwRun);
+        wwTrainState.textContent = line[0];
+        wwTrainState.className = "editor-status ww-train-state" + (line[1] ? " " + line[1] : "");
+      }
+      function wwTrainSchedule() {
+        if (wwTrainPending() && !wwTrainTimer) {
+          wwTrainTimer = setInterval(wwTrainLoad, WW_TRAIN_POLL_MS);
+        } else if (!wwTrainPending() && wwTrainTimer) {
+          clearInterval(wwTrainTimer); wwTrainTimer = 0;
+        }
+      }
+      function wwTrainLoad() {
+        // Die Karte kann zugeklappt worden sein — dann ist hier nichts mehr zu
+        // zeigen und der Timer muss aufhören.
+        if (!wwTrainEl.isConnected) { clearInterval(wwTrainTimer); wwTrainTimer = 0; return Promise.resolve(); }
+        return fetch("/api/wakeword/training")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) return;
+            wwRun = j.run;
+            wwTrainRender(); wwTrainSchedule();
+          })
+          .catch(function () { });
+      }
+      wwTrainBtn.addEventListener("click", function () {
+        if (wwTrainBusy || wwTrainPending()) return;
+        wwTrainBusy = true;
+        wwTrainRender();
+        fetch("/api/wakeword/training", { method: "POST" })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            wwTrainBusy = false;
+            if (res.body && res.body.run) wwRun = res.body.run;
+            wwTrainRender(); wwTrainSchedule();
+            if (!res.body || !res.body.ok) {
+              wwTrainState.className = "editor-status ww-train-state err";
+              wwTrainState.textContent = ((res.body && res.body.error) || "Das Training ließ sich nicht einplanen.")
+                + (wwRun ? " " + wwRunLine(wwRun)[0] : "");
+            }
+          })
+          .catch(function () {
+            wwTrainBusy = false;
+            wwTrainRender();
+            wwTrainState.className = "editor-status ww-train-state err";
+            wwTrainState.textContent = "Das Training ließ sich nicht einplanen. Versuche es noch einmal.";
+          });
+      });
+
       function loadWakeword() {
         wwSlot = 0; wwBusy = false;
         wwSetHint("Tippe auf die Taste und sag „Solaris“.");
         wwRender();
+        wwTrainLoad();
         return fetch("/api/wakeword/samples")
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
