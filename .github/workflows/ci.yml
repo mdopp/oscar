@@ -136,10 +136,11 @@ jobs:
         with:
           python-version: "3.11"
       # The queue worker is stdlib-only — TensorFlow lives in the image and is
-      # reached through a subprocess — so pytest is the only dependency, same as
-      # templates/. Guards the engine↔trainer handshake (#1066): an exactly-once
-      # claim and a terminal write-back are the whole capability.
-      - run: pip install pytest
+      # reached through a subprocess. pyyaml is the training script's only
+      # import beyond the stdlib, and the dataset tests (#1074) import it.
+      # Guards the engine↔trainer handshake (#1066): an exactly-once claim and a
+      # terminal write-back are the whole capability.
+      - run: pip install pytest pyyaml
       - run: pytest -q wakeword-trainer/tests
 
   semgrep:
