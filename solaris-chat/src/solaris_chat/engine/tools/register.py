@@ -82,14 +82,14 @@ def build_register_tools(
         if req.get("status") != enroll_requests_store.STATUS_DONE:
             enroll_requests_store.touch_request(db_path, uid)
             collected = req.get("collected", 1)
-            needed = req.get("target_samples", 3)
+            needed = req.get(
+                "target_samples", enroll_requests_store.VOICE_PROFILE_SAMPLES
+            )
             rem = needed - collected
-            if rem == 2:
-                say = f"Danke, {display_name}! Was ist dein zweiter Satz?"
-            elif rem == 1:
-                say = "Sehr schön! Was ist dein dritter und letzter Satz?"
+            if rem == 1:
+                say = f"Sehr schön, {display_name}! Was ist dein letzter Satz?"
             else:
-                say = f"Super! Noch {rem} Sätze. Was ist dein nächster Satz?"
+                say = f"Danke, {display_name}! Noch {rem} Sätze. Was ist dein nächster Satz?"
             return json.dumps(
                 {
                     "ok": False,
@@ -105,9 +105,12 @@ def build_register_tools(
         request_id = pending_residents_store.add_pending_resident(
             db_path, uid=uid, display_name=display_name, enrolled=True
         )
+        # No trailing "?" — the Voice PE keeps the microphone open on a question,
+        # and there is nothing left to answer: the wake word cannot be recorded
+        # over a wake-word-gated channel at all (#1081).
         say_done = (
             f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) ist eingerichtet! "
-            f"Wollen wir jetzt direkt 10 Wakeword-Proben für „Solaris“ für dein Profil aufnehmen?"
+            f"Für das Weckwort „Solaris“ nimm die Aufnahmen bitte in der Solaris-App oder im Browser auf."
         )
         return json.dumps(
             {

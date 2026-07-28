@@ -98,7 +98,10 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     f3 = json.loads(await finish_reg.handler({"uid": "alex"}))
     assert f3["ok"] is True
     assert f3["status"] == "pending"
-    assert f3["say"].endswith("?")
+    # Terminal: no trailing "?" (that closes the Voice PE microphone), and it
+    # points at the browser/app recorder rather than offering a dead end (#1081).
+    assert not f3["say"].endswith("?")
+    assert "Solaris-App oder im Browser" in f3["say"]
 
     # Verify row in pending_residents table
     pending = pending_residents_store.list_pending_residents(db_path)
