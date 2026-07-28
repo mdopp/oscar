@@ -28,8 +28,8 @@ from gatekeeper.logging import log
 from .embeddings_store import (
     EMBEDDING_DIM,
     delete_embedding,
+    insert_embedding,
     list_uids,
-    upsert_embedding,
 )
 from .speaker import average_embeddings, get_extractor
 
@@ -153,7 +153,7 @@ def add_routes(
             return web.json_response({"ok": False, "reason": str(exc)}, status=422)
 
         await asyncio.to_thread(
-            upsert_embedding,
+            insert_embedding,
             db_path,
             uid,
             averaged,

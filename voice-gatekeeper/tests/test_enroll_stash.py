@@ -36,7 +36,8 @@ CREATE TABLE enroll_requests (
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE voice_embeddings (
-    uid          TEXT PRIMARY KEY,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid          TEXT NOT NULL,
     embedding    BLOB NOT NULL,
     sample_count INTEGER NOT NULL,
     enrolled_via TEXT NOT NULL,
@@ -285,12 +286,15 @@ async def test_concurrent_same_uid_turns_dont_double_consume(tmp_path, monkeypat
     status, result = conn.execute(
         "SELECT status, result FROM enroll_requests WHERE uid='lena'"
     ).fetchone()
-    n_emb = conn.execute("SELECT COUNT(*) FROM voice_embeddings").fetchone()[0]
+    uids = [r[0] for r in conn.execute("SELECT uid FROM voice_embeddings")]
     conn.close()
     # Enrolment succeeded; no turn crashed with the empty-samples ValueError and
     # the row was not overwritten with a failure result.
     assert status == "done"
-    assert n_emb == 1
+    # Both turns completed a capture of their own (target_samples=1), and since
+    # #1084 each stores its own fingerprint instead of the second overwriting
+    # the first. What must not happen is a row belonging to anyone else.
+    assert set(uids) == {"lena"}
     assert "need at least one sample" not in (result or "")
     # The process-global buffer was fully drained — nothing lingers.
     assert enroll_stash.take_embeddings("lena") == []

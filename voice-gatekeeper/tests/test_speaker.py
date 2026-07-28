@@ -19,9 +19,9 @@ import numpy as np
 from gatekeeper.embeddings_store import (
     EMBEDDING_DIM,
     delete_embedding,
+    insert_embedding,
     list_embeddings,
     list_uids,
-    upsert_embedding,
 )
 from gatekeeper.speaker import (
     REASON_COLLISION,
@@ -45,13 +45,27 @@ def _emb(seed: int) -> bytes:
     return _norm(v).tobytes()
 
 
+def _at_cosine(base: bytes, target: float, seed: int) -> bytes:
+    """A unit vector whose cosine similarity to `base` is exactly `target`.
+
+    Lets a test state the distance it means ("these two residents both fit at
+    ~0.6") instead of hoping a random seed lands there.
+    """
+    b = np.frombuffer(base, dtype="<f4")
+    rng = np.random.default_rng(seed)
+    r = rng.standard_normal(EMBEDDING_DIM, dtype="<f4")
+    perp = _norm(r - float(np.dot(r, b)) * b)
+    return _norm(target * b + np.sqrt(1.0 - target**2) * perp).tobytes()
+
+
 def _seed_db(tmp_path: Path) -> str:
     db = tmp_path / "solaris.db"
     with sqlite3.connect(db) as conn:
         conn.execute(
             """
             CREATE TABLE voice_embeddings (
-              uid TEXT PRIMARY KEY,
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              uid TEXT NOT NULL,
               embedding BLOB NOT NULL,
               enrolled_at TEXT NOT NULL DEFAULT (datetime('now')),
               enrolled_via TEXT NOT NULL,
@@ -67,8 +81,8 @@ def _seed_db(tmp_path: Path) -> str:
 def test_cosine_match_returns_best_candidate(tmp_path: Path):
     db = _seed_db(tmp_path)
     a, b = _emb(1), _emb(2)
-    upsert_embedding(db, "alice", a, sample_count=1, enrolled_via="test")
-    upsert_embedding(db, "bob", b, sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", a, sample_count=1, enrolled_via="test")
+    insert_embedding(db, "bob", b, sample_count=1, enrolled_via="test")
 
     candidates = list_embeddings(db)
     assert {c.uid for c in candidates} == {"alice", "bob"}
@@ -82,8 +96,8 @@ def test_cosine_match_returns_best_candidate(tmp_path: Path):
 
 def test_cosine_match_below_threshold_still_reports_best(tmp_path: Path):
     db = _seed_db(tmp_path)
-    upsert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
-    upsert_embedding(db, "bob", _emb(2), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "bob", _emb(2), sample_count=1, enrolled_via="test")
 
     far_query = _emb(99)  # different seed → low similarity
     match = cosine_match(far_query, list_embeddings(db), threshold=0.99)
@@ -95,23 +109,23 @@ def test_resolve_speaker_falls_back_to_default(tmp_path: Path):
     db = _seed_db(tmp_path)
     # No enrolments — fall back regardless of query
     uid, match = resolve_speaker(
-        _emb(1), list_embeddings(db), threshold=0.5, default_uid="guest"
+        _emb(1), list_embeddings(db), threshold=0.5, margin=0.1, default_uid="guest"
     )
     assert uid == "guest"
     assert match is None
 
     # Enrol Alice; her own embedding should resolve to her
     a = _emb(7)
-    upsert_embedding(db, "alice", a, sample_count=3, enrolled_via="test")
+    insert_embedding(db, "alice", a, sample_count=3, enrolled_via="test")
     uid, match = resolve_speaker(
-        a, list_embeddings(db), threshold=0.5, default_uid="guest"
+        a, list_embeddings(db), threshold=0.5, margin=0.1, default_uid="guest"
     )
     assert uid == "alice"
     assert match is not None and match.uid == "alice"
 
     # A different-seed query falls back if below threshold
     uid, match = resolve_speaker(
-        _emb(8), list_embeddings(db), threshold=0.99, default_uid="guest"
+        _emb(8), list_embeddings(db), threshold=0.99, margin=0.1, default_uid="guest"
     )
     assert uid == "guest"
     assert match is not None and match.above_threshold is False
@@ -119,12 +133,125 @@ def test_resolve_speaker_falls_back_to_default(tmp_path: Path):
 
 def test_resolve_speaker_handles_missing_query(tmp_path: Path):
     db = _seed_db(tmp_path)
-    upsert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
     uid, match = resolve_speaker(
-        None, list_embeddings(db), threshold=0.5, default_uid="guest"
+        None, list_embeddings(db), threshold=0.5, margin=0.1, default_uid="guest"
     )
     assert uid == "guest"
     assert match is None
+
+
+def test_second_row_rescues_a_turn_the_first_one_refused(tmp_path: Path):
+    """The point of #1084. One resident, two recording conditions: at the
+    device and across the room. With only the close profile enrolled, a turn
+    spoken across the room falls below threshold and becomes a guest. Adding
+    the second condition as its own row — not averaged into the first — makes
+    the same turn resolve to her."""
+    db = _seed_db(tmp_path)
+    at_the_device = _emb(1)
+    across_the_room = _at_cosine(at_the_device, 0.2, seed=11)
+    live_turn = _at_cosine(across_the_room, 0.9, seed=12)
+
+    insert_embedding(db, "anna", at_the_device, sample_count=3, enrolled_via="voice")
+    uid, _ = resolve_speaker(
+        live_turn, list_embeddings(db), threshold=0.55, margin=0.1, default_uid="guest"
+    )
+    assert uid == "guest"
+
+    insert_embedding(db, "anna", across_the_room, sample_count=3, enrolled_via="voice")
+    rows = list_embeddings(db)
+    assert [r.uid for r in rows] == ["anna", "anna"]
+    uid, match = resolve_speaker(
+        live_turn, rows, threshold=0.55, margin=0.1, default_uid="guest"
+    )
+    assert uid == "anna"
+    assert match is not None and match.score == pytest.approx(0.9, abs=1e-3)
+
+
+def test_margin_refuses_a_turn_two_residents_fit_almost_equally(tmp_path: Path):
+    """The counterweight to more rows per resident. 0.62 vs 0.60 clears any
+    absolute threshold and is still a coin toss between two people; attributing
+    it would read one resident's notes to another."""
+    db = _seed_db(tmp_path)
+    query = _emb(5)
+    insert_embedding(
+        db,
+        "anna",
+        _at_cosine(query, 0.62, seed=21),
+        sample_count=3,
+        enrolled_via="test",
+    )
+    insert_embedding(
+        db, "ben", _at_cosine(query, 0.60, seed=22), sample_count=3, enrolled_via="test"
+    )
+    rows = list_embeddings(db)
+
+    # Threshold alone: a confident-looking Anna.
+    uid, _ = resolve_speaker(
+        query, rows, threshold=0.55, margin=0.0, default_uid="guest"
+    )
+    assert uid == "anna"
+
+    uid, match = resolve_speaker(
+        query, rows, threshold=0.55, margin=0.1, default_uid="guest"
+    )
+    assert uid == "guest"
+    # Still reported, so the log says *why* it was refused.
+    assert match is not None
+    assert match.uid == "anna"
+    assert match.above_threshold is True
+    assert match.margin == pytest.approx(0.02, abs=1e-3)
+
+
+def test_margin_measures_the_next_resident_not_the_next_row(tmp_path: Path):
+    """A resident's own second-best row must never count as her rival —
+    otherwise every extra row enrolled under #1084 would push her below the
+    margin and un-recognise her."""
+    db = _seed_db(tmp_path)
+    query = _emb(5)
+    insert_embedding(
+        db,
+        "anna",
+        _at_cosine(query, 0.80, seed=31),
+        sample_count=3,
+        enrolled_via="test",
+    )
+    insert_embedding(
+        db,
+        "anna",
+        _at_cosine(query, 0.78, seed=32),
+        sample_count=3,
+        enrolled_via="test",
+    )
+    insert_embedding(
+        db, "ben", _at_cosine(query, 0.20, seed=33), sample_count=3, enrolled_via="test"
+    )
+
+    uid, match = resolve_speaker(
+        query, list_embeddings(db), threshold=0.55, margin=0.1, default_uid="guest"
+    )
+    assert uid == "anna"
+    assert match is not None
+    assert match.runner_up_score == pytest.approx(0.20, abs=1e-3)
+
+
+def test_margin_cannot_refuse_the_only_enrolled_resident(tmp_path: Path):
+    """No other resident means nothing to confuse her with, so the margin rule
+    must stay out of the way — a single-resident household is the common case."""
+    db = _seed_db(tmp_path)
+    query = _emb(5)
+    insert_embedding(
+        db,
+        "anna",
+        _at_cosine(query, 0.56, seed=41),
+        sample_count=3,
+        enrolled_via="test",
+    )
+    uid, match = resolve_speaker(
+        query, list_embeddings(db), threshold=0.55, margin=0.5, default_uid="guest"
+    )
+    assert uid == "anna"
+    assert match is not None and match.runner_up_score == -1.0
 
 
 def test_average_embeddings_yields_unit_norm(tmp_path: Path):
@@ -194,7 +321,7 @@ def test_drop_outliers_removes_the_stranger_and_keeps_the_sitting():
 
 def test_verify_enrollment_accepts_a_profile_that_finds_its_resident(tmp_path: Path):
     db = _seed_db(tmp_path)
-    upsert_embedding(db, "max", _emb(42), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "max", _emb(42), sample_count=1, enrolled_via="test")
     base = _emb(1)
     samples = [_near(i, base=base) for i in (2, 3, 4)]
     check = verify_enrollment(
@@ -234,7 +361,7 @@ def test_verify_enrollment_flags_a_cross_resident_collision(tmp_path: Path):
     base = _emb(1)
     samples = [base, _near(2, base=base, spread=0.4)]
     # Max is already enrolled with exactly the first sample's embedding.
-    upsert_embedding(db, "max", base, sample_count=3, enrolled_via="test")
+    insert_embedding(db, "max", base, sample_count=3, enrolled_via="test")
 
     check = verify_enrollment(
         samples,
@@ -275,7 +402,7 @@ def _rival_case(tmp_path: Path, cosine: float):
     base = _emb(1)
     samples = [_near(i, base=base, spread=0.15) for i in (2, 3, 4)]
     profile = average_embeddings(samples)
-    upsert_embedding(
+    insert_embedding(
         db,
         "max",
         _at_cosine(profile, cosine, seed=9),
@@ -338,10 +465,10 @@ def test_collision_bar_still_refuses_a_near_identical_profile(tmp_path: Path):
     assert check.min_score > 0.65
 
 
-def test_upsert_rejects_wrong_dim(tmp_path: Path):
+def test_insert_rejects_wrong_dim(tmp_path: Path):
     db = _seed_db(tmp_path)
     with pytest.raises(ValueError):
-        upsert_embedding(db, "alice", b"\x00" * 17, sample_count=1, enrolled_via="test")
+        insert_embedding(db, "alice", b"\x00" * 17, sample_count=1, enrolled_via="test")
 
 
 def test_list_embeddings_skips_malformed_rows(tmp_path: Path):
@@ -353,7 +480,7 @@ def test_list_embeddings_skips_malformed_rows(tmp_path: Path):
             ("broken", b"\x00\x00\x00", 1, "test"),
         )
         conn.commit()
-    upsert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
 
     embs = list_embeddings(db)
     assert {e.uid for e in embs} == {"alice"}
@@ -366,10 +493,33 @@ def test_list_embeddings_empty_when_db_missing(tmp_path: Path):
 
 def test_delete_embedding_roundtrip(tmp_path: Path):
     db = _seed_db(tmp_path)
-    upsert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
     assert delete_embedding(db, "alice") is True
     assert delete_embedding(db, "alice") is False  # idempotent second call
     assert list_uids(db) == []
+
+
+def test_delete_embedding_removes_every_row_of_that_resident(tmp_path: Path):
+    """Un-enrolling is a privacy promise: with several fingerprints per
+    resident, leaving one behind would keep recognising someone who asked to
+    be forgotten. Other residents must survive untouched."""
+    db = _seed_db(tmp_path)
+    insert_embedding(db, "anna", _emb(1), sample_count=3, enrolled_via="voice")
+    insert_embedding(db, "anna", _emb(2), sample_count=3, enrolled_via="voice")
+    insert_embedding(db, "ben", _emb(3), sample_count=3, enrolled_via="voice")
+
+    assert delete_embedding(db, "anna") is True
+    assert [row.uid for row in list_embeddings(db)] == ["ben"]
+    assert delete_embedding(db, "anna") is False
+
+
+def test_list_uids_names_each_resident_once(tmp_path: Path):
+    """Admin listings show residents, not rows."""
+    db = _seed_db(tmp_path)
+    insert_embedding(db, "anna", _emb(1), sample_count=3, enrolled_via="voice")
+    insert_embedding(db, "anna", _emb(2), sample_count=3, enrolled_via="http")
+    insert_embedding(db, "ben", _emb(3), sample_count=3, enrolled_via="voice")
+    assert list_uids(db) == ["anna", "ben"]
 
 
 def test_get_extractor_disabled_via_renamed_env(monkeypatch):
@@ -390,7 +540,7 @@ async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
 
     db = _seed_db(tmp_path)
     alice = _emb(7)
-    upsert_embedding(db, "alice", alice, sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", alice, sample_count=1, enrolled_via="test")
 
     monkeypatch.setattr(
         handler,
@@ -435,7 +585,7 @@ async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch
     from wyoming.audio import AudioChunk, AudioStart
 
     db = _seed_db(tmp_path)
-    upsert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+    insert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
 
     monkeypatch.setattr(
         handler,
@@ -462,6 +612,59 @@ async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch
     ]
 
     assert await h._resolve_uid() == handler.GUEST_UID
+
+
+async def test_resolve_uid_ambiguous_speaker_routes_to_guest(tmp_path, monkeypatch):
+    """Two residents fit the turn almost equally well. The best one clears the
+    threshold, so the pre-#1084 rule would have attributed the turn — and a
+    wrong attribution hands one resident's data to another. The margin refuses
+    it, and the refusal must land on `guest`, never on the household default."""
+    import gatekeeper.handler as handler
+    from wyoming.audio import AudioChunk, AudioStart
+
+    db = _seed_db(tmp_path)
+    turn = _emb(5)
+    insert_embedding(
+        db,
+        "anna",
+        _at_cosine(turn, 0.62, seed=51),
+        sample_count=3,
+        enrolled_via="voice",
+    )
+    insert_embedding(
+        db, "ben", _at_cosine(turn, 0.60, seed=52), sample_count=3, enrolled_via="voice"
+    )
+
+    monkeypatch.setattr(
+        handler,
+        "settings",
+        dataclasses.replace(
+            handler.settings,
+            speaker_id_enabled=True,
+            default_uid="household",
+            speaker_id_threshold=0.55,
+            speaker_match_margin=0.1,
+            solaris_db_path=db,
+        ),
+    )
+
+    class _StubExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return turn
+
+    monkeypatch.setattr(handler, "get_extractor", lambda: _StubExtractor())
+
+    h = handler.GatekeeperHandler(None, None, object())
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+
+    assert await h._resolve_uid() == handler.GUEST_UID
+    # A refused turn is not a sighting — nobody may be stamped as seen.
+    with sqlite3.connect(db) as conn:
+        stamps = conn.execute("SELECT last_seen_at FROM voice_embeddings").fetchall()
+    assert stamps == [(None,), (None,)]
 
 
 async def test_resolve_uid_disabled_stays_household_not_guest(tmp_path, monkeypatch):

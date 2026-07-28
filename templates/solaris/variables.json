@@ -300,6 +300,11 @@
     "description": "Cosine-similarity bar (0..1) at which a NEW voice profile counts as the same person as an already-enrolled resident, so enrolment is refused instead of merging two residents into one identity. Only used by the enrolment self-test, never by normal turns. Higher = only a near-identical profile is refused, so fewer enrolments are blocked. Default 0.65 — a starting point, not a measured value.",
     "default": "0.65"
   },
+  "SOLARIS_SPEAKER_MATCH_MARGIN": {
+    "type": "text",
+    "description": "How far ahead of the next-best OTHER resident a voice match must score (0..1) before the turn is attributed; a closer race falls back to the guest profile. Guards the false-match risk that several fingerprints per resident introduce. Higher = stricter. 0 switches the rule off and leaves only SOLARIS_SPEAKER_ID_THRESHOLD. Default 0.10 — a starting point, not a measured value.",
+    "default": "0.10"
+  },
   "SOLARIS_DEBUG_MODE": {
     "type": "select",
     "description": "Initial debug-mode default for the `system_settings.debug_mode.active` row. `true` during build phases, flip to `false` for productive household use.",

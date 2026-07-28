@@ -52,6 +52,27 @@ class SpeakerMatch:
     uid: str
     score: float  # cosine similarity in [-1, 1]
     above_threshold: bool
+    # Best score reached by a row belonging to someone OTHER than `uid`; -1.0
+    # (the cosine floor) when nobody else is enrolled, which makes `margin`
+    # trivially large — with a single resident there is nothing to confuse them
+    # with.
+    runner_up_score: float = -1.0
+
+    @property
+    def margin(self) -> float:
+        """How much better the winner fits than the best rival resident."""
+        return self.score - self.runner_up_score
+
+    def accepted(self, *, margin: float) -> bool:
+        """Whether this match is good enough to attribute a turn to `uid`.
+
+        Two conditions, and both are needed: the fit must be good in absolute
+        terms (`above_threshold`) *and* clearly better than the runner-up
+        resident. A 0.62/0.60 split clears any sane threshold and is still a
+        coin toss between two people — attributing it would read one
+        resident's notes to another.
+        """
+        return self.above_threshold and self.margin >= margin
 
 
 def cosine_match(
@@ -62,8 +83,12 @@ def cosine_match(
 ) -> SpeakerMatch | None:
     """Brute-force cosine over candidates. Returns the best match
     (even if below threshold, so callers can log "matched X with
-    low confidence" before falling back). None when there are no
-    candidates."""
+    low confidence" before falling back), plus the best score from any
+    other resident. None when there are no candidates.
+
+    Several rows may carry the same uid — that is how one resident's
+    different recording conditions are stored (#1084) — so the runner-up
+    is the best *other resident*, never merely the second-best row."""
     import numpy as np
 
     if len(query_bytes) != EMBEDDING_DIM * 4:
@@ -76,22 +101,25 @@ def cosine_match(
         return None
     q = q / q_norm
 
-    best_uid: str | None = None
-    best_score = -1.0
+    scored: list[tuple[str, float]] = []
     for cand in candidates:
         c = cand.as_array()
         c_norm = float(np.linalg.norm(c))
         if c_norm == 0.0:
             continue
-        score = float(np.dot(q, c / c_norm))
-        if score > best_score:
-            best_score = score
-            best_uid = cand.uid
+        scored.append((cand.uid, float(np.dot(q, c / c_norm))))
 
-    if best_uid is None:
+    if not scored:
         return None
+    # `max` keeps the first of equally-scoring rows, which `verify_enrollment`
+    # relies on to make a dead heat fail closed.
+    best_uid, best_score = max(scored, key=lambda pair: pair[1])
+    runner_up = max((s for uid, s in scored if uid != best_uid), default=-1.0)
     return SpeakerMatch(
-        uid=best_uid, score=best_score, above_threshold=best_score >= threshold
+        uid=best_uid,
+        score=best_score,
+        above_threshold=best_score >= threshold,
+        runner_up_score=runner_up,
     )
 
 
@@ -100,12 +128,17 @@ def resolve_speaker(
     candidates: Iterable[VoiceEmbedding],
     *,
     threshold: float,
+    margin: float,
     default_uid: str,
 ) -> tuple[str, SpeakerMatch | None]:
     """Top-level resolver: gives the uid the Solaris Engine should be told this
     turn belongs to, plus the raw match for logging. Falls back to
     `default_uid` when no query embedding was extracted, no rows
-    are enrolled, or the best match falls below threshold."""
+    are enrolled, the best match falls below `threshold`, or it fails to beat
+    the runner-up resident by `margin` (see `SpeakerMatch.accepted`).
+
+    `margin` is explicit rather than defaulted: a caller that silently got 0
+    would be running the pre-#1084 rule without saying so."""
     if query_bytes is None:
         return default_uid, None
     cands = list(candidates)
@@ -114,7 +147,7 @@ def resolve_speaker(
     match = cosine_match(query_bytes, cands, threshold=threshold)
     if match is None:
         return default_uid, None
-    if not match.above_threshold:
+    if not match.accepted(margin=margin):
         return default_uid, match
     return match.uid, match
 
@@ -353,7 +386,13 @@ def verify_enrollment(
     reason = ""
     min_score = 1.0
     for sample in samples:
-        _, match = resolve_speaker(sample, rows, threshold=threshold, default_uid="")
+        # margin=0: enrolment ambiguity is already judged above, profile against
+        # profile on the collision bar. Layering the recognition margin on top
+        # here would refuse enrolments for a rivalry the collision check just
+        # cleared.
+        _, match = resolve_speaker(
+            sample, rows, threshold=threshold, margin=0.0, default_uid=""
+        )
         if match is None:
             return EnrollmentCheck(ok=False, reason=REASON_WEAK, min_score=-1.0)
         min_score = min(min_score, match.score)

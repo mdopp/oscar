@@ -36,7 +36,7 @@ from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 
 from .config import settings
-from .embeddings_store import list_embeddings, touch_last_seen, upsert_embedding
+from .embeddings_store import insert_embedding, list_embeddings, touch_last_seen
 from .enroll_stash import (
     MAX_ENROLL_SAMPLES,
     add_embedding,
@@ -290,7 +290,7 @@ class GatekeeperHandler(AsyncEventHandler):
         """Reverse enroll-stash (#376): when the engine has opened an enrol
         request, capture THIS turn's PCM as one sample for the candidate uid and
         embed it in-process. Once the target sample count is reached, average the
-        embeddings, upsert the resident's `voice_embeddings` row, and write the
+        embeddings, add the resident's `voice_embeddings` row, and write the
         result back. No-op when speaker-ID is off (no extractor → the engine side
         times the request out honestly) or no request is active.
 
@@ -395,7 +395,7 @@ class GatekeeperHandler(AsyncEventHandler):
         if check.reason == REASON_COLLISION:
             # A sample resolving to a different resident is a privacy failure,
             # not a quality one: enrolling would let Solaris read that
-            # resident's notes to this one. Terminal, and never an upsert.
+            # resident's notes to this one. Terminal, and never stored.
             await asyncio.to_thread(
                 finish_request,
                 settings.solaris_db_path,
@@ -430,7 +430,7 @@ class GatekeeperHandler(AsyncEventHandler):
 
         try:
             await asyncio.to_thread(
-                upsert_embedding,
+                insert_embedding,
                 settings.solaris_db_path,
                 request.uid,
                 averaged,
@@ -496,6 +496,7 @@ class GatekeeperHandler(AsyncEventHandler):
             query,
             candidates,
             threshold=settings.speaker_id_threshold,
+            margin=settings.speaker_match_margin,
             default_uid=settings.default_uid,
         )
         if match is not None:
@@ -506,15 +507,16 @@ class GatekeeperHandler(AsyncEventHandler):
                 best_uid=match.uid,
                 score=round(match.score, 4),
                 above_threshold=match.above_threshold,
+                runner_up=round(match.runner_up_score, 4),
+                margin=round(match.margin, 4),
             )
-        # A real attempt that matched no enrolled resident (a candidate existed
-        # but fell below threshold) is an unknown speaker, not the household —
-        # route it to the guest profile. No-candidate / no-embedding gaps keep
-        # `uid == default_uid` and stay household.
-        if (
-            uid == settings.default_uid
-            and match is not None
-            and not match.above_threshold
+        # A real attempt that matched no enrolled resident (a candidate existed,
+        # but scored too low or too close to another resident to tell them
+        # apart) is an unknown speaker, not the household — route it to the
+        # guest profile. No-candidate / no-embedding gaps carry no match at all
+        # and stay household.
+        if match is not None and not match.accepted(
+            margin=settings.speaker_match_margin
         ):
             return GUEST_UID
         if uid != settings.default_uid:
