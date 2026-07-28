@@ -648,46 +648,38 @@ def _podman_out(args: list[str], timeout: int = 15) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-# Box-observed on the 6974720 deploy: both identity reads came back empty at the
-# moment they ran, and the very same commands answered instantly by hand minutes
-# later. This script runs while ServiceBay restarts the four-container solaris
-# pod, and that contends for podman's local storage lock — an inspect can be
-# starved past the stock 15s or fail outright while the container and the image
-# are perfectly fine. A longer timeout alone only covers the starved case; the
-# reads are side-effect-free, so retrying covers both. Cheap when podman answers
-# honestly ("no such object" returns at once), patient only when it is wedged —
-# which is exactly the window this has to survive.
+# ServiceBay renders this whole script through Mustache before executing it
+# (install/runner.ts -> Mustache.render), so a Go-template `--format` string
+# never survives to podman: `.Image` and `index .Config.Labels ...` in double
+# braces are unknown Mustache tags and render to nothing. The script that ran on
+# the box asked for `--format '|'`; podman printed `|` and exited 0, so both
+# identity reads came back empty with no error to see — box-proven on #1092
+# after four attempts had blamed timing. podman inspect emits JSON on its own,
+# so the fields are picked out here instead of asking podman to format them.
+# Nothing in this file may contain a Mustache-eatable tag; the guard test in
+# templates/tests/test_post_deploy_mustache.py fails if one reappears.
 PODMAN_IDENT_TIMEOUT_S = 45
-PODMAN_IDENT_BACKOFF_S = (1, 2, 4, 8)
 
 
-def _podman_ident(args: list[str], fmt: str) -> tuple[str, str]:
-    """(short image id, short image revision) from one podman inspect, retried
-    with backoff while it comes back unreadable. The revision is the
+def _podman_ident(args: list[str], id_key: str) -> tuple[str, str]:
+    """(short image id, short image revision) from one podman inspect.
+
+    `id_key` is the JSON field holding the image id for that kind of inspect:
+    `Image` for a container, `Id` for an image. The revision is the
     `org.opencontainers.image.revision` label — the git sha a human can compare
-    against the repo at a glance. An empty image id after the last attempt still
-    means unreadable, and the caller must still refuse to act on it."""
-    image_id, revision = "", ""
-    for attempt in range(len(PODMAN_IDENT_BACKOFF_S) + 1):
-        out = _podman_out([*args, "--format", fmt], timeout=PODMAN_IDENT_TIMEOUT_S)
-        image_id, _, revision = out.partition("|")
-        image_id = image_id.strip().removeprefix("sha256:")[:12]
-        if image_id:
-            break
-        if attempt < len(PODMAN_IDENT_BACKOFF_S):
-            time.sleep(PODMAN_IDENT_BACKOFF_S[attempt])
-            jlog(
-                "info",
-                "voice-unit",
-                "podman inspect came back empty — retrying",
-                target=" ".join(args),
-                attempt=attempt + 1,
-            )
-    revision = revision.strip()
-    return (
-        image_id,
-        "unknown" if not revision or revision == "<no value>" else revision[:12],
-    )
+    against the repo at a glance — which a container carries under
+    `Config.Labels` and an image at top level. An empty image id means
+    unreadable, and the caller must refuse to act on it."""
+    out = _podman_out([*args, "--format", "json"], timeout=PODMAN_IDENT_TIMEOUT_S)
+    try:
+        entries = json.loads(out)
+    except ValueError:
+        entries = []
+    entry = entries[0] if isinstance(entries, list) and entries else {}
+    labels = (entry.get("Config") or {}).get("Labels") or entry.get("Labels") or {}
+    revision = str(labels.get("org.opencontainers.image.revision") or "").strip()
+    image_id = str(entry.get(id_key) or "").strip().removeprefix("sha256:")[:12]
+    return image_id, revision[:12] or "unknown"
 
 
 def wakeword_runs_in_flight(chat_port: str) -> tuple[int | None, str]:
@@ -735,12 +727,10 @@ def refresh_wakeword_trainer_image(chat_port: str) -> bool:
     deploy log says which branch it took and on what evidence. Returns True
     when the trainer was restarted.
 
-    Both identity reads go through `_podman_ident`, which retries a podman busy
-    with ServiceBay's concurrent pod restart; if they still cannot be read, this
-    declines — an unknown image is never assumed stale."""
+    Both identity reads go through `_podman_ident`; if either cannot be read,
+    this declines — an unknown image is never assumed stale."""
     # Before the identity read, not after: on a box where the trainer is off
-    # there is no container to inspect, and the retry above would sit out its
-    # whole backoff proving that.
+    # there is no container to inspect.
     if not service_active(WAKEWORD_TRAINER_UNIT):
         jlog(
             "info",
@@ -752,10 +742,7 @@ def refresh_wakeword_trainer_image(chat_port: str) -> bool:
             restarted=False,
         )
         return False
-    running, running_rev = _podman_ident(
-        ["inspect", WAKEWORD_TRAINER_UNIT],
-        '{{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}',
-    )
+    running, running_rev = _podman_ident(["inspect", WAKEWORD_TRAINER_UNIT], "Image")
     in_flight, evidence = wakeword_runs_in_flight(chat_port)
     if in_flight is None:
         jlog(
@@ -784,8 +771,7 @@ def refresh_wakeword_trainer_image(chat_port: str) -> bool:
     # A multi-GB TF-CUDA base, but only the changed layers travel.
     _podman_out(["pull", "--quiet", WAKEWORD_TRAINER_IMAGE], timeout=1800)
     latest, latest_rev = _podman_ident(
-        ["image", "inspect", WAKEWORD_TRAINER_IMAGE],
-        '{{.Id}}|{{index .Labels "org.opencontainers.image.revision"}}',
+        ["image", "inspect", WAKEWORD_TRAINER_IMAGE], "Id"
     )
     queue = f"idle ({evidence})"
     if not running or not latest:
