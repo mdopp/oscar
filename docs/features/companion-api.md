@@ -106,10 +106,30 @@ no "process fully dead + push + no third-party" option on Android; this is it.
   - `servicebay` — a ServiceBay **approval** event, republished from SB's SSE:
     `data:{id,kind,summary}` → show an **approval notification**. (Verdict flow below.)
 
-**Approval verdict** is *not* on `/napi`: the admin deep-links to
-`/api/servicebay/approvals/{id}/{approve|reject}` (Authelia-gated), which mints an
-ephemeral delegated-admin assertion from the live session. The companion surfaces the
-approval (from the SSE `servicebay` event) and hands off to that authed web action.
+**Approval verdict** is *not* on `/napi`: the verdict needs the Authelia session
+(servicebay#2249), which a device token cannot supply. So the app hands off to the web.
+
+**Deep-link target (#1085)** — open this in a Custom Tab (it carries the `dopp.cloud`
+Authelia cookies):
+
+```
+https://<chat-host>/#/p/servicebay/approvals/<id>
+```
+
+The page shows what is being requested and offers **Genehmigen / Ablehnen**. Approving
+asks for confirmation first; rejecting does not. It reads
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/servicebay/approvals/{id}` | `{ok,approval:{id,service,title,description,node,created_at}}` · **403** non-admin · **404** `{reason:"gone"}` already decided / unknown · **502** SB unreachable · **503** SB unconfigured |
+| POST | `/api/servicebay/approvals/{id}/{approve\|reject}` | `{ok,approval_id,detail}` — mints an ephemeral delegated-admin assertion from the live session |
+
+Both are Authelia-gated **and** admin-gated. The GET deliberately omits SB's
+`payload`/`on_approve` (token-request ids, tool args) — the page renders none of it.
+
+> Note the hash form. The server's bookmarkable `/p/{type}` route matches a **single**
+> path segment, so `/p/servicebay/approvals/<id>` would 404; `#/p/…` is handled by the
+> client router, which takes the whole rest of the path. Same for `#/p/device/<entity>`.
 
 ## 4. Web Push (VAPID) — **browser PWA only, NOT the native app**
 

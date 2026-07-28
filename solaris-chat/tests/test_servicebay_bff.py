@@ -19,7 +19,7 @@ import sqlite3
 from solaris_chat import device_token_store
 from solaris_chat.engine.notify import EventBus
 from solaris_chat.engine.sb_events import SbApprovalEventBridge, _to_bus_event
-from solaris_chat.server import build_app
+from solaris_chat.server import STATIC_DIR, build_app
 
 _SCHEMA = """
 CREATE TABLE device_tokens (
@@ -948,3 +948,193 @@ async def test_client_read_falls_back_to_mcp_token_when_read_absent(
     )
     assert await client.read("home") == {"ok": True}
     assert seen["auth"] == "Bearer sb_admin_TOKEN"
+
+
+# ---- GET /api/servicebay/approvals/{id}: what the verdict page shows (#1085) ----
+#
+# The companion may not decide an approval with its device token
+# (servicebay#2249), so it opens `#/p/servicebay/approvals/<id>` in a Custom Tab
+# carrying the Authelia cookies. That page reads this route before it offers the
+# Approve/Reject buttons.
+
+_PENDING = {
+    "approvals": [
+        {
+            "id": "req-42",
+            "service": "mcp",
+            "title": "one-shot exec token",
+            "description": "An MCP agent asked for a one-shot exec token.",
+            "payload": {"tokenRequestId": "tok-99", "caller": "token:some-agent"},
+            "on_approve": {"mintToken": {"tokenRequestId": "tok-99"}},
+            "node": "Local",
+            "created_at": "2026-07-28T01:12:32.377Z",
+            "status": "pending",
+        }
+    ]
+}
+
+
+async def test_api_approval_detail_forbidden_for_non_admin(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING})
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get("/api/servicebay/approvals/req-42")
+    assert r.status == 403
+    # Whoever may not decide never even learns what was requested.
+    assert companion.calls == []
+
+
+async def test_api_approval_detail_forbidden_for_non_admin_group(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING})
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get(
+        "/api/servicebay/approvals/req-42",
+        headers={"Remote-User": "bob", "Remote-Groups": "users"},
+    )
+    assert r.status == 403
+    assert companion.calls == []
+
+
+async def test_api_approval_detail_serves_the_pending_request(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING})
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get(
+        "/api/servicebay/approvals/req-42",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 200
+    assert (await r.json()) == {
+        "ok": True,
+        "approval": {
+            "id": "req-42",
+            "service": "mcp",
+            "title": "one-shot exec token",
+            "description": "An MCP agent asked for a one-shot exec token.",
+            "node": "Local",
+            "created_at": "2026-07-28T01:12:32.377Z",
+        },
+    }
+
+
+async def test_api_approval_detail_omits_the_operation_mechanics(
+    aiohttp_client, tmp_path
+):
+    """`payload`/`on_approve` carry token-request ids and tool args. The page
+    renders none of it, so it has no business in the browser."""
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING})
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get(
+        "/api/servicebay/approvals/req-42",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    raw = await r.text()
+    assert "tok-99" not in raw
+    assert "payload" not in raw
+    assert "on_approve" not in raw
+
+
+async def test_api_approval_detail_unknown_id_is_gone_not_found(
+    aiohttp_client, tmp_path
+):
+    """SB's companion feed lists only pending requests, so an id that is absent
+    was almost certainly just decided elsewhere — say that, don't cry 404-broken."""
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING})
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get(
+        "/api/servicebay/approvals/req-does-not-exist",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 404
+    assert (await r.json())["reason"] == "gone"
+
+
+async def test_api_approval_detail_unreachable_servicebay_is_502(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={})  # read() returns None
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.get(
+        "/api/servicebay/approvals/req-42",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 502
+    assert (await r.json())["reason"] == "servicebay_unavailable"
+
+
+async def test_api_approval_detail_without_companion_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db, None))
+    r = await client.get(
+        "/api/servicebay/approvals/req-42",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 503
+
+
+async def test_api_approval_detail_does_not_shadow_the_verdict_route(
+    aiohttp_client, tmp_path
+):
+    """`/{id}` and `/{id}/{verb}` are neighbours; a GET on the detail route must
+    not swallow the POST verdict, and the verdict must stay POST-only."""
+    db = _db(tmp_path)
+    companion = _FakeCompanion(bodies={"approvals": _PENDING}, verdict=(True, "ok"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    admin = {"Remote-User": "michael", "Remote-Groups": "admins"}
+    assert (
+        await client.get("/api/servicebay/approvals/req-42", headers=admin)
+    ).status == 200
+    assert companion.verdicts == []
+    r = await client.post("/api/servicebay/approvals/req-42/approve", headers=admin)
+    assert r.status == 200
+    assert companion.verdicts[0][:2] == ("req-42", "approve")
+    # A GET on the verdict path is not a way to mutate anything.
+    assert (
+        await client.get("/api/servicebay/approvals/req-42/approve", headers=admin)
+    ).status == 405
+
+
+# ---- The verdict page's markup contract (#1085) ----------------------------
+#
+# `static/index.html` is plain HTML/JS with no test harness in this repo — the
+# rendering and the taps are browser checks. What IS locked down here is the
+# contract the Android app codes against: the route it deep-links to, and the
+# fact that approving asks first.
+
+_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def test_approval_page_route_is_the_one_the_app_deep_links_to():
+    """mdopp/solaris-android replaces `PwaLauncher.Routes.SERVICEBAY` with this.
+    Renaming it here silently breaks every notification tap in the app."""
+    assert '"servicebay/approvals/"' in _HTML
+    assert "openApprovalPage" in _HTML
+
+
+def test_approval_page_reads_the_detail_route_before_offering_buttons():
+    assert '"/api/servicebay/approvals/" + encodeURIComponent(approvalId)' in _HTML
+
+
+def test_approving_asks_first():
+    """Approve makes ServiceBay actually run the requested operation. Reject
+    only cancels, so it is deliberately NOT gated."""
+    approve_gate = 'verb === "approve" && !window.confirm('
+    assert approve_gate in _HTML
+
+
+async def test_bookmarkable_p_route_does_not_cover_the_approval_path(
+    aiohttp_client, tmp_path
+):
+    """Why the app deep-links `#/p/…` and not `/p/…`: the server's bookmarkable
+    shell route matches ONE path segment, so the three-segment approval path
+    never reaches the SPA. The hash form is handled entirely client-side."""
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db, _FakeCompanion()))
+    assert (await client.get("/p/start")).status == 200
+    assert (await client.get("/p/servicebay/approvals/req-42")).status == 404

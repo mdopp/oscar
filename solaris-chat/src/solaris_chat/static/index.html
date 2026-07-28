@@ -1418,6 +1418,14 @@
     .ww-train-state { display: block; margin: 10px 0 0; }
     .ww-train-state:empty { display: none; }
 
+    /* ServiceBay-Freigabe (#1085): zwei volle Knöpfe untereinander — auf dem
+       Handy sind sie so nicht zu verwechseln, und "Genehmigen" bleibt oben. */
+    .sb-approval-meta { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+    .sb-approval-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    .sb-approval-actions button { width: 100%; min-height: 48px; }
+    .sb-approval-state { display: block; margin: 12px 0 0; }
+    .sb-approval-state:empty { display: none; }
+
     .seg { display: flex; gap: 4px; }
     .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
     .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
@@ -7109,6 +7117,13 @@
         // entity_id keeps its dots, so match the sub-path prefix, not a slug.
         if (type.indexOf("camera/") === 0) { openCameraPage(type.slice(7)); return; }
         if (type === "camera") { showView("chat"); return; }
+        // ServiceBay-Freigabe (#1085): #/p/servicebay/approvals/<id> ist die
+        // Fläche, auf der eine einzelne Freigabe entschieden wird. Die App darf
+        // das nicht mit ihrem Gerätetoken (servicebay#2249) und öffnet deshalb
+        // genau diese Adresse in einem Custom Tab, der die Anmeldung mitbringt.
+        if (type.indexOf(SB_APPROVAL_ROUTE) === 0) {
+          openApprovalPage(type.slice(SB_APPROVAL_ROUTE.length)); return;
+        }
         // Energie is no longer a standalone page — it lives in the `.energy`
         // dot-command (renderEnergyPage/renderEnergyFlow/… still exist). A stale
         // #/p/energy link falls back to the Geräte start page (#973).
@@ -7216,6 +7231,133 @@
         function refresh() { img.src = snapUrl + "?t=" + Date.now(); }
         refresh();
         cameraTimer = setInterval(refresh, 5000);
+      }
+
+      // ---- ServiceBay-Freigabe entscheiden (#1085) ----
+      // Die Companion-App bekommt die Freigabe als Benachrichtigung, darf sie
+      // aber nicht selbst entscheiden — der Verdict braucht die angemeldete
+      // Sitzung (servicebay#2249). Sie öffnet deshalb diese Seite. Sie ist der
+      // erste Bildschirm, den jemand mitten in der Nacht per Tippen auf eine
+      // Benachrichtigung sieht: sie muss zuerst sagen, worum es geht, und erst
+      // danach zwei Knöpfe anbieten.
+      var SB_APPROVAL_ROUTE = "servicebay/approvals/";
+      function openApprovalPage(approvalId) {
+        stopStartRefresh();
+        closeRail();
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        if (!approvalId) { card.textContent = "Zu dieser Freigabe fehlt die Kennung."; return; }
+        fetch("/api/servicebay/approvals/" + encodeURIComponent(approvalId))
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            if (res.status === 403) {
+              card.textContent = "Freigaben kann nur eine Administratorin oder ein Administrator entscheiden.";
+              return;
+            }
+            if (res.status === 404) {
+              card.textContent = "Diese Freigabe ist nicht mehr offen — sie wurde wohl schon entschieden. Du musst nichts weiter tun.";
+              return;
+            }
+            if (!res.body || !res.body.ok || !res.body.approval) {
+              card.textContent = "ServiceBay ist gerade nicht erreichbar. Versuche es später noch einmal.";
+              return;
+            }
+            renderApprovalPage(card, res.body.approval);
+          })
+          .catch(function () { card.textContent = "Konnte die Freigabe nicht laden."; });
+      }
+
+      function renderApprovalPage(card, a) {
+        card.textContent = "";
+        card.classList.add("start-page");
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = a.title || "Freigabe angefragt";
+        head.appendChild(title);
+        card.appendChild(head);
+
+        var meta = document.createElement("p");
+        meta.className = "sb-approval-meta";
+        var when = a.created_at ? new Date(a.created_at) : null;
+        var whenTxt = when && !isNaN(when.getTime())
+          ? when.toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "";
+        meta.textContent = "Angefragt von „" + (a.service || "ServiceBay") + "“"
+          + (a.node ? " auf " + a.node : "") + (whenTxt ? " am " + whenTxt : "") + ".";
+        card.appendChild(meta);
+
+        if (a.description) {
+          var desc = document.createElement("p");
+          desc.textContent = a.description;
+          card.appendChild(desc);
+        }
+
+        var status = document.createElement("p");
+        status.className = "sb-approval-state";
+        status.setAttribute("aria-live", "polite");
+
+        var row = document.createElement("div");
+        row.className = "sb-approval-actions";
+        var approve = document.createElement("button");
+        approve.type = "button";
+        approve.className = "btn-primary";
+        approve.textContent = "Genehmigen";
+        var reject = document.createElement("button");
+        reject.type = "button";
+        reject.textContent = "Ablehnen";
+
+        var busy = false;
+        function send(verb) {
+          if (busy) return;
+          // Genehmigen lässt ServiceBay die angefragte Aktion wirklich
+          // ausführen — deshalb dieselbe Rückfrage wie überall sonst vor einer
+          // Aktion, die sich nicht zurücknehmen lässt. Ablehnen bricht nur ab.
+          if (verb === "approve" && !window.confirm("Diese Freigabe wirklich genehmigen?")) return;
+          busy = true;
+          approve.disabled = true;
+          reject.disabled = true;
+          status.className = "sb-approval-state";
+          status.textContent = verb === "approve" ? "Wird genehmigt…" : "Wird abgelehnt…";
+          fetch("/api/servicebay/approvals/" + encodeURIComponent(a.id) + "/" + verb, { method: "POST" })
+            .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+            .then(function (res) {
+              busy = false;
+              if (res.body && res.body.ok) {
+                // Entschieden ist entschieden: die Knöpfe verschwinden, damit
+                // niemand ein zweites Mal tippt und sich fragt, was nun gilt.
+                row.remove();
+                status.className = "sb-approval-state ok";
+                status.textContent = verb === "approve"
+                  ? "Genehmigt. ServiceBay führt die Anfrage jetzt aus."
+                  : "Abgelehnt. ServiceBay führt nichts aus.";
+                return;
+              }
+              approve.disabled = false;
+              reject.disabled = false;
+              status.className = "sb-approval-state err";
+              status.textContent = "Das hat nicht geklappt: "
+                + ((res.body && (res.body.detail || res.body.reason)) || "ServiceBay antwortet nicht.")
+                + " Du kannst es noch einmal versuchen.";
+            })
+            .catch(function () {
+              busy = false;
+              approve.disabled = false;
+              reject.disabled = false;
+              status.className = "sb-approval-state err";
+              status.textContent = "Das hat nicht geklappt. Du kannst es noch einmal versuchen.";
+            });
+        }
+        approve.addEventListener("click", function () { send("approve"); });
+        reject.addEventListener("click", function () { send("reject"); });
+        row.appendChild(approve);
+        row.appendChild(reject);
+        card.appendChild(row);
+        card.appendChild(status);
       }
 
       function loadStartPage(card) {
