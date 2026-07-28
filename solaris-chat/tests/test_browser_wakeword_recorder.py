@@ -11,6 +11,12 @@ identity, never from the request); format/size rejection with a plain-language
 error; and the counter, which is recomputed from the files on disk so a
 re-record or a retried upload cannot double-count (#1080).
 
+Also covered: the "train now" action on the finish card (#1088) — enqueueing
+needs a session, takes its uid from the identity, is refused while a run is
+queued or running, and the status endpoint reports every state including a
+failure's reason. No test starts a real run: the queued row IS the whole
+engine-side handshake, the hours of GPU belong to the trainer companion.
+
 The card itself (`static/index.html`) is plain HTML/JS with no test harness in
 this repo — its audio path is verified in a real browser, not here. What IS
 locked down here is the wording and the markup contract: the resident-facing
@@ -303,24 +309,211 @@ def test_the_spoken_replies_say_wakeword_too():
         assert "Weckwort" not in body
 
 
-def test_the_finish_card_claims_no_training():
-    """Nothing in this codebase enqueues a run off these recordings, so the card
-    must not say it does — and it must not grow a "train now" button either: the
-    trainer synthesises its positives with Piper and would not use them (#1074).
-    """
-    assert "trainiert das Wakeword" not in _HTML
-    assert "trainiert das Weckwort" not in _HTML
+def test_the_finish_card_says_the_recordings_are_used_and_who_starts_it():
+    """Since #1074 a run folds the resident's own recordings into the positive
+    set, so the old "es benutzt deine Aufnahmen bisher nicht" is no longer
+    true. What must stay is that nothing starts by itself."""
     raw = _HTML.split('id="ww-done"', 1)[1].split("</div>", 1)[0]
-    assert "im Hintergrund" not in raw
     done = " ".join(raw.split())
     assert "Fertig — alle 10 Aufnahmen sind gespeichert." in done
     assert (
-        "Trainiert wird damit noch nichts: Das Training ist ein eigener Schritt, "
-        "den jemand ausdrücklich startet, und es benutzt deine Aufnahmen bisher "
-        "nicht." in done
+        "Beim Training lernt Solaris deine Aufnahmen mit. Los geht das Training "
+        "aber nur, wenn du es unten startest." in done
     )
-    # Honest and quiet: a statement, not an action and not a link.
-    assert "<button" not in done and "<a " not in done
+    assert "benutzt deine Aufnahmen bisher nicht" not in _HTML
+    # Never a background promise: a run only ever starts on a tap.
+    assert "im Hintergrund" not in raw
+    assert "trainiert das Wakeword" not in _HTML
+
+
+def test_the_training_card_is_honest_about_hours_and_the_manual_flash():
+    """Two things a resident must not have to guess: a run costs hours of GPU,
+    and a finished run produces a file — flashing it onto the Voice PE is still
+    a manual ESPHome step, so the box does not start hearing anything new."""
+    raw = _HTML.split('id="ww-train"', 1)[1].split("</section>", 1)[0]
+    box = " ".join(raw.split())
+    assert "<strong>ein paar Stunden</strong>" in box
+    assert "muss die Datei danach noch jemand von Hand auf das Gerät spielen" in box
+    assert ">Wakeword jetzt trainieren</button>" in box
+    # The state line is text, never colour alone, and it is announced.
+    assert 'id="ww-train-state"' in box and 'aria-live="polite"' in box
+    for state in ("Eingereiht", "Läuft", "Fertig", "Fehlgeschlagen"):
+        assert '"' + state in _HTML
+
+
+def test_the_card_reads_the_run_state_on_load_and_polls_while_it_runs():
+    """A run takes hours: the card must survive a reload and a fresh visit, so
+    the state comes from the server on load — not only from the own tap."""
+    assert 'fetch("/api/wakeword/training")' in _HTML
+    assert 'wwTrainLoad();\n        return fetch("/api/wakeword/samples")' in _HTML
+    assert "wwTrainTimer = setInterval(wwTrainLoad, WW_TRAIN_POLL_MS);" in _HTML
+    assert "clearInterval(wwTrainTimer); wwTrainTimer = 0;" in _HTML
+    # A queued/running run disables the button instead of queueing a second one.
+    assert "wwTrainBtn.disabled = wwTrainBusy || wwTrainPending();" in _HTML
+
+
+# ---- enqueueing a run: only on a tap, only one at a time ------------------
+
+
+def _queue_table(db: str) -> None:
+    """`wakeword_training_runs` as migration 0029 creates it — the engine never
+    creates it itself."""
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wakeword_training_runs ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL,"
+            " status TEXT NOT NULL DEFAULT 'queued',"
+            " requested_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " started_at TEXT, finished_at TEXT, result TEXT, model_path TEXT)"
+        )
+        conn.commit()
+
+
+def _runs(db: str) -> list[tuple]:
+    with sqlite3.connect(db) as conn:
+        return conn.execute(
+            "SELECT id, uid, status FROM wakeword_training_runs ORDER BY id"
+        ).fetchall()
+
+
+async def test_enqueue_without_a_session_is_rejected(aiohttp_client, app, db):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    r = await client.post("/api/wakeword/training")
+    assert r.status == 401
+    assert _runs(db) == []
+    assert (await client.get("/api/wakeword/training")).status == 401
+
+
+async def test_enqueue_takes_the_uid_from_the_identity_not_the_body(
+    aiohttp_client, app, db
+):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/wakeword/training",
+        json={"uid": "mdopp"},
+        headers={"Remote-User": "lena"},
+    )
+    assert r.status == 200
+    assert (await r.json())["run"]["status"] == "queued"
+    assert _runs(db) == [(1, "lena", "queued")]
+    # The capture switch stays untouched: an `active` wakeword_requests row
+    # reroutes every resident's turn into the enrolment path (#1082).
+    assert wakeword_requests_store.has_any_active_request(db) is False
+
+
+@pytest.mark.parametrize("pending", ["queued", "running"])
+async def test_a_second_run_is_refused_while_one_is_pending(
+    aiohttp_client, app, db, pending
+):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE wakeword_training_runs SET status = ?", (pending,))
+        conn.commit()
+
+    again = await client.post("/api/wakeword/training", headers={"Remote-User": "max"})
+
+    assert again.status == 409
+    body = await again.json()
+    assert body["ok"] is False
+    assert "läuft schon ein Training" in body["error"]
+    assert body["run"]["status"] == pending
+    # Hours of GPU are not queued twice — not even by another resident.
+    assert _runs(db) == [(1, "lena", pending)]
+
+
+@pytest.mark.parametrize("terminal", ["done", "failed"])
+async def test_a_finished_run_does_not_block_the_next_one(
+    aiohttp_client, app, db, terminal
+):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE wakeword_training_runs SET status = ?", (terminal,))
+        conn.commit()
+
+    again = await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+
+    assert again.status == 200
+    assert _runs(db) == [(1, "lena", terminal), (2, "lena", "queued")]
+
+
+async def test_enqueue_reports_honestly_when_there_is_no_queue(aiohttp_client, app, db):
+    """Without migration 0029 nothing can claim a run. Saying "eingeplant"
+    anyway would leave the resident waiting for a model nobody builds."""
+    client = await aiohttp_client(app)
+    r = await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+    assert r.status == 503
+    body = await r.json()
+    assert body["ok"] is False and "nicht einplanen" in body["error"]
+
+
+# ---- the status endpoint reports what is really true ----------------------
+
+
+async def test_status_is_empty_before_anything_was_ever_queued(aiohttp_client, app, db):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    r = await client.get("/api/wakeword/training", headers={"Remote-User": "lena"})
+    assert await r.json() == {"ok": True, "run": None}
+
+
+@pytest.mark.parametrize(
+    "status,result",
+    [
+        ("queued", None),
+        ("running", None),
+        ("done", "Modell gebaut: solaris-micro.tflite + solaris-micro.json"),
+        ("failed", "CalledProcessError: Kein CUDA-Gerät gefunden"),
+    ],
+)
+async def test_status_reports_each_state_and_the_failure_reason(
+    aiohttp_client, app, db, status, result
+):
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    await client.post("/api/wakeword/training", headers={"Remote-User": "lena"})
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE wakeword_training_runs SET status = ?, result = ?,"
+            " started_at = '2026-07-28 08:00:00', finished_at = '2026-07-28 11:30:00'",
+            (status, result),
+        )
+        conn.commit()
+
+    run = (
+        await (
+            await client.get("/api/wakeword/training", headers={"Remote-User": "lena"})
+        ).json()
+    )["run"]
+
+    assert run["status"] == status
+    assert run["result"] == (result or "")
+    # UTC, marked as such: SQLite writes `datetime('now')` without a zone and
+    # the browser would render it as local time.
+    assert run["started_at"] == "2026-07-28T08:00:00Z"
+    assert run["finished_at"] == "2026-07-28T11:30:00Z"
+    assert run["requested_at"].endswith("Z")
+
+
+async def test_the_newest_run_is_the_one_reported(aiohttp_client, app, db):
+    """The household trains one model for everyone, so the state a resident
+    sees is the box's newest run — including one another resident started."""
+    _queue_table(db)
+    client = await aiohttp_client(app)
+    await client.post("/api/wakeword/training", headers={"Remote-User": "max"})
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE wakeword_training_runs SET status = 'failed'")
+        conn.commit()
+    await client.post("/api/wakeword/training", headers={"Remote-User": "max"})
+
+    r = await client.get("/api/wakeword/training", headers={"Remote-User": "lena"})
+
+    assert (await r.json())["run"]["status"] == "queued"
 
 
 # ---- what the card shows while and after recording ------------------------

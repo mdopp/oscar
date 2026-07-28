@@ -20,6 +20,8 @@ import sqlite3
 from pathlib import Path
 
 STATUS_QUEUED = "queued"
+STATUS_RUNNING = "running"
+PENDING_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -47,3 +49,27 @@ def enqueue_run(db_path: str, uid: str) -> int | None:
     except sqlite3.OperationalError:
         return None
     return int(row["id"]) if row else None
+
+
+def latest_run(db_path: str) -> dict | None:
+    """The newest run on the box, or None when nothing was ever queued (or the
+    queue is unavailable).
+
+    Household-wide on purpose: one model wakes the box for everyone and a run
+    folds in every resident's recordings (#1074), so "is a training in flight"
+    is a household question, not a per-resident one. The trainer claims the
+    oldest queued row first, so the newest row is always the last state a
+    resident's screen should show.
+    """
+    if not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT id, uid, status, requested_at, started_at, finished_at,"
+                " result, model_path FROM wakeword_training_runs"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None

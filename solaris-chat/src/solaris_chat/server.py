@@ -48,6 +48,7 @@ from solaris_chat import (
     trace_store,
     wakeword_requests_store,
     wakeword_samples_store,
+    wakeword_training_store,
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
@@ -919,6 +920,25 @@ def _wakeword_pcm_frames(data: bytes) -> int | None:
             return wav.getnframes()
     except (wave.Error, EOFError):
         return None
+
+
+def _wakeword_run_view(run: dict | None) -> dict | None:
+    """One training run as the card reads it. The timestamps get their `Z`:
+    SQLite's `datetime('now')` is UTC without a marker, and the browser would
+    otherwise render it as local time and be hours off."""
+    if run is None:
+        return None
+
+    def stamp(ts: str | None) -> str:
+        return ts.replace(" ", "T") + "Z" if ts else ""
+
+    return {
+        "status": run["status"],
+        "requested_at": stamp(run["requested_at"]),
+        "started_at": stamp(run["started_at"]),
+        "finished_at": stamp(run["finished_at"]),
+        "result": run["result"] or "",
+    }
 
 
 def _sanitize_upload_name(filename: str, mime: str) -> str:
@@ -4501,6 +4521,52 @@ def build_app(
             raise web.HTTPNotFound()
         return web.FileResponse(path, headers={"Content-Type": "audio/wav"})
 
+    async def wakeword_training_state(request: web.Request) -> web.Response:
+        """What the household's newest training run is doing (#1088).
+
+        A run takes hours, so the card cannot learn its state from the tap that
+        started it — it reads this on every load, after a reload and on a fresh
+        visit, and polls it while something is in flight.
+        """
+        if _interactive_uid(request) is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        run = wakeword_training_store.latest_run(solaris_db_path)
+        return web.json_response({"ok": True, "run": _wakeword_run_view(run)})
+
+    async def wakeword_training_enqueue(request: web.Request) -> web.Response:
+        """Queue one wake-word training run — on an explicit tap only (#1088).
+
+        uid comes from the SSO identity, never from the body, like the
+        recorder's own endpoints. Check-then-enqueue needs no lock: both store
+        calls are sync sqlite and nothing is awaited between them, so a second
+        request cannot slip in and queue hours of duplicate GPU work.
+        """
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        run = wakeword_training_store.latest_run(solaris_db_path)
+        if run and run["status"] in wakeword_training_store.PENDING_STATUSES:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "Es läuft schon ein Training — mehr als eines auf einmal geht nicht.",
+                    "run": _wakeword_run_view(run),
+                },
+                status=409,
+            )
+        run_id = wakeword_training_store.enqueue_run(solaris_db_path, uid)
+        if run_id is None:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "Das Training lässt sich gerade nicht einplanen. Versuche es später noch einmal.",
+                },
+                status=503,
+            )
+        log.info("wakeword.training.enqueued", uid=uid, run_id=run_id)
+        started = wakeword_training_store.latest_run(solaris_db_path)
+        return web.json_response({"ok": True, "run": _wakeword_run_view(started)})
+
     def _import_llm_classifier():
         """A sync ``folder -> label`` backed by the household LLM for the classify
         step (fail-open to ""). Runs inside `asyncio.to_thread`, so `asyncio.run`
@@ -5814,6 +5880,8 @@ def build_app(
     app.router.add_get("/api/wakeword/samples", wakeword_samples_state)
     app.router.add_post("/api/wakeword/samples", wakeword_sample_upload)
     app.router.add_get("/api/wakeword/samples/{index}", wakeword_sample_audio)
+    app.router.add_get("/api/wakeword/training", wakeword_training_state)
+    app.router.add_post("/api/wakeword/training", wakeword_training_enqueue)
     app.router.add_post("/api/device-tokens", device_token_create)
     app.router.add_get("/api/device-tokens", device_token_list)
     app.router.add_delete("/api/device-tokens/{id}", device_token_revoke)
