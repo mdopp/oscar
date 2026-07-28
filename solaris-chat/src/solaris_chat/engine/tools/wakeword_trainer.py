@@ -73,6 +73,14 @@ def resolve_resident_identity(
     return parsed, parsed.capitalize(), spelled
 
 
+def _not_captured_say(uid: str, display_name: str) -> str:
+    who = "" if uid == "household" else f", {display_name}"
+    return (
+        f"Diese Aufnahme habe ich leider nicht mitbekommen{who}. "
+        "Sag bitte noch einmal \u201eSolaris\u201c?"
+    )
+
+
 def build_wakeword_tools(
     db_path: str,
     uid_getter: Callable[[], str],
@@ -135,11 +143,35 @@ def build_wakeword_tools(
                 current_uid or "household", db_path
             )
 
-        req = wakeword_requests_store.record_sample(db_path, uid)
+        # The gatekeeper owns this counter: it bumps it once per `.wav` it
+        # actually wrote, so captured audio is what counts. Incrementing here
+        # too made every spoken turn count twice — the dialog would finish at
+        # five real recordings claiming ten.
+        req = wakeword_requests_store.get_request(db_path, uid)
+        if req is None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "no_wakeword_request",
+                    "say": "Wir sammeln gerade keine Aufnahmen. Sollen wir damit anfangen?",
+                },
+                ensure_ascii=False,
+            )
 
         collected = req["collected_count"]
         target = req["target_count"]
         rem = max(0, target - collected)
+        if collected == 0:
+            # Nothing was captured for this turn — do not file a row for a
+            # recording that does not exist.
+            return json.dumps(
+                {
+                    "ok": False,
+                    "reason": "not_captured",
+                    "say": _not_captured_say(uid, display_name),
+                },
+                ensure_ascii=False,
+            )
 
         sample_id = f"sample_{uid}_{collected}"
         filename = wakeword_samples_store.sample_path(db_path, uid, collected)

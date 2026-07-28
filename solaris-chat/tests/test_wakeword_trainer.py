@@ -44,6 +44,18 @@ def _create_queue_table(db_path: str) -> None:
         conn.commit()
 
 
+def _gatekeeper_captured(db_path, uid):
+    """Simulate the gatekeeper writing one `.wav` and bumping the counter.
+
+    The counter is the gatekeeper's alone — captured audio is what counts. The
+    tool used to increment it too, so every spoken turn counted twice and the
+    dialog finished at five real recordings claiming ten.
+    """
+    from solaris_chat import wakeword_requests_store
+
+    return wakeword_requests_store.record_sample(db_path, uid)
+
+
 @pytest.mark.asyncio
 async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     db_path = str(tmp_path / "solaris_test.db")
@@ -61,10 +73,12 @@ async def test_bidirectional_wakeword_trainer_flow(tmp_path):
     assert res1["say"].endswith("?")
 
     # 2. Record samples addressing Alex
+    _gatekeeper_captured(db_path, "alex")
     s1 = json.loads(await sample_tool.handler({"uid": "alex", "transcript": "Solaris"}))
     assert s1["remaining"] == 1
     assert s1["say"].endswith("?")
 
+    _gatekeeper_captured(db_path, "alex")
     s2 = json.loads(await sample_tool.handler({"uid": "alex", "transcript": "Solaris"}))
     assert s2["completed"] is True
     assert s2["say"].endswith("?")
@@ -137,3 +151,37 @@ async def test_delete_never_touches_another_residents_sample(tmp_path):
     )
     assert res2["ok"] is False
     assert wakeword_samples_store.get_sample(db_path, "sample_other_1") is not None
+
+
+@pytest.mark.asyncio
+async def test_only_the_gatekeeper_counts_a_sample(tmp_path):
+    """Captured audio is what counts. When the gatekeeper also started writing
+    the `.wav` and bumping the counter, the tool's own increment made every
+    spoken turn count twice — the dialog would finish at five real recordings
+    while claiming ten."""
+    from solaris_chat import wakeword_requests_store
+
+    db_path = str(tmp_path / "count.db")
+    tools = build_wakeword_tools(db_path, lambda: "household")
+    start_tool = next(t for t in tools if t.name == "start_wakeword_enrollment")
+    sample_tool = next(t for t in tools if t.name == "record_wakeword_sample")
+
+    await start_tool.handler({"uid": "alex", "target_count": 10})
+
+    # A turn the gatekeeper did not capture must not advance anything.
+    res = json.loads(
+        await sample_tool.handler({"uid": "alex", "transcript": "Solaris"})
+    )
+    assert res["ok"] is False
+    assert res["reason"] == "not_captured"
+    assert res["say"].rstrip().endswith("?")
+    assert wakeword_requests_store.get_request(db_path, "alex")["collected_count"] == 0
+
+    # One capture, one count — the tool reports it without adding a second.
+    _gatekeeper_captured(db_path, "alex")
+    res = json.loads(
+        await sample_tool.handler({"uid": "alex", "transcript": "Solaris"})
+    )
+    assert res["collected"] == 1
+    assert res["remaining"] == 9
+    assert wakeword_requests_store.get_request(db_path, "alex")["collected_count"] == 1
