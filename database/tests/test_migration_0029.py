@@ -32,7 +32,7 @@ def _cfg(db_path: str) -> Config:
 
 def test_single_linear_head(tmp_path):
     heads = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db"))).get_heads()
-    assert tuple(heads) == ("0029_wakeword_training_runs",)
+    assert len(heads) == 1  # name-free: every later migration re-points it
 
 
 def test_upgrade_creates_queue_table_with_queued_default(tmp_path):

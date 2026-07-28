@@ -34,6 +34,22 @@ _SPEAKER_ID_DISABLED = {"0", "false", "no", "off"}
 # via SOLARIS_SPEAKER_COLLISION_THRESHOLD without a rebuild.
 DEFAULT_COLLISION_THRESHOLD = 0.65
 
+# Storing several fingerprints per resident (#1084) raises recall — and with it
+# the chance that one of those extra rows happens to sit close to a *different*
+# resident's voice. The counterweight is a margin: a turn is only attributed
+# when the best row beats the best row of any OTHER resident by this much. An
+# absolute threshold alone cannot express "0.62 for Anna and 0.60 for Ben is not
+# a recognition, it is a coin toss".
+#
+# Applies to recognition only. The enrolment self-test (#1083) keeps its own
+# profile-vs-profile collision bar and does not use this.
+#
+# 0.10 is a chosen starting point, not a measured one — this repo has no
+# distance data from real household voices. `gatekeeper.speaker.match` logs the
+# score and the runner-up every turn, so the number can be tuned on the box via
+# SOLARIS_SPEAKER_MATCH_MARGIN without a rebuild. 0 disables the rule.
+DEFAULT_MATCH_MARGIN = 0.10
+
 
 def system_language_from_env() -> str:
     """The language the voice stack runs in (#1057).
@@ -58,6 +74,17 @@ def speaker_collision_threshold_from_env() -> float:
         )
     except ValueError:
         return DEFAULT_COLLISION_THRESHOLD
+
+
+def speaker_match_margin_from_env() -> float:
+    """How far the best-matching resident must beat the runner-up resident
+    before a turn is attributed (see DEFAULT_MATCH_MARGIN)."""
+    try:
+        return float(
+            os.environ.get("SOLARIS_SPEAKER_MATCH_MARGIN", str(DEFAULT_MATCH_MARGIN))
+        )
+    except ValueError:
+        return DEFAULT_MATCH_MARGIN
 
 
 def speaker_id_enabled_from_env() -> bool:
@@ -88,6 +115,7 @@ class Settings:
     speaker_id_enabled: bool
     speaker_id_threshold: float
     speaker_collision_threshold: float
+    speaker_match_margin: float
     voice_pe_devices: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -138,6 +166,7 @@ class Settings:
             speaker_id_enabled=speaker_id_enabled_from_env(),
             speaker_id_threshold=threshold,
             speaker_collision_threshold=speaker_collision_threshold_from_env(),
+            speaker_match_margin=speaker_match_margin_from_env(),
             voice_pe_devices=devices,
         )
 

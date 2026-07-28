@@ -1,13 +1,17 @@
 """SQLite-backed storage for Solaris voice embeddings (#937 Phase 2).
 
 The `voice_embeddings` table is provisioned by the baseline Alembic
-migration (`schema/migrations/versions/20260516_0001_baseline.py`):
-one row per resident `uid`, BLOB embedding (192 × float32 = 768 B),
-`sample_count` averaged over enrolment, and `enrolled_via`.
+migration and reshaped by `20260728_0030_voice_embeddings_multi.py`:
+**several** rows per resident `uid` (surrogate `id` PK, index on
+`uid`), BLOB embedding (192 × float32 = 768 B), `sample_count`
+averaged over that enrolment, and `enrolled_via`. One row per
+resident forced every sitting to be averaged into one vector, which
+lands between the conditions a voice actually spreads over — close
+to the device vs. across the room, quiet vs. TV (#1084).
 
 This module owns the read/write contract; the resolver in
 `speaker.py` calls into it for the k-NN sweep, and the enrolment
-endpoint calls into it to upsert a freshly-averaged embedding.
+endpoint calls into it to add a freshly-averaged embedding.
 
 Design notes:
 
@@ -20,7 +24,8 @@ Design notes:
     produces that on every architecture we target.
   * If solaris.db does not yet exist (gatekeeper booted before the
     init container has run), `list_embeddings` returns `[]` and
-    upsert raises. Callers downgrade to default_uid in that case.
+    `insert_embedding` raises. Callers downgrade to default_uid in
+    that case.
 """
 
 from __future__ import annotations
@@ -86,7 +91,7 @@ def list_embeddings(db_path: str) -> list[VoiceEmbedding]:
     return out
 
 
-def upsert_embedding(
+def insert_embedding(
     db_path: str,
     uid: str,
     embedding_bytes: bytes,
@@ -94,7 +99,13 @@ def upsert_embedding(
     sample_count: int,
     enrolled_via: str,
 ) -> None:
-    """Insert or replace a resident's voice fingerprint."""
+    """Add one more voice fingerprint for a resident.
+
+    Adds, never replaces: a second enrolment is a second condition
+    (another room, another time of day), and keeping both is the whole
+    point. Re-enrolling to *discard* the old profile means
+    `delete_embedding` first.
+    """
     if len(embedding_bytes) != EMBEDDING_BYTES:
         raise ValueError(
             f"embedding must be {EMBEDDING_BYTES} bytes ({EMBEDDING_DIM} float32), got {len(embedding_bytes)}"
@@ -104,11 +115,6 @@ def upsert_embedding(
             """
             INSERT INTO voice_embeddings (uid, embedding, sample_count, enrolled_via)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(uid) DO UPDATE SET
-                embedding    = excluded.embedding,
-                sample_count = excluded.sample_count,
-                enrolled_via = excluded.enrolled_via,
-                enrolled_at  = datetime('now')
             """,
             (uid, embedding_bytes, sample_count, enrolled_via),
         )
@@ -116,8 +122,10 @@ def upsert_embedding(
 
 
 def touch_last_seen(db_path: str, uid: str) -> None:
-    """Record that this uid was matched on a recent turn. Best-effort —
-    a failure here doesn't break the conversation pipeline."""
+    """Record that this uid was matched on a recent turn — every row of
+    theirs, since the stamp says "this resident was heard", not "this
+    fingerprint won". Best-effort — a failure here doesn't break the
+    conversation pipeline."""
     if not Path(db_path).exists():
         return
     try:
@@ -132,7 +140,9 @@ def touch_last_seen(db_path: str, uid: str) -> None:
 
 
 def delete_embedding(db_path: str, uid: str) -> bool:
-    """Remove a resident's enrolment. Used by admin un-enrol flows."""
+    """Remove a resident's enrolment — *all* of their fingerprints. Used
+    by admin un-enrol flows, where leaving even one row behind would keep
+    recognising someone who asked to be forgotten."""
     if not Path(db_path).exists():
         return False
     try:
@@ -145,13 +155,15 @@ def delete_embedding(db_path: str, uid: str) -> bool:
 
 
 def list_uids(db_path: str) -> list[str]:
-    """Convenience for admin listings; cheaper than loading full BLOBs."""
+    """The enrolled residents, one entry each however many fingerprints
+    they have. Convenience for admin listings; cheaper than loading full
+    BLOBs."""
     if not Path(db_path).exists():
         return []
     try:
         with _connect(db_path) as conn:
             rows: Iterable[sqlite3.Row] = conn.execute(
-                "SELECT uid FROM voice_embeddings ORDER BY uid"
+                "SELECT DISTINCT uid FROM voice_embeddings ORDER BY uid"
             ).fetchall()
             return [str(row["uid"]) for row in rows]
     except sqlite3.OperationalError:

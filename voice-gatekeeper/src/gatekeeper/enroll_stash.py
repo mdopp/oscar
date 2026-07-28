@@ -7,7 +7,7 @@ onboarding turns, and writes the enrolment result back.
 
 When the gatekeeper is HA's Wyoming STT provider it already holds each turn's PCM
 (16 kHz mono int16) — the same format `/enrol` wants — and the enrol store is
-in-process (`embeddings_store.upsert_embedding`), so no HTTP round-trip is
+in-process (`embeddings_store.insert_embedding`), so no HTTP round-trip is
 needed. Per onboarding turn the handler claims the pending row, embeds this
 turn's audio as one sample, and once the target count is reached enrols the
 averaged embedding and flips the row to `done` (or `failed` with a reason).

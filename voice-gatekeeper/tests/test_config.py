@@ -108,6 +108,23 @@ def test_collision_threshold_moves_independently(monkeypatch):
     assert s.speaker_collision_threshold == 0.65
 
 
+def test_match_margin_is_its_own_knob(monkeypatch):
+    """A third, independent number (#1084): how far ahead of the runner-up
+    resident a match must be before a turn is attributed. Tunable on the box —
+    the default is a chosen starting point, not a measured one."""
+    monkeypatch.delenv("SOLARIS_SPEAKER_MATCH_MARGIN", raising=False)
+    assert _fresh_settings(monkeypatch, {}).speaker_match_margin == 0.10
+
+    s = _fresh_settings(monkeypatch, {"SOLARIS_SPEAKER_MATCH_MARGIN": "0.2"})
+    assert s.speaker_match_margin == 0.2
+    assert s.speaker_id_threshold == 0.55
+    assert s.speaker_collision_threshold == 0.65
+
+    # Garbage must not silently become 0.0 and switch the rule off.
+    s = _fresh_settings(monkeypatch, {"SOLARIS_SPEAKER_MATCH_MARGIN": "nope"})
+    assert s.speaker_match_margin == 0.10
+
+
 def test_settings_has_single_engine_url_no_admin_gateway(monkeypatch):
     # Voice routes to the household profile only: residents speak to Solaris,
     # never the admin persona. The gatekeeper carries exactly one engine URL
