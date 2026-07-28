@@ -1375,7 +1375,7 @@
     .model-row .btn-primary { padding: 7px 16px; }
     .model-current { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
 
-    /* Weckwort-Recorder (#1081): eine große Aufnahmetaste, ein sichtbarer
+    /* Wakeword-Recorder (#1081): eine große Aufnahmetaste, ein sichtbarer
        Zähler, und pro Aufnahme Anhören/Neu aufnehmen. Mobile-first — die Taste
        füllt die Kartenbreite und ist mit dem Daumen erreichbar. */
     .ww-count { font-size: 22px; font-weight: 700; margin: 14px 0 2px; }
@@ -1392,11 +1392,24 @@
     .ww-rec.recording .dot { animation: ww-pulse 1s infinite; }
     @keyframes ww-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
     .ww-hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+    /* Aufnahme-Anzeige: solange aufgenommen wird, ist genau dieser Block
+       sichtbar — Text, ablaufende Restzeit und die Tonkurve. Rot allein zählt
+       nicht als Signal, deshalb steht daneben immer, was gerade passiert. */
+    .ww-live { margin-top: 12px; border: 1px solid var(--danger); border-radius: var(--radius); padding: 10px 12px 8px; }
+    .ww-live-head { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 600; color: var(--danger); }
+    .ww-live-head .t { flex: 1 1 auto; }
+    .ww-live-head .r { font-variant-numeric: tabular-nums; font-weight: 500; }
+    .ww-clock { height: 6px; border-radius: 999px; background: var(--bubble-sol); overflow: hidden; margin: 7px 0 6px; }
+    .ww-clock i { display: block; height: 100%; width: 100%; background: var(--danger); }
+    .ww-wave { display: block; width: 100%; height: 44px; border-radius: 8px; background: var(--bubble-sol); }
     .ww-list { list-style: none; padding: 0; margin: 16px 0 0; }
-    .ww-list li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .ww-list li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .ww-list li .ww-row { display: flex; align-items: center; gap: 8px; }
     .ww-list li .n { flex: 1 1 auto; }
+    .ww-list li .flag { font-size: 12px; color: var(--danger); }
     .ww-list li button { min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 13px; }
     .ww-list li button:hover { color: var(--ink); background: var(--bubble-sol); }
+    .ww-list li .ww-wave { height: 34px; margin-top: 7px; }
     .ww-done { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-top: 14px; background: var(--bubble-sol); }
 
     .seg { display: flex; gap: 4px; }
@@ -2025,19 +2038,30 @@
     <section id="view-wakeword" class="view">
       <div class="pane">
         <div class="doc">
-          <h2>Weckwort „Solaris“</h2>
-          <p class="lead">Damit Solaris deine Stimme beim Weckwort besser erkennt, nimm hier zehnmal
+          <h2>Wakeword „Solaris“</h2>
+          <p class="lead">Damit Solaris deine Stimme beim Wakeword besser erkennt, nimm hier zehnmal
              das Wort <strong>„Solaris“</strong> auf — ganz normal gesprochen, wie zu Hause.
-             Jede Aufnahme dauert nur eine Sekunde. Du kannst jede einzeln anhören und neu aufnehmen.</p>
+             Jede Aufnahme läuft <strong>1,6 Sekunden</strong>; du siehst dabei einen Balken, der
+             abläuft, und die Tonkurve deiner Stimme. Du kannst jede Aufnahme anhören, an der Kurve
+             sehen, ob sie etwas geworden ist, und sie neu aufnehmen.</p>
           <div class="ww-count" id="ww-count">0 von 10</div>
           <div class="ww-bar"><i id="ww-bar"></i></div>
           <button type="button" class="ww-rec" id="ww-rec"><span class="dot"></span><span id="ww-rec-label">Aufnahme starten</span></button>
+          <div class="ww-live" id="ww-live" hidden aria-live="polite">
+            <div class="ww-live-head">
+              <span class="t">Aufnahme läuft — sag jetzt „Solaris“</span>
+              <span class="r" id="ww-live-left">noch 1,6 s</span>
+            </div>
+            <div class="ww-clock"><i id="ww-clock"></i></div>
+            <canvas class="ww-wave" id="ww-live-wave" role="img" aria-label="Tonkurve der laufenden Aufnahme"></canvas>
+          </div>
           <p class="ww-hint" id="ww-hint">Tippe auf die Taste und sag „Solaris“.</p>
           <ul class="ww-list" id="ww-list"></ul>
           <div class="ww-done" id="ww-done" hidden>
             <strong>Fertig — alle 10 Aufnahmen sind gespeichert.</strong>
-            <p class="ww-hint">Solaris trainiert das Weckwort damit im Hintergrund. Du kannst
-               einzelne Aufnahmen jederzeit neu aufnehmen.</p>
+            <p class="ww-hint">Trainiert wird damit noch nichts: Das Training ist ein eigener
+               Schritt, den jemand ausdrücklich startet, und es benutzt deine Aufnahmen bisher
+               nicht. Du kannst jede Aufnahme jederzeit neu aufnehmen.</p>
           </div>
         </div>
       </div>
@@ -4523,7 +4547,7 @@
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
-        ["/weckwort", "Weckwort „Solaris“ mit deiner Stimme aufnehmen"],
+        ["/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"],
         ["/thinking", "Show, collapse, or hide thinking blocks"],
         ["/voice", "Solaris's spoken voice (admins)", true],
         ["/model", "Everyday-chat model — Schnell/Gründlich (admins)", true]
@@ -4611,7 +4635,9 @@
           return;
         }
         if (cmd === "thinking") { openSettingCard("prefs"); return; }
-        if (cmd === "weckwort" || cmd === "wakeword") { openSettingCard("wakeword"); return; }
+        // "weckwort" stays as a silent alias: the command was shipped under that
+        // name, and a resident who learned it must not hit a dead end.
+        if (cmd === "wakeword" || cmd === "weckwort") { openSettingCard("wakeword"); return; }
         if (cmd === "model" || cmd === "voice") {
           if (isAdmin) {
             openSettingCard(cmd);
@@ -6875,7 +6901,7 @@
       };
       var settingTitles = {
         skills: "Skills", commands: "Commands", scheduler: "Scheduler", hooks: "Hooks", soul: "Soul", tools: "Tools",
-        prefs: "Chat", model: "Model", voice: "Voice", wakeword: "Weckwort „Solaris“"
+        prefs: "Chat", model: "Model", voice: "Voice", wakeword: "Wakeword „Solaris“"
       };
       var skillsLoaded = false, soulLoaded = false;
 
@@ -9723,7 +9749,7 @@
       var SETTINGS_ENTRIES = [
         ["model", "/model", "Everyday-chat model & VRAM (admins)", true],
         ["voice", "/voice", "Solaris's spoken voice (admins)", true],
-        ["wakeword", "/weckwort", "Weckwort „Solaris“ mit deiner Stimme aufnehmen"],
+        ["wakeword", "/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"],
         ["skills", "/skills", "Skills Solaris draws on"],
         ["soul", "/soul", "Solaris's durable identity"],
         ["persona", "/persona", "Persona & speed for the next new chat"],
@@ -10732,11 +10758,11 @@
           .finally(function () { modelApply.disabled = false; });
       });
 
-      // ---- Weckwort-Recorder (#1081) ----
+      // ---- Wakeword-Recorder (#1081) ----
       // Die Voice PE erkennt „Solaris" auf dem Gerät und verbraucht das Wort als
       // Aktivierung — über die Sprachbox kann es nie als Inhalt ankommen. Die
       // Chat-Oberfläche (Browser UND App, dieselbe Fläche via TWA) hat ein
-      // Mikrofon ohne Weckwort-Schranke, also wird hier aufgenommen.
+      // Mikrofon ohne Wakeword-Schranke, also wird hier aufgenommen.
       //
       // Das Format ist der springende Punkt: MediaRecorder liefert webm/opus,
       // und das Chat-Image hat kein ffmpeg. Also nehmen wir rohes PCM über einen
@@ -10750,11 +10776,89 @@
       var wwHint = document.getElementById("ww-hint");
       var wwListEl = document.getElementById("ww-list");
       var wwDoneEl = document.getElementById("ww-done");
+      var wwLiveEl = document.getElementById("ww-live");
+      var wwLiveLeft = document.getElementById("ww-live-left");
+      var wwClockEl = document.getElementById("ww-clock");
+      var wwLiveWave = document.getElementById("ww-live-wave");
       var WW_TARGET = 10;
       var wwStored = [];
       var wwSlot = 0;          // >0 = diese Nummer wird neu aufgenommen
       var wwBusy = false;
       var wwClipMs = 1600;   // ein Wort — der Server nimmt 0,25 s bis 4 s an
+      var WW_COLS = 120;     // Spalten der Tonkurve — 1,6 s / 120 ≈ 13 ms je Spalte
+      var wwPeaks = {};      // Nummer -> Spalten [min, max], damit ein Re-Render nichts neu lädt
+      var wwDecodeCtx = null;
+
+      // Die Kurve wird aus Spalten-Extremen gezeichnet, nicht aus Einzelwerten:
+      // ein Ausschlag zwischen zwei Abtastpunkten darf nicht verschwinden, sonst
+      // sieht eine übersteuerte Aufnahme harmlos aus.
+      function wwColor(name, fallback) {
+        return (getComputedStyle(document.documentElement).getPropertyValue(name) || "").trim() || fallback;
+      }
+      function wwPeaksFrom(data, cols) {
+        var out = [], per = data.length / cols;
+        for (var c = 0; c < cols; c++) {
+          var from = Math.floor(c * per), to = Math.min(data.length, Math.floor((c + 1) * per));
+          var lo = 0, hi = 0;
+          for (var i = from; i < to; i++) {
+            if (data[i] < lo) lo = data[i];
+            if (data[i] > hi) hi = data[i];
+          }
+          out.push([lo, hi]);
+        }
+        return out;
+      }
+      function wwDrawWave(cv, peaks, cols, color) {
+        var dpr = window.devicePixelRatio || 1;
+        var w = cv.clientWidth || 320, h = cv.clientHeight || 40;
+        // Nur bei echter Größenänderung neu belegen — ein Resize pro Frame
+        // ruckelt auf dem Handy sichtbar.
+        if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+          cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+        }
+        var g = cv.getContext("2d");
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.clearRect(0, 0, w, h);
+        var mid = h / 2, bw = w / cols;
+        g.fillStyle = wwColor("--muted", "#94a3b8");
+        g.globalAlpha = 0.35; g.fillRect(0, mid, w, 1); g.globalAlpha = 1;
+        g.fillStyle = color;
+        for (var c = 0; c < peaks.length && c < cols; c++) {
+          var top = mid - Math.min(1, peaks[c][1]) * (mid - 1);
+          var bot = mid - Math.max(-1, peaks[c][0]) * (mid - 1);
+          g.fillRect(c * bw, top, Math.max(1, bw - 1), Math.max(1, bot - top));
+        }
+      }
+      // Nur die zwei Fälle melden, die eine Aufnahme wirklich unbrauchbar machen.
+      function wwFlag(peaks) {
+        var loud = 0, max = 0;
+        peaks.forEach(function (p) {
+          var m = Math.max(Math.abs(p[0]), Math.abs(p[1]));
+          if (m > max) max = m;
+          if (m >= 0.99) loud++;
+        });
+        if (max < 0.02) return "nichts zu hören";
+        if (loud > peaks.length * 0.1) return "zu laut — etwas weiter weg sprechen";
+        return "";
+      }
+      function wwLoadPeaks(index) {
+        if (wwPeaks[index]) return Promise.resolve(wwPeaks[index]);
+        return fetch("/api/wakeword/samples/" + index)
+          .then(function (r) { return r.ok ? r.arrayBuffer() : Promise.reject(new Error("nicht ladbar")); })
+          .then(function (buf) {
+            // OfflineAudioContext statt AudioContext: kein Hardware-Gerät, keine
+            // Autoplay-Sperre, und die Rate ist schon die der Datei.
+            if (!wwDecodeCtx) {
+              var Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+              wwDecodeCtx = new Off(1, 1, 16000);
+            }
+            return new Promise(function (res, rej) { wwDecodeCtx.decodeAudioData(buf, res, rej); });
+          })
+          .then(function (audio) {
+            wwPeaks[index] = wwPeaksFrom(audio.getChannelData(0), WW_COLS);
+            return wwPeaks[index];
+          });
+      }
 
       function wwSetHint(text, kind) {
         wwHint.textContent = text;
@@ -10784,8 +10888,12 @@
         wwListEl.textContent = "";
         wwStored.forEach(function (i) {
           var li = document.createElement("li");
+          var row = document.createElement("div");
+          row.className = "ww-row";
           var name = document.createElement("span");
           name.className = "n"; name.textContent = "Aufnahme " + i;
+          var flag = document.createElement("span");
+          flag.className = "flag";
           var play = document.createElement("button");
           play.type = "button"; play.textContent = "Anhören";
           play.addEventListener("click", function () {
@@ -10799,8 +10907,22 @@
             wwSetHint("Tippe auf die Taste und sag „Solaris“ — Aufnahme " + i + " wird ersetzt.");
             wwRender();
           });
-          li.appendChild(name); li.appendChild(play); li.appendChild(again);
+          row.appendChild(name); row.appendChild(flag); row.appendChild(play); row.appendChild(again);
+          var cv = document.createElement("canvas");
+          cv.className = "ww-wave";
+          cv.setAttribute("role", "img");
+          cv.setAttribute("aria-label", "Tonkurve von Aufnahme " + i);
+          li.appendChild(row); li.appendChild(cv);
           wwListEl.appendChild(li);
+          wwLoadPeaks(i).then(function (peaks) {
+            // Die Liste kann inzwischen neu gebaut worden sein — dann zeichnet
+            // der nächste Render aus dem Cache, hier ist nichts mehr zu tun.
+            if (!cv.isConnected) return;
+            wwDrawWave(cv, peaks, WW_COLS, wwColor("--accent", "#f97316"));
+            flag.textContent = wwFlag(peaks);
+          }).catch(function () {
+            flag.textContent = "Kurve nicht ladbar";
+          });
         });
       }
       function loadWakeword() {
@@ -10850,6 +10972,28 @@
         }
         return out;
       }
+      // Die Anzeige läuft aus derselben Startzeit wie das Aufnahmefenster, damit
+      // der Balken nicht etwas anderes behauptet als das Mikrofon tut. Gestoppt
+      // wird per setTimeout, nicht im Frame-Callback: ein Tab im Hintergrund
+      // bekommt keine Frames, das Fenster muss trotzdem enden.
+      var wwLivePeaks = [];
+      var wwLiveRaf = 0;
+      function wwLiveShow(t0) {
+        var color = wwColor("--danger", "#ef4444");
+        wwLiveEl.hidden = false;
+        (function paint() {
+          var left = Math.max(0, wwClipMs - (performance.now() - t0));
+          wwClockEl.style.width = (left / wwClipMs) * 100 + "%";
+          wwLiveLeft.textContent = "noch " + (Math.ceil(left / 100) / 10).toFixed(1).replace(".", ",") + " s";
+          wwDrawWave(wwLiveWave, wwLivePeaks, WW_COLS, color);
+          if (left > 0) wwLiveRaf = requestAnimationFrame(paint);
+        })();
+      }
+      function wwLiveHide() {
+        if (wwLiveRaf) cancelAnimationFrame(wwLiveRaf);
+        wwLiveRaf = 0;
+        wwLiveEl.hidden = true;
+      }
       function wwRecordClip() {
         return navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false } })
           .then(function (stream) {
@@ -10861,18 +11005,32 @@
             var src = ctx.createMediaStreamSource(stream);
             var node = ctx.createScriptProcessor(4096, 1, 1);
             var chunks = [], total = 0;
+            var blockSamples = Math.max(1, Math.round((ctx.sampleRate * wwClipMs) / (WW_COLS * 1000)));
+            var lo = 0, hi = 0, acc = 0;
+            wwLivePeaks = [];
             node.onaudioprocess = function (e) {
               var d = e.inputBuffer.getChannelData(0);
               chunks.push(new Float32Array(d)); total += d.length;
+              for (var i = 0; i < d.length; i++) {
+                if (d[i] < lo) lo = d[i];
+                if (d[i] > hi) hi = d[i];
+                if (++acc >= blockSamples) {
+                  wwLivePeaks.push([lo, hi]);
+                  lo = 0; hi = 0; acc = 0;
+                }
+              }
             };
             src.connect(node); node.connect(ctx.destination);
+            var t0 = performance.now();
+            wwLiveShow(t0);
             return new Promise(function (resolve) {
               setTimeout(function () {
                 node.disconnect(); src.disconnect();
                 stream.getTracks().forEach(function (t) { t.stop(); });
                 var rate = ctx.sampleRate;
                 ctx.close();
-                resolve(wwEncodeWav(wwDownsample(chunks, total, rate)));
+                var samples = wwDownsample(chunks, total, rate);
+                resolve({ blob: wwEncodeWav(samples), samples: samples });
               }, wwClipMs);
             });
           });
@@ -10886,14 +11044,18 @@
           return;
         }
         wwBusy = true; wwRecBtn.classList.add("recording");
-        wwSetHint("Sag jetzt „Solaris“.");
+        wwSetHint("Das Mikrofon wird geöffnet — gleich geht es los.");
         wwRender();
         wwRecordClip()
-          .then(function (blob) {
+          .then(function (clip) {
+            wwLiveHide();
+            // Die Kurve steht schon im Speicher — sie noch einmal vom Server zu
+            // holen und zu dekodieren wäre reine Arbeit für dasselbe Bild.
+            wwPeaks[index] = wwPeaksFrom(clip.samples, WW_COLS);
             wwSetHint("Wird gespeichert…");
             var form = new FormData();
             form.append("index", String(index));
-            form.append("file", blob, "sample.wav");
+            form.append("file", clip.blob, "sample.wav");
             return fetch("/api/wakeword/samples", { method: "POST", body: form })
               .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); });
           })
@@ -10910,12 +11072,14 @@
               : "Gespeichert. Noch " + (WW_TARGET - wwStored.length) + " Mal.", "ok");
           })
           .catch(function (e) {
+            delete wwPeaks[index];
             var denied = e && (e.name === "NotAllowedError" || e.name === "NotFoundError" || e.name === "SecurityError");
             wwSetHint(denied
               ? "Solaris darf nicht auf dein Mikrofon zugreifen. Erlaube den Zugriff in den Einstellungen deines Browsers oder Handys und tippe dann noch einmal auf die Taste."
               : (e && e.message) || "Die Aufnahme hat nicht geklappt. Versuche es noch einmal.", "err");
           })
           .finally(function () {
+            wwLiveHide();
             wwBusy = false; wwRecBtn.classList.remove("recording");
             wwRender();
           });

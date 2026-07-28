@@ -12,7 +12,11 @@ error; and the counter, which is recomputed from the files on disk so a
 re-record or a retried upload cannot double-count (#1080).
 
 The card itself (`static/index.html`) is plain HTML/JS with no test harness in
-this repo — its audio path is verified in a real browser, not here.
+this repo — its audio path is verified in a real browser, not here. What IS
+locked down here is the wording and the markup contract: the resident-facing
+name ("Wakeword", never "Weckwort"), the honest finish card, and the presence of
+the recording indicator + waveform canvases. Whether the curve actually tracks
+the microphone is a browser check.
 """
 
 from __future__ import annotations
@@ -26,7 +30,10 @@ import pytest
 
 from solaris_chat import wakeword_requests_store, wakeword_samples_store
 from solaris_chat.engine import enrollment_fsm
-from solaris_chat.server import build_app
+from solaris_chat.engine.tools import register as register_tools
+from solaris_chat.server import STATIC_DIR, build_app
+
+_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
 def _wav(seconds: float = 1.0, rate: int = 16000, channels: int = 1, width: int = 2):
@@ -88,6 +95,7 @@ def test_wizard_ends_by_pointing_at_the_app_or_browser(db):
 
     assert "erfolgreich gespeichert" in final
     assert "Solaris-App oder im Browser" in final
+    assert "Wakeword" in final and "Weckwort" not in final
     # A trailing "?" keeps the Voice PE microphone open; there is nothing left
     # to answer, so the dialog must close.
     assert not final.rstrip().endswith("?")
@@ -258,3 +266,101 @@ async def test_the_full_set_reports_done(aiohttp_client, app, db):
     assert [r["done"] for r in replies] == [False] * 9 + [True]
     assert wakeword_requests_store.get_request(db, "lena")["status"] == "completed"
     assert len(wakeword_samples_store.list_samples(db, "solaris")) == 10
+
+
+# ---- what the card says: "Wakeword", and nothing untrue -------------------
+
+
+def test_the_card_says_wakeword_everywhere_a_resident_can_read_it():
+    """ "Weckwort klingt falsch" — the resident-facing name is "Wakeword", in
+    German too. The only survivor is the /weckwort command alias, kept so a
+    resident who learned the old command does not hit a dead end."""
+    resident_text = _HTML.replace(
+        'if (cmd === "wakeword" || cmd === "weckwort")', ""
+    ).replace('// "weckwort" stays as a silent alias', "")
+    assert "Weckwort" not in resident_text
+    assert "weckwort" not in resident_text
+
+    assert "<h2>Wakeword „Solaris“</h2>" in _HTML
+    assert 'wakeword: "Wakeword „Solaris“"' in _HTML
+    assert (
+        '["/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"]' in _HTML
+    )
+    assert (
+        '["wakeword", "/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"]'
+        in _HTML
+    )
+    # The alias still routes — /weckwort must not become a dead command.
+    assert 'if (cmd === "wakeword" || cmd === "weckwort")' in _HTML
+
+
+def test_the_spoken_replies_say_wakeword_too():
+    fsm = enrollment_fsm.__file__
+    for path in (fsm, register_tools.__file__):
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "Für das Wakeword „Solaris“" in body
+        assert "Weckwort" not in body
+
+
+def test_the_finish_card_claims_no_training():
+    """Nothing in this codebase enqueues a run off these recordings, so the card
+    must not say it does — and it must not grow a "train now" button either: the
+    trainer synthesises its positives with Piper and would not use them (#1074).
+    """
+    assert "trainiert das Wakeword" not in _HTML
+    assert "trainiert das Weckwort" not in _HTML
+    raw = _HTML.split('id="ww-done"', 1)[1].split("</div>", 1)[0]
+    assert "im Hintergrund" not in raw
+    done = " ".join(raw.split())
+    assert "Fertig — alle 10 Aufnahmen sind gespeichert." in done
+    assert (
+        "Trainiert wird damit noch nichts: Das Training ist ein eigener Schritt, "
+        "den jemand ausdrücklich startet, und es benutzt deine Aufnahmen bisher "
+        "nicht." in done
+    )
+    # Honest and quiet: a statement, not an action and not a link.
+    assert "<button" not in done and "<a " not in done
+
+
+# ---- what the card shows while and after recording ------------------------
+
+
+def test_the_recording_window_is_shown_and_named():
+    """The button turning red says nothing about when capture started or how
+    long is left. A panel with a draining clock, a remaining-seconds readout and
+    the clip length in words does."""
+    assert 'id="ww-live"' in _HTML and 'id="ww-clock"' in _HTML
+    assert 'id="ww-live-left"' in _HTML
+    assert "Aufnahme läuft — sag jetzt „Solaris“" in _HTML
+    assert "<strong>1,6 Sekunden</strong>" in _HTML
+    assert "Jede Aufnahme dauert nur eine Sekunde" not in _HTML
+    # Clock and capture run off one start time, so the bar cannot lie about the
+    # window; the stop stays on a timer because a background tab gets no frames.
+    assert "var t0 = performance.now();\n            wwLiveShow(t0);" in _HTML
+    assert "}, wwClipMs);" in _HTML
+
+
+def test_every_sample_gets_a_waveform_drawn_from_peaks():
+    assert 'id="ww-live-wave"' in _HTML
+    assert 'cv.className = "ww-wave"' in _HTML
+    assert "function wwPeaksFrom(" in _HTML and "function wwDrawWave(" in _HTML
+    # Finished samples come from the endpoint and are decoded in the browser…
+    assert 'fetch("/api/wakeword/samples/" + index)' in _HTML
+    assert "decodeAudioData" in _HTML
+    # …once: the peaks are cached per index, and the just-recorded clip seeds the
+    # cache straight from the PCM instead of a round trip.
+    assert "var wwPeaks = {};" in _HTML
+    assert "if (wwPeaks[index]) return Promise.resolve(wwPeaks[index]);" in _HTML
+    assert "wwPeaks[index] = wwPeaksFrom(clip.samples, WW_COLS);" in _HTML
+    assert "delete wwPeaks[index];" in _HTML
+
+
+def test_the_curve_is_self_contained_and_labelled():
+    """A strict CSP applies to this origin: no library, no external asset. And a
+    curve alone means nothing to a non-technical resident, so the two states that
+    make a recording unusable are also said in words."""
+    assert "<canvas" in _HTML.split('id="ww-live"', 1)[1][:600]
+    assert 'cv.setAttribute("aria-label", "Tonkurve von Aufnahme " + i);' in _HTML
+    assert '"nichts zu hören"' in _HTML
+    assert '"zu laut — etwas weiter weg sprechen"' in _HTML
