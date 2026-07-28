@@ -1,9 +1,18 @@
-# Solaris on the phone — Web Push, live status propagation, Android app
+# Solaris on the phone — notifications, live status propagation, Android app
 
-> **Status:** planned (2026-07-11). Concept + phasing for turning the Solaris web
-> app into a phone experience with real OS integration. Tracked by the *Solaris
-> mobile* epic. Phase 1 is buildable in this repo today; Phases 2–3 are a separate
-> Android sub-project.
+> **Status:** the original concept, written 2026-07-11 — concept + phasing for
+> turning the Solaris web app into a phone experience with real OS integration.
+> Tracked by the *Solaris mobile* epic.
+>
+> **Partly superseded on 2026-07-15 — read [`companion-api.md`](companion-api.md)
+> first.** The push transport decided here (Web Push / VAPID as *the* native
+> app's channel) was reversed. The native companion (`mdopp/solaris-android`)
+> receives everything, foreground **and** background, over its own
+> foreground-service SSE connection to `/napi/portal/events`; Web Push / VAPID
+> survives as the **browser-PWA path only**. `companion-api.md` §3 and §4 are the
+> authoritative statement of the current contract — where this file disagrees, it
+> loses. The reversed decision is marked and kept on record below rather than
+> deleted: *why* it was reversed is the part worth having.
 
 ## Goal
 
@@ -25,14 +34,26 @@ Make Solaris a first-class phone app — **without rewriting the UI in Kotlin**.
    built in web tech. So "no Kotlin" can't be fully kept; the native part is
    **minimised** — only the OS surfaces are native, the whole chat/cards/energy/
    notes UI stays the web app inside a thin shell.
-2. **Web Push (VAPID) needs no Google/FCM** and works **in the installed PWA
+2. ~~**Web Push (VAPID) needs no Google/FCM** and works **in the installed PWA
    with no native app**. So the headline feature (notifications) is pure server +
-   PWA work, and it carries over unchanged when a TWA later wraps the PWA.
+   PWA work, and it carries over unchanged when a TWA later wraps the PWA.~~
+   **This is the "truth" that did not hold, and it is what led the design
+   astray.** It is true for a *browser* PWA — the browser owns the push service
+   and Chrome's own always-on connection carries it. It is false for a *native*
+   app, which has no browser to lean on: there, Web Push means FCM or a
+   third-party distributor (UnifiedPush/ntfy), both of which the architecture
+   forbids. A backgrounded Android app can be woken only by (1) FCM, (2) a
+   foreign distributor, or (3) its own running service — so the native companion
+   holds option (3), its own foreground-service SSE connection, and pays for it
+   with a discreet persistent notification + a battery exception. See
+   [`companion-api.md`](companion-api.md) §3.
 3. **Web Push is for events, not high-frequency silent state updates** (Android/
    Chrome throttle silent pushes and want a visible notification). Live card
    status is therefore split by app state: **app open → SSE** (instant, replaces
    the 12 s poll from #711); **app closed / widget → Web Push only for noteworthy
    events** + refresh on open (widgets get instant native updates in Phase 3).
+   Still true **for the browser PWA**; the native app never has to make this
+   trade because its SSE stream stays open in the background too.
 
 And: **Play Store is an evolution of sideload, not a rebuild** — the same app
 project ships as a sideloadable APK *and* a Play AAB; the extra cost is packaging/
@@ -42,7 +63,14 @@ Internal/Closed testing tracks without public review).
 
 ## Decisions
 
-- **Push transport: Web Push / VAPID** (no FCM/Google).
+- **Push transport: ~~Web Push / VAPID~~ — split by client.** *Revised
+  2026-07-15* (b118e61; 7c7c0ab then removed the device-token `/napi/push/*`
+  twins, so there is no `/napi/push/*`). Native app → its own
+  foreground-service SSE stream on `/napi/portal/events`, for foreground and
+  background alike. Browser PWA → Web Push / VAPID, sent selectively only when
+  no SSE subscriber is open for that resident. Both paths still involve no
+  FCM/Google and no third-party distributor — that constraint is what *forced*
+  the split, not something the original decision already satisfied.
 - **v1 focus: notifications first** (reminders/timers to the phone) — mostly
   server + PWA.
 - **Distribution: Play Store**, reached as an evolution of a sideloadable build.
@@ -51,6 +79,11 @@ Internal/Closed testing tracks without public review).
 ---
 
 ## Phase 1 — Notify/Event backbone + Web Push (this repo, PWA)
+
+> Shipped, and still current **as the browser-PWA path**. Every "Web Push"
+> below means the installed web app in a browser. The native companion takes
+> none of it — it reads the same event bus over SSE
+> (`companion-api.md` §3).
 
 Today the only delivery point is `TimerScheduler._announce`
 (`engine/scheduler.py`), hardwired to HA `assist_satellite.announce` (speaker
@@ -105,10 +138,17 @@ speaker channel.
 
 ## Phase 2 — TWA on the Play Store (new Android sub-project)
 
-- A **Trusted Web Activity** (Bubblewrap/PWABuilder) wraps the PWA
+> **What actually happened:** the phone client became a **native** app
+> (`mdopp/solaris-android`) talking the `/napi/*` companion contract, not a TWA
+> wrapping the PWA — precisely because the "Web Push carries over unchanged into
+> the wrapper" premise below only holds while the wrapper *is* a browser. The
+> Digital-Asset-Links binding did ship and is still served
+> (`companion-api.md` §5); the rest of this phase is superseded.
+
+- ~~A **Trusted Web Activity** (Bubblewrap/PWABuilder) wraps the PWA
   (`chat.dopp.cloud`) — the thinnest wrapper, real Chrome engine, so **Web Push +
   SSE work unchanged inside it** (this is why a TWA fits Web Push better than a
-  Capacitor/WebView shell).
+  Capacitor/WebView shell).~~
 - **Digital Asset Links** — serve `/.well-known/assetlinks.json` from
   solaris-chat/nginx to verify the app↔domain binding (removes the URL bar).
 - **Auth** — the TWA shares Chrome Custom Tab cookies, so the Authelia login works
@@ -129,6 +169,7 @@ speaker channel.
 - **Home-screen card widget(s)** (`AppWidgetProvider` + `RemoteViews`) — render
   cards from `/api/portal/start?state_only=1`, act via `/api/ha/call` (with the
   device token), refresh via `WorkManager` + an optional push "nudge" for instant.
+  (The "nudge" is now a `card_state` event on the §3 SSE stream, not a push.)
 - **Chat-entry widget** (deep-link into the app).
 - **Optional** — a quick-settings `TileService` + an ongoing status-bar notification.
 
@@ -154,6 +195,10 @@ subscription.
 
 ## Related
 
+- **Current contract for the phone:**
+  [`companion-api.md`](companion-api.md) — `/napi/*`, device-token auth, the SSE
+  stream (§3) and the browser-PWA-only Web Push (§4). Authoritative wherever it
+  and this file disagree.
 - Architecture: [`../../solaris-architecture.md`](../../solaris-architecture.md).
 - Favorites/live cards: [`favorites-start-page.md`](favorites-start-page.md) (the
   `state_only=1` refresh from #711 that SSE upgrades).

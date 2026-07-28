@@ -15,8 +15,17 @@ dependencies = [
   # Keyless web-search backend for the engine's web_search tool (the same
   # DuckDuckGo client the Hermes-era post-deploy installed).
   "ddgs>=9",
-  # Official MCP SDK — the admin profile's servicebay_admin toolbox.
-  "mcp>=1.9",
+  # Official MCP SDK — the admin profile's servicebay_admin toolbox and the
+  # client end of the gatekeeper's room tool server.
+  # Capped below 2.0: mcp 2.0 removed
+  # `mcp.client.streamable_http.streamablehttp_client`, which
+  # engine/tools/mcp_tools.py imports at three call sites. Those imports are
+  # function-local, so a 2.x install still imports, collects and passes the
+  # suite — the ImportError only lands at runtime on the box, the first time
+  # the engine tries to list or call an MCP tool. Green tests are not evidence
+  # this pin is safe. Lifting the cap means porting both ends of the wire at
+  # once, since voice-gatekeeper is capped the same way (#1102/#1106).
+  "mcp>=1.9,<2",
   # Brute-force cosine over the OKF embedding vectors (float32 blobs); #650/#651.
   "numpy>=1.26",
   # Web Push (VAPID) for timer/reminder phone notifications (#713); no FCM.
