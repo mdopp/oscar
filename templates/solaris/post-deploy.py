@@ -602,7 +602,9 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         # running last week's recipe while the chat surface offers a button for
         # the new one — it would train, report success, and silently leave the
         # residents' own recordings out. `newer` costs one registry check per
-        # start, and this unit starts rarely and then runs for hours.
+        # start, and this unit starts rarely and then runs for hours. It only
+        # decides what a start pulls, never that one happens — the restart
+        # itself comes from refresh_wakeword_trainer_image (#1092).
         "Pull=newer\n"
         "\n"
         "[Service]\n"
@@ -617,6 +619,188 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+
+
+# Read the training queue from inside the chat container: it owns solaris.db,
+# and the host-side file belongs to the rootless container's subuid, so the
+# post-deploy cannot open it directly. Read-only so a probe can never disturb a
+# run. Any failure (container down, table not migrated yet) exits non-zero.
+WAKEWORD_QUEUE_PROBE = (
+    "import os, sqlite3;"
+    "db = os.environ.get('SOLARIS_DB_PATH') or '/var/lib/solaris/solaris.db';"
+    "cx = sqlite3.connect('file:%s?mode=ro' % db, uri=True);"
+    'print(cx.execute("SELECT COUNT(*) FROM wakeword_training_runs'
+    " WHERE status IN ('queued', 'running')\").fetchone()[0])"
+)
+# The chat container is torn down by ServiceBay's own pod restart right before
+# this script runs; box-observed the gap is tens of seconds wide.
+WAKEWORD_QUEUE_PROBE_WAIT_S = 180
+
+
+def _podman_out(args: list[str], timeout: int = 15) -> str:
+    """Run a podman command and return its stdout, '' on any failure."""
+    try:
+        proc = subprocess.run(
+            ["podman", *args], capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _podman_ident(args: list[str], fmt: str) -> tuple[str, str]:
+    """(short image id, short image revision) from one podman inspect. The
+    revision is the `org.opencontainers.image.revision` label — the git sha a
+    human can compare against the repo at a glance."""
+    image_id, _, revision = _podman_out([*args, "--format", fmt]).partition("|")
+    revision = revision.strip()
+    return (
+        image_id.strip().removeprefix("sha256:")[:12],
+        "unknown" if not revision or revision == "<no value>" else revision[:12],
+    )
+
+
+def wakeword_runs_in_flight(chat_port: str) -> tuple[int | None, str]:
+    """How many training runs are `queued` or `running`, plus how that was
+    established. None means the queue could not be read *at all* — deliberately
+    NOT treated as idle (a run we cannot see is a run we must not abort), and
+    reported separately from "busy" so an unanswerable probe reads as the bug
+    it is instead of a plausible skip.
+
+    The probe execs into the chat container, so it must not run before that
+    container is back: #1092's second attempt ran it as the first action of
+    main(), while ServiceBay's own pod restart still had chat down, and read
+    `unknown` on 3/3 real deploys. Wait for the engine's /health — the same
+    readiness gate the rest of this script uses — before exec'ing."""
+    if not wait_for_chat(chat_port, timeout_secs=WAKEWORD_QUEUE_PROBE_WAIT_S):
+        return None, (
+            f"{CHAT_CONTAINER} /health not up on :{chat_port} within "
+            f"{WAKEWORD_QUEUE_PROBE_WAIT_S}s"
+        )
+    out = _podman_out(["exec", CHAT_CONTAINER, "python3", "-c", WAKEWORD_QUEUE_PROBE])
+    try:
+        return int(out), f"wakeword_training_runs read in {CHAT_CONTAINER}"
+    except ValueError:
+        return None, f"queue probe in {CHAT_CONTAINER} returned {out!r}"
+
+
+def refresh_wakeword_trainer_image(chat_port: str) -> bool:
+    """Restart the trainer onto a rebuilt image — the half `Pull=newer` cannot
+    do on its own (#1092).
+
+    `install_unit` restarts only on unit-FILE drift, and the unit names
+    `:latest`, never a digest, so a rebuilt image drifts nothing and the deploy
+    logs `current and active — no-op`; podman's default pull policy is
+    `missing`, so the container keeps the layer it started with. Box-observed:
+    registry `:latest` at 36c336b while the container still ran 8b960af.
+    `Pull=newer` fixes what a restart pulls, but it never causes one.
+
+    A blanket restart is not an option: a training run takes hours and would be
+    thrown away. So restart only when the queue is idle AND the image really
+    moved. The pull happens here rather than inside `systemctl restart` so the
+    restart itself is instant and the image is proven present first.
+
+    Every exit logs the same four fields — the queue state actually read, the
+    running and available image revision, and whether a restart happened — so a
+    deploy log says which branch it took and on what evidence. Returns True
+    when the trainer was restarted."""
+    running, running_rev = _podman_ident(
+        ["inspect", WAKEWORD_TRAINER_UNIT],
+        '{{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}',
+    )
+    if not service_active(WAKEWORD_TRAINER_UNIT):
+        jlog(
+            "info",
+            "voice-unit",
+            "wakeword-trainer: no refresh — unit is not active",
+            queue="not probed",
+            running=running_rev,
+            available="not checked",
+            restarted=False,
+        )
+        return False
+    in_flight, evidence = wakeword_runs_in_flight(chat_port)
+    if in_flight is None:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: no refresh — the training queue could not be read, "
+            "so the running image is left in place",
+            queue="unreadable",
+            why=evidence,
+            running=running_rev,
+            available="not checked",
+            restarted=False,
+        )
+        return False
+    if in_flight > 0:
+        jlog(
+            "info",
+            "voice-unit",
+            "wakeword-trainer: no refresh — a training run is in flight",
+            queue=f"{in_flight} queued/running ({evidence})",
+            running=running_rev,
+            available="not checked",
+            restarted=False,
+        )
+        return False
+    # A multi-GB TF-CUDA base, but only the changed layers travel.
+    _podman_out(["pull", "--quiet", WAKEWORD_TRAINER_IMAGE], timeout=1800)
+    latest, latest_rev = _podman_ident(
+        ["image", "inspect", WAKEWORD_TRAINER_IMAGE],
+        '{{.Id}}|{{index .Labels "org.opencontainers.image.revision"}}',
+    )
+    queue = f"idle ({evidence})"
+    if not running or not latest:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: no refresh — could not read the running and/or "
+            "available image id",
+            queue=queue,
+            running=running_rev if running else "unreadable",
+            available=latest_rev if latest else "unreadable",
+            restarted=False,
+        )
+        return False
+    if running == latest:
+        jlog(
+            "info",
+            "voice-unit",
+            "wakeword-trainer: no refresh — already running the newest image",
+            queue=queue,
+            running=running_rev,
+            available=latest_rev,
+            restarted=False,
+        )
+        return False
+    restarted = subprocess.run(
+        ["systemctl", "--user", "restart", f"{WAKEWORD_TRAINER_UNIT}.service"],
+        capture_output=True,
+        text=True,
+    )
+    if restarted.returncode != 0:
+        jlog(
+            "warn",
+            "voice-unit",
+            "wakeword-trainer: restart onto the new image failed",
+            queue=queue,
+            running=running_rev,
+            available=latest_rev,
+            restarted=False,
+            error=restarted.stderr[:300],
+        )
+        return False
+    jlog(
+        "info",
+        "voice-unit",
+        "wakeword-trainer: idle and stale — restarted onto the new image",
+        queue=queue,
+        running=running_rev,
+        available=latest_rev,
+        restarted=True,
+    )
+    return True
 
 
 def install_wakeword_trainer_unit(data_dir: str) -> bool:
@@ -641,6 +825,8 @@ def install_wakeword_trainer_unit(data_dir: str) -> bool:
             error=str(e),
         )
         return False
+    # Moving an already-running trainer onto a rebuilt image is NOT done here —
+    # see refresh_wakeword_trainer_image, called from main() once chat is up.
     return install_unit(WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir))
 
 
@@ -3105,6 +3291,13 @@ def main() -> int:
     # The non-expiring read-only token the unattended pollers use so they don't
     # 401-churn when the rotating admin token lapses (servicebay#2317, #818).
     ensure_read_token_file(data_dir)
+
+    # ── 3b. wakeword trainer image (#1092) ───────────────────────────────────
+    # Deliberately here and not next to install_wakeword_trainer_unit in step 0:
+    # deciding whether a restart is safe means reading the training queue out of
+    # the chat container, and step 0 runs while ServiceBay's own "Pod spec
+    # changed — restarting solaris" still has that container down.
+    refresh_wakeword_trainer_image(chat_port)
 
     # ── 4. restart ───────────────────────────────────────────────────────────
     time.sleep(3)
