@@ -382,8 +382,10 @@ def build_wakeword_tools(
     return [
         Tool(
             name="start_wakeword_enrollment",
+            # "Weckwort"/"Aufweckwort" survive here on purpose: these are words a
+            # resident SAYS (or that STT mishears), not words Solaris shows back.
             description=(
-                "Startet den interaktiven Aufnahme-Modus zum Verbessern oder Trainieren des Aufweckworts „Solaris“. "
+                "Startet den interaktiven Aufnahme-Modus zum Verbessern oder Trainieren des Wakewords „Solaris“. "
                 "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
                 "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
                 "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "

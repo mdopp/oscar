@@ -261,7 +261,7 @@ def handle_turn(
                 # question mark so the microphone closes.
                 return (
                     f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) wurde erfolgreich gespeichert! "
-                    f"Für das Weckwort „Solaris“ nimm die Aufnahmen bitte in der Solaris-App oder im Browser auf."
+                    f"Für das Wakeword „Solaris“ nimm die Aufnahmen bitte in der Solaris-App oder im Browser auf."
                 )
 
             # Still capturing: samples were rejected as too quiet or unclear, so

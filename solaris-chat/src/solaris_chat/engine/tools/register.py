@@ -110,7 +110,7 @@ def build_register_tools(
         # over a wake-word-gated channel at all (#1081).
         say_done = (
             f"Klasse, dein Sprachprofil für {display_name} ({spelled_uid}) ist eingerichtet! "
-            f"Für das Weckwort „Solaris“ nimm die Aufnahmen bitte in der Solaris-App oder im Browser auf."
+            f"Für das Wakeword „Solaris“ nimm die Aufnahmen bitte in der Solaris-App oder im Browser auf."
         )
         return json.dumps(
             {
