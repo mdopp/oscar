@@ -33,6 +33,13 @@ STATUS_FAILED = "failed"
 # so the engine doesn't declare a timeout while a capture is still in flight.
 ENROLL_TTL_SECONDS = 600
 
+# How many spoken sentences one voice profile is averaged from. Three was too
+# few for a stable ECAPA embedding: five turns of the SAME speaker scored 0.74 /
+# 0.66 / 0.54 / 0.42 / 0.30 against the 0.55 threshold, so 3 of 5 fell back to
+# guest (#1081). The gatekeeper reads the target off the request row, so this is
+# the single place the count is decided.
+VOICE_PROFILE_SAMPLES = 5
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -52,7 +59,9 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def open_request(db_path: str, uid: str, target_samples: int = 3) -> None:
+def open_request(
+    db_path: str, uid: str, target_samples: int = VOICE_PROFILE_SAMPLES
+) -> None:
     """Open (or reset) the enrol request for a candidate uid: status `pending`,
     zero samples collected, a fresh `created_at` so the TTL starts now. Raises if
     the table/DB is missing so the tool can report the failure rather than

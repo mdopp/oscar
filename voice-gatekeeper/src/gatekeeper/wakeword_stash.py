@@ -1,11 +1,19 @@
 """Wake-word sample capture — the gatekeeper side of onboarding stage 2 (#1060).
 
+CURRENTLY UNUSED BY ANY LIVE PATH (#1081). It only ever fires for a
+`wakeword_requests` row with status `active`, and nothing opens one any more:
+the Voice PE detects "Solaris" on-device before audio reaches the server, so
+speaking the wake word into an open conversation re-triggers the detector and
+aborts the turn — a wake-word-gated channel filters out exactly what we want to
+record. Samples are collected in the browser/app instead (`/api/wakeword/…`),
+which writes its own rows and never sets `active`. This module is kept intact
+and correct for the day wake-word audio arrives from a non-gated channel.
+
 The sibling of `enroll_stash.py`. There the engine opens an `enroll_requests`
-row and the gatekeeper embeds each onboarding turn's PCM; here the wizard opens
-a `wakeword_requests` row for the resident and the gatekeeper writes each turn's
-PCM as one `.wav` under the path the engine's `wakeword_samples_store` points
-its rows at. Without this half the dialog only counted turns and filed rows for
-audio nobody ever recorded.
+row and the gatekeeper embeds each onboarding turn's PCM; here a
+`wakeword_requests` row is opened for the resident and the gatekeeper writes each
+turn's PCM as one `.wav` under the path the engine's `wakeword_samples_store`
+points its rows at.
 
 As HA's Wyoming STT provider the gatekeeper already holds the turn's PCM
 (16 kHz mono int16), so a sample is a `wave.open` away — no extractor, no HTTP.

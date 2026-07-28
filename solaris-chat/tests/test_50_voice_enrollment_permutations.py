@@ -1,11 +1,10 @@
 """Exhaustive 50+ Test Suite for Voice Enrollment & Wakeword FSM State Machine (#1056).
 
 Covers all scripted conversation permutations:
-- Full successful voice enrollment (3 sentences) across name formats & consent phrases
-- Cancellation & refusal at all stages (consent, name, sentence 1, 2, 3)
+- Full successful voice enrollment across name formats & consent phrases
+- Cancellation & refusal at all stages (consent, name, mid-sentence)
 - Deletion of sentences/samples and exact decrement retry logic
-- Wakeword training flow (10 samples counted 1-10 cleanly)
-- Wakeword sample deletion and resume logic
+- Wakeword sample bookkeeping and resume logic
 - TTL state expiration and state isolation
 """
 
@@ -13,6 +12,14 @@ import sqlite3
 import pytest
 from solaris_chat.engine import enrollment_fsm
 from solaris_chat import wakeword_requests_store
+from solaris_chat.enroll_requests_store import VOICE_PROFILE_SAMPLES
+
+
+def _speak_sentences(db, count):
+    """Say `count` ordinary sentences into the recording state."""
+    return [
+        enrollment_fsm.handle_turn(db, f"Satz Nummer {i}") for i in range(1, count + 1)
+    ]
 
 
 # --- FIXTURE FOR CLEAN ISOLATED TEST DB ---
@@ -107,27 +114,21 @@ def test_name_resolution_starts_sample_1(test_db, name_input, expected_name):
 
 
 # --- 4. FULL VOICE ENROLLMENT STEP-BY-STEP (31-35) ---
-def test_full_successful_voice_enrollment_3_sentences(test_db):
+def test_full_successful_voice_enrollment_all_sentences(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
     t3 = enrollment_fsm.handle_turn(test_db, "Alex")
+    assert f"{VOICE_PROFILE_SAMPLES} Sprachproben" in t3
     assert "Was ist dein erster Satz?" in t3
 
-    t4 = enrollment_fsm.handle_turn(test_db, "Heute ist ein schöner Tag.")
-    assert "Was ist dein zweiter Satz?" in t4
-
-    t5 = enrollment_fsm.handle_turn(test_db, "Morgen fahre ich nach Berlin.")
-    assert "Was ist dein dritter und letzter Satz?" in t5
+    middle = _speak_sentences(test_db, VOICE_PROFILE_SAMPLES - 1)
+    assert f"Noch {VOICE_PROFILE_SAMPLES - 1} Sätze" in middle[0]
+    assert "Was ist dein letzter Satz?" in middle[-1]
 
     _gatekeeper_enrols(test_db)
-    t6 = enrollment_fsm.handle_turn(test_db, "Das Wetter ist sonnig.")
-    assert "erfolgreich gespeichert" in t6
-    # Stage 1 hands over to the wake-word stage instead of ending the wizard.
-    assert (
-        enrollment_fsm.get_fsm_state(test_db, "default")["state"]
-        == enrollment_fsm.STATE_WAKEWORD_OFFER
-    )
-    assert "Weckwort" in enrollment_fsm.handle_turn(test_db, "nein")
+    final = enrollment_fsm.handle_turn(test_db, "Das Wetter ist sonnig.")
+    assert "erfolgreich gespeichert" in final
+    # The wizard ends here: the wake word cannot be recorded over the Voice PE.
     assert enrollment_fsm.get_fsm_state(test_db, "default") is None
 
 
@@ -213,13 +214,11 @@ def test_consecutive_multi_user_enrollments(test_db, user_name, spelled):
     assert "Wie lautet dein Name" in t2
     t3 = enrollment_fsm.handle_turn(test_db, user_name)
     assert user_name in t3
-    t4 = enrollment_fsm.handle_turn(test_db, "Satz Eins")
-    assert "zweiter Satz" in t4
-    t5 = enrollment_fsm.handle_turn(test_db, "Satz Zwei")
-    assert "dritter und letzter Satz" in t5
+    said = _speak_sentences(test_db, VOICE_PROFILE_SAMPLES - 1)
+    assert "letzter Satz" in said[-1]
     _gatekeeper_enrols(test_db)
-    t6 = enrollment_fsm.handle_turn(test_db, "Satz Drei")
-    assert "erfolgreich gespeichert" in t6
+    last = enrollment_fsm.handle_turn(test_db, "Letzter Satz")
+    assert "erfolgreich gespeichert" in last
 
 
 def test_no_embedding_reports_honest_failure_and_does_not_enrol(test_db):
@@ -230,9 +229,8 @@ def test_no_embedding_reports_honest_failure_and_does_not_enrol(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
     enrollment_fsm.handle_turn(test_db, "Alex")
-    enrollment_fsm.handle_turn(test_db, "Satz Eins")
-    enrollment_fsm.handle_turn(test_db, "Satz Zwei")
-    final = enrollment_fsm.handle_turn(test_db, "Satz Drei")
+    _speak_sentences(test_db, VOICE_PROFILE_SAMPLES - 1)
+    final = enrollment_fsm.handle_turn(test_db, "Letzter Satz")
 
     assert "erfolgreich gespeichert" not in final
     assert "nicht speichern" in final
@@ -257,17 +255,18 @@ def test_rejected_samples_ask_for_another_sentence(test_db):
     enrollment_fsm.handle_turn(test_db, "Richte einen Benutzer ein.")
     enrollment_fsm.handle_turn(test_db, "ja")
     enrollment_fsm.handle_turn(test_db, "Alex")
-    enrollment_fsm.handle_turn(test_db, "Satz Eins")
-    enrollment_fsm.handle_turn(test_db, "Satz Zwei")
+    _speak_sentences(test_db, VOICE_PROFILE_SAMPLES - 1)
     _gatekeeper_enrols(test_db, status="capturing", result=None)
-    retry = enrollment_fsm.handle_turn(test_db, "Satz Drei")
+    retry = enrollment_fsm.handle_turn(test_db, "Letzter Satz")
 
     assert "noch einen Satz" in retry
     assert retry.rstrip().endswith("?")
     assert enrollment_fsm.get_fsm_state(test_db, "default") is not None
 
     _gatekeeper_enrols(test_db)
-    assert "erfolgreich gespeichert" in enrollment_fsm.handle_turn(test_db, "Satz Vier")
+    assert "erfolgreich gespeichert" in enrollment_fsm.handle_turn(
+        test_db, "Ein Satz mehr"
+    )
 
 
 # --- 8. WAKEWORD DIALOG PERMUTATIONS (56-65) ---

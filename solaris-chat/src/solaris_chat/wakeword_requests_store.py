@@ -18,6 +18,15 @@ from pathlib import Path
 # never expires under the speaker.
 WAKEWORD_TTL_SECONDS = 600
 
+# How many recordings of "Solaris" the browser recorder asks for.
+WAKEWORD_TARGET_SAMPLES = 10
+
+# The status of a set collected in the browser/app (#1081). Deliberately NOT
+# `active`: `active` is the gatekeeper's capture flag and it also reroutes EVERY
+# resident's turn into the enrolment path. The browser is the sole writer of its
+# own samples and needs neither.
+STATUS_BROWSER = "browser"
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -91,6 +100,38 @@ def record_sample(db_path: str, uid: str) -> dict:
             WHERE uid = ?
         """,
             (new_count, new_status, uid),
+        )
+        conn.commit()
+
+    return get_request(db_path, uid) or {}
+
+
+def set_browser_progress(
+    db_path: str,
+    uid: str,
+    collected: int,
+    target_count: int = WAKEWORD_TARGET_SAMPLES,
+) -> dict:
+    """Record how many wake-word recordings the browser recorder holds (#1081).
+
+    `collected` is ABSOLUTE — recomputed from the files on disk, never an
+    increment. The resident can re-record sample 3, and a retry can replay the
+    same upload; both must leave the counter where it is (#1080).
+    """
+    init_db(db_path)
+    status = "completed" if collected >= target_count else STATUS_BROWSER
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO wakeword_requests (uid, target_count, collected_count, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(uid) DO UPDATE SET
+                target_count = excluded.target_count,
+                collected_count = excluded.collected_count,
+                status = excluded.status,
+                updated_at = datetime('now')
+        """,
+            (uid, target_count, collected, status),
         )
         conn.commit()
 
