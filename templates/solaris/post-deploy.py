@@ -648,14 +648,44 @@ def _podman_out(args: list[str], timeout: int = 15) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+# Box-observed on the 6974720 deploy: both identity reads came back empty at the
+# moment they ran, and the very same commands answered instantly by hand minutes
+# later. This script runs while ServiceBay restarts the four-container solaris
+# pod, and that contends for podman's local storage lock — an inspect can be
+# starved past the stock 15s or fail outright while the container and the image
+# are perfectly fine. A longer timeout alone only covers the starved case; the
+# reads are side-effect-free, so retrying covers both. Cheap when podman answers
+# honestly ("no such object" returns at once), patient only when it is wedged —
+# which is exactly the window this has to survive.
+PODMAN_IDENT_TIMEOUT_S = 45
+PODMAN_IDENT_BACKOFF_S = (1, 2, 4, 8)
+
+
 def _podman_ident(args: list[str], fmt: str) -> tuple[str, str]:
-    """(short image id, short image revision) from one podman inspect. The
-    revision is the `org.opencontainers.image.revision` label — the git sha a
-    human can compare against the repo at a glance."""
-    image_id, _, revision = _podman_out([*args, "--format", fmt]).partition("|")
+    """(short image id, short image revision) from one podman inspect, retried
+    with backoff while it comes back unreadable. The revision is the
+    `org.opencontainers.image.revision` label — the git sha a human can compare
+    against the repo at a glance. An empty image id after the last attempt still
+    means unreadable, and the caller must still refuse to act on it."""
+    image_id, revision = "", ""
+    for attempt in range(len(PODMAN_IDENT_BACKOFF_S) + 1):
+        out = _podman_out([*args, "--format", fmt], timeout=PODMAN_IDENT_TIMEOUT_S)
+        image_id, _, revision = out.partition("|")
+        image_id = image_id.strip().removeprefix("sha256:")[:12]
+        if image_id:
+            break
+        if attempt < len(PODMAN_IDENT_BACKOFF_S):
+            time.sleep(PODMAN_IDENT_BACKOFF_S[attempt])
+            jlog(
+                "info",
+                "voice-unit",
+                "podman inspect came back empty — retrying",
+                target=" ".join(args),
+                attempt=attempt + 1,
+            )
     revision = revision.strip()
     return (
-        image_id.strip().removeprefix("sha256:")[:12],
+        image_id,
         "unknown" if not revision or revision == "<no value>" else revision[:12],
     )
 
@@ -703,22 +733,29 @@ def refresh_wakeword_trainer_image(chat_port: str) -> bool:
     Every exit logs the same four fields — the queue state actually read, the
     running and available image revision, and whether a restart happened — so a
     deploy log says which branch it took and on what evidence. Returns True
-    when the trainer was restarted."""
-    running, running_rev = _podman_ident(
-        ["inspect", WAKEWORD_TRAINER_UNIT],
-        '{{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}',
-    )
+    when the trainer was restarted.
+
+    Both identity reads go through `_podman_ident`, which retries a podman busy
+    with ServiceBay's concurrent pod restart; if they still cannot be read, this
+    declines — an unknown image is never assumed stale."""
+    # Before the identity read, not after: on a box where the trainer is off
+    # there is no container to inspect, and the retry above would sit out its
+    # whole backoff proving that.
     if not service_active(WAKEWORD_TRAINER_UNIT):
         jlog(
             "info",
             "voice-unit",
             "wakeword-trainer: no refresh — unit is not active",
             queue="not probed",
-            running=running_rev,
+            running="not probed",
             available="not checked",
             restarted=False,
         )
         return False
+    running, running_rev = _podman_ident(
+        ["inspect", WAKEWORD_TRAINER_UNIT],
+        '{{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}',
+    )
     in_flight, evidence = wakeword_runs_in_flight(chat_port)
     if in_flight is None:
         jlog(

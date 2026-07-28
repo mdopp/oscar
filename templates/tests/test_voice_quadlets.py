@@ -280,12 +280,25 @@ class _FakePodman:
         running: str = "sha256:aaaa11112222|8b960af",
         latest: str = "sha256:bbbb33334444|36c336b",
         in_flight: str | None = "0",
+        busy_reads: int = 0,
+        busy_image_reads: int = 0,
     ):
         self.running, self.latest, self.in_flight = running, latest, in_flight
+        # How many leading identity reads podman is too busy to answer — the
+        # 6974720 box failure, where inspect returned nothing during the deploy
+        # and everything by hand a minute later.
+        self.busy_reads, self.busy_image_reads = busy_reads, busy_image_reads
         self.calls: list[list[str]] = []
 
     def __call__(self, args, **kwargs):
         self.calls.append(list(args))
+        image_read = args[:3] == ["podman", "image", "inspect"]
+        if (image_read or args[:2] == ["podman", "inspect"]) and self.busy_reads:
+            self.busy_reads -= 1
+            return _proc("", 1)
+        if image_read and self.busy_image_reads:
+            self.busy_image_reads -= 1
+            return _proc("", 1)
         if args[:3] == ["podman", "image", "inspect"]:
             return _proc(self.latest)
         if args[:2] == ["podman", "exec"]:
@@ -311,6 +324,13 @@ class _FakePodman:
     def probed(self) -> bool:
         return self._did(["podman", "exec"])
 
+    def inspects(self) -> list[list[str]]:
+        return [
+            c
+            for c in self.calls
+            if c[:2] == ["podman", "inspect"] or c[:3] == ["podman", "image", "inspect"]
+        ]
+
 
 def _refresh(pd, monkeypatch, *, active=True, chat_up=True, **fake_kwargs):
     """Run refresh_wakeword_trainer_image against a fake podman; return
@@ -320,6 +340,7 @@ def _refresh(pd, monkeypatch, *, active=True, chat_up=True, **fake_kwargs):
     monkeypatch.setattr(pd, "service_active", lambda unit: active)
     monkeypatch.setattr(pd, "wait_for_chat", lambda *a, **k: chat_up)
     monkeypatch.setattr(pd.subprocess, "run", fake)
+    monkeypatch.setattr(pd.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         pd,
         "jlog",
@@ -438,6 +459,70 @@ def test_unreachable_chat_is_logged_as_unreadable_not_as_busy(pd, monkeypatch):
     assert logs[-1][2]["queue"] == "unreadable"
 
 
+# The fourth attempt's failure mode (#1092, box SHA 6974720): the queue read
+# succeeded and said idle, the newer image was already pulled locally, and BOTH
+# identity reads still came back empty — `running="unreadable"`,
+# `available="unreadable"`, no restart. The same two commands answered instantly
+# by hand a minute later. post-deploy runs while ServiceBay restarts the
+# four-container solaris pod, so podman's storage lock is contended exactly then.
+
+
+def test_a_podman_too_busy_to_answer_the_identity_read_is_retried(pd, monkeypatch):
+    result, fake, logs = _refresh(pd, monkeypatch, busy_reads=3)
+    assert result is True, "a transiently busy podman must not cost the refresh"
+    assert fake.restarted
+    assert len(fake.inspects()) > 2, "the identity reads were never retried"
+    _, _, args = logs[-1]
+    assert (args["running"], args["available"]) == ("8b960af", "36c336b")
+
+
+def test_an_identity_read_that_never_answers_still_ends_in_no_refresh(pd, monkeypatch):
+    """Retrying must not become guessing: if podman never answers, unreadable
+    still means "do not restart"."""
+    result, fake, logs = _refresh(pd, monkeypatch, busy_reads=99)
+    assert result is False
+    assert not fake.restarted
+    attempts = len(pd.PODMAN_IDENT_BACKOFF_S) + 1
+    # Both reads spent their whole budget: the running container and the image.
+    assert len(fake.inspects()) == 2 * attempts
+    level, message, args = logs[-1]
+    assert level == "warn"
+    assert (args["running"], args["available"]) == ("unreadable", "unreadable")
+    assert args["queue"].startswith("idle"), "the queue read is unaffected by this"
+    assert "could not read" in message
+
+
+def test_an_unreadable_available_image_is_never_taken_for_a_different_one(
+    pd, monkeypatch
+):
+    """The dangerous half of the fail-safe. Here the running container reads
+    fine and only the image read stays empty, so an empty id compares *unequal*
+    to a real one — dropping the guard would restart the trainer on no evidence
+    at all."""
+    result, fake, logs = _refresh(pd, monkeypatch, busy_image_reads=99)
+    assert result is False
+    assert not fake.restarted
+    image_reads = [
+        c for c in fake.inspects() if c[:3] == ["podman", "image", "inspect"]
+    ]
+    assert len(image_reads) == len(pd.PODMAN_IDENT_BACKOFF_S) + 1
+    level, _, args = logs[-1]
+    assert level == "warn"
+    assert (args["running"], args["available"]) == ("8b960af", "unreadable")
+
+
+def test_identity_read_gives_podman_more_than_the_stock_timeout(pd, monkeypatch):
+    seen: list[int | None] = []
+    monkeypatch.setattr(
+        pd.subprocess,
+        "run",
+        lambda args, **kw: seen.append(kw.get("timeout")) or _proc("sha256:aaaa|abc"),
+    )
+    assert pd._podman_ident(["inspect", "x"], "{{.Image}}")[0] == "aaaa"
+    assert seen == [pd.PODMAN_IDENT_TIMEOUT_S]
+    assert pd.PODMAN_IDENT_TIMEOUT_S > 15, "15s is what the deploy window starved"
+
+
 def test_trainer_is_not_restarted_when_the_image_is_current(pd, monkeypatch):
     # The common deploy: idle, but nothing new to run. No pointless churn.
     result, fake, logs = _refresh(
@@ -456,6 +541,9 @@ def test_trainer_refresh_skips_an_inactive_unit(pd, monkeypatch):
     result, fake, logs = _refresh(pd, monkeypatch, active=False)
     assert result is False
     assert not fake.probed and not fake.pulled and not fake.restarted
+    # Nor an identity read: there is no container, and the retry budget would be
+    # spent on every deploy of a box that runs no trainer.
+    assert not fake.inspects()
     assert logs[-1][2]["queue"] == "not probed"
 
 
