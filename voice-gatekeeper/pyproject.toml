@@ -23,7 +23,12 @@ dependencies = [
   # Room set/list exposed to the Solaris Engine as a streamable-HTTP MCP tool server
   # (#104). uvicorn is pinned explicitly because the MCP server runs its
   # own ASGI app beside the aiohttp push server.
-  "mcp>=1.2",
+  # Capped below 2.0: mcp 2.0 dropped
+  # mcp.shared.memory.create_connected_server_and_client_session, which the
+  # MCP server tests drive the tool surface through. Porting to the 2.x API
+  # is a deliberate upgrade of a component that runs in production, tracked
+  # separately — not something to absorb via an open upper bound.
+  "mcp>=1.2,<2",
   "uvicorn>=0.27",
 ]
 
