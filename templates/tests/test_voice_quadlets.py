@@ -10,6 +10,7 @@ ServiceBay voice template's own quadlet-render tests)."""
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import pathlib
 import sys
@@ -248,6 +249,239 @@ def test_install_wakeword_trainer_unit_creates_work_dir_on_gpu(
     assert written == [pd.WAKEWORD_TRAINER_UNIT]
     # Quadlet Volume= does not create the host dir (unlike kube DirectoryOrCreate).
     assert (tmp_path / "solaris" / "wakeword-train").is_dir()
+
+
+# -- trainer image refresh (#1092) -------------------------------------------
+#
+# `Pull=newer` above is necessary but NOT sufficient — it decides what a start
+# pulls, never that one happens. That is how #1090 shipped green. The tests
+# below cover the half that makes a deploy effective (the conditional restart)
+# AND the sequencing, which is how the second attempt shipped broken: it ran the
+# refresh from install_wakeword_trainer_unit, i.e. as the first action of main(),
+# while ServiceBay's pod restart still had solaris-chat down — so the queue probe
+# read "unknown" on 3/3 real deploys and the fail-safe declined every time.
+
+# Every decision the refresh logs must carry the evidence a human checks at a
+# glance: what the queue said, running vs available revision, did it restart.
+_EVIDENCE = {"queue", "running", "available", "restarted"}
+
+
+def _proc(stdout: str = "", returncode: int = 0):
+    return type("_P", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})()
+
+
+class _FakePodman:
+    """Stand-in for subprocess.run covering the podman/systemctl calls the
+    trainer refresh makes. `running`/`latest` are `<image id>|<revision>` — the
+    format the inspect calls ask podman for."""
+
+    def __init__(
+        self,
+        running: str = "sha256:aaaa11112222|8b960af",
+        latest: str = "sha256:bbbb33334444|36c336b",
+        in_flight: str | None = "0",
+    ):
+        self.running, self.latest, self.in_flight = running, latest, in_flight
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(list(args))
+        if args[:3] == ["podman", "image", "inspect"]:
+            return _proc(self.latest)
+        if args[:2] == ["podman", "exec"]:
+            if self.in_flight is None:
+                return _proc("", 1)
+            return _proc(self.in_flight)
+        if args[:2] == ["podman", "inspect"]:
+            return _proc(self.running)
+        return _proc()
+
+    def _did(self, prefix: list[str]) -> bool:
+        return any(c[: len(prefix)] == prefix for c in self.calls)
+
+    @property
+    def restarted(self) -> bool:
+        return self._did(["systemctl", "--user", "restart"])
+
+    @property
+    def pulled(self) -> bool:
+        return self._did(["podman", "pull"])
+
+    @property
+    def probed(self) -> bool:
+        return self._did(["podman", "exec"])
+
+
+def _refresh(pd, monkeypatch, *, active=True, chat_up=True, **fake_kwargs):
+    """Run refresh_wakeword_trainer_image against a fake podman; return
+    (result, fake, [(level, message, args), ...])."""
+    fake = _FakePodman(**fake_kwargs)
+    logs: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(pd, "service_active", lambda unit: active)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda *a, **k: chat_up)
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    monkeypatch.setattr(
+        pd,
+        "jlog",
+        lambda level, tag, message, **args: logs.append((level, message, args)),
+    )
+    return pd.refresh_wakeword_trainer_image("8787"), fake, logs
+
+
+def test_trainer_refresh_is_never_called_before_the_pod_is_back(pd):
+    """The #1098 revert in one assertion.
+
+    Attempt 2 called the refresh from install_wakeword_trainer_unit, which
+    install_voice_pipeline runs as the very first thing main() does — before any
+    of this script's readiness waits and right after ServiceBay tore the pod
+    down. Only main() may call it, and not as its opening move."""
+    tree = ast.parse((TEMPLATES / "solaris" / "post-deploy.py").read_text("utf-8"))
+    callers, call_line, pipeline_line = set(), 0, 0
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id == "refresh_wakeword_trainer_image":
+                callers.add(fn.name)
+                call_line = node.lineno
+            if fn.name == "main" and node.func.id == "install_voice_pipeline":
+                pipeline_line = node.lineno
+    assert callers == {"main"}, (
+        "the trainer refresh reads the training queue out of solaris-chat, so it "
+        f"must run from main() after the pod is back, not from {callers}"
+    )
+    assert call_line > pipeline_line > 0
+
+
+def test_queue_probe_waits_for_chat_before_exec_ing_into_it(pd, monkeypatch):
+    fake = _FakePodman()
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    monkeypatch.setattr(
+        pd,
+        "wait_for_chat",
+        lambda port, timeout_secs=0: (
+            bool(fake.calls.append(["wait_for_chat", port])) or True
+        ),
+    )
+    in_flight, why = pd.wakeword_runs_in_flight("8787")
+    assert in_flight == 0
+    steps = [c[0] if c[0] == "wait_for_chat" else " ".join(c[:2]) for c in fake.calls]
+    assert steps.index("wait_for_chat") < steps.index("podman exec")
+    assert pd.CHAT_CONTAINER in why
+
+
+def test_queue_probe_reports_unreadable_when_chat_never_comes_back(pd, monkeypatch):
+    fake = _FakePodman()
+    monkeypatch.setattr(pd.subprocess, "run", fake)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda *a, **k: False)
+    in_flight, why = pd.wakeword_runs_in_flight("8787")
+    # Not 0: an unreadable queue must never pass for an idle one.
+    assert in_flight is None
+    assert "/health" in why
+    assert not fake.probed, "must not exec into a container that isn't up"
+
+
+def test_wakeword_trainer_queue_probe_is_valid_python(pd):
+    # Shipped as a `python3 -c` string into the chat container; a syntax error
+    # would read as "queue unknown" forever and silently disable the refresh.
+    compile(pd.WAKEWORD_QUEUE_PROBE, "queue_probe.py", "exec")
+    assert "wakeword_training_runs" in pd.WAKEWORD_QUEUE_PROBE
+    assert "mode=ro" in pd.WAKEWORD_QUEUE_PROBE
+
+
+def test_idle_trainer_is_restarted_onto_a_rebuilt_image(pd, monkeypatch):
+    """The #1092 case: unit file unchanged, registry moved, nothing training."""
+    result, fake, logs = _refresh(pd, monkeypatch)
+    assert result is True
+    assert fake.pulled and fake.restarted
+    level, message, args = logs[-1]
+    assert (level, args["restarted"]) == ("info", True)
+    assert (args["running"], args["available"]) == ("8b960af", "36c336b")
+    assert "restarted" in message
+
+
+def test_trainer_is_not_restarted_while_a_run_is_in_flight(pd, monkeypatch):
+    # A run takes hours; restarting would throw it away (trainer.py then marks
+    # the orphaned row failed — honest, but the hours are gone).
+    result, fake, logs = _refresh(pd, monkeypatch, in_flight="1")
+    assert result is False
+    assert not fake.restarted
+    # Not even the pull — a multi-GB download mid-run is disk churn for nothing.
+    assert not fake.pulled
+    level, _, args = logs[-1]
+    assert level == "info"
+    assert args["queue"].startswith("1 queued/running")
+
+
+def test_unreadable_queue_is_logged_as_a_failure_not_a_quiet_skip(pd, monkeypatch):
+    """Unknown is not idle — but it is also not "busy".
+
+    Attempt 2 logged an unanswerable probe with the same calm info line a real
+    training run gets, which is why three broken deploys looked plausible."""
+    result, fake, logs = _refresh(pd, monkeypatch, in_flight=None)
+    assert result is False
+    assert not fake.restarted
+    level, message, args = logs[-1]
+    assert level == "warn", "a probe that cannot answer is a bug, not a no-op"
+    assert args["queue"] == "unreadable"
+    assert args["why"], "the log must say WHY the queue could not be read"
+    assert "could not be read" in message
+
+
+def test_unreachable_chat_is_logged_as_unreadable_not_as_busy(pd, monkeypatch):
+    # The exact 3/3 box failure: chat down ⇒ no restart, but it must be loud.
+    result, _, logs = _refresh(pd, monkeypatch, chat_up=False)
+    assert result is False
+    assert logs[-1][0] == "warn"
+    assert logs[-1][2]["queue"] == "unreadable"
+
+
+def test_trainer_is_not_restarted_when_the_image_is_current(pd, monkeypatch):
+    # The common deploy: idle, but nothing new to run. No pointless churn.
+    result, fake, logs = _refresh(
+        pd,
+        monkeypatch,
+        running="sha256:aaaa11112222|8b960af",
+        latest="sha256:aaaa11112222|8b960af",
+    )
+    assert result is False
+    assert not fake.restarted
+    _, _, args = logs[-1]
+    assert args["running"] == args["available"] == "8b960af"
+
+
+def test_trainer_refresh_skips_an_inactive_unit(pd, monkeypatch):
+    result, fake, logs = _refresh(pd, monkeypatch, active=False)
+    assert result is False
+    assert not fake.probed and not fake.pulled and not fake.restarted
+    assert logs[-1][2]["queue"] == "not probed"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"in_flight": "2"},
+        {"in_flight": None},
+        {"chat_up": False},
+        {"active": False},
+        {"latest": "|"},
+        {"running": "sha256:aaaa11112222|8b960af", "latest": "sha256:aaaa11112222|x"},
+    ],
+    ids=["stale", "busy", "unreadable", "chat-down", "inactive", "no-image", "current"],
+)
+def test_every_refresh_outcome_logs_the_evidence(pd, monkeypatch, kwargs):
+    """Whatever it decides, the deploy log must say so with the evidence.
+
+    A line that only says "leaving the running image in place" is what let a
+    non-functional refresh pass for working across three real deploys."""
+    _, _, logs = _refresh(pd, monkeypatch, **kwargs)
+    decisions = [entry for entry in logs if "wakeword-trainer:" in entry[1]]
+    assert decisions, "the refresh must always say what it did"
+    for _level, _message, args in decisions:
+        assert _EVIDENCE <= set(args), f"missing evidence: {_EVIDENCE - set(args)}"
 
 
 # -- openWakeWord custom-models dir ------------------------------------------
