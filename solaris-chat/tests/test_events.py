@@ -288,13 +288,17 @@ class _FakeWS:
         return _FakeWSMessage(json.dumps(self._events.pop(0)))
 
 
-def _state_changed(entity_id, state, attrs=None):
+def _state_changed(entity_id, state, attrs=None, last_updated=None):
     return {
         "type": "event",
         "event": {
             "data": {
                 "entity_id": entity_id,
-                "new_state": {"state": state, "attributes": attrs or {}},
+                "new_state": {
+                    "state": state,
+                    "attributes": attrs or {},
+                    "last_updated": last_updated,
+                },
             }
         },
     }
@@ -374,6 +378,92 @@ async def test_watcher_reconnects_after_drop(monkeypatch):
     watcher._task = asyncio.ensure_future(watcher._run())
     await asyncio.gather(watcher._task, return_exceptions=True)
     assert calls["n"] >= 3
+
+
+# ---- dedupe + sensor throttle (#1094) --------------------------------------
+
+
+def _watcher_capturing(tmp_path, entity_id):
+    """A watcher pinned to `entity_id` whose bus publishes land in a list."""
+    db = _db(tmp_path)
+    favorites_store.add_favorite(db, "mdopp", "entity", "X", {"entity_id": entity_id})
+    bus = EventBus()
+    published: list[dict] = []
+    bus.publish = lambda uid, kind, data: published.append(data)  # type: ignore[assignment]
+    watcher = ha_watch.HaStateWatcher("http://ha", "tok", bus, db)
+    watcher._refresh_pins()
+    return watcher, published
+
+
+async def test_identical_card_is_not_republished(tmp_path):
+    """Attribute churn HA reports but the card never renders sends nothing —
+    and a fresh `updated_at_ms` alone does not count as a change."""
+    watcher, published = _watcher_capturing(tmp_path, "sensor.leistung")
+    watcher._on_message(
+        _state_changed(
+            "sensor.leistung",
+            "42",
+            {"friendly_name": "Leistung", "unit_of_measurement": "W"},
+            last_updated="2026-07-28T10:00:00+00:00",
+        )
+    )
+    watcher._on_message(
+        _state_changed(
+            "sensor.leistung",
+            "42",
+            {
+                "friendly_name": "Leistung",
+                "unit_of_measurement": "W",
+                "some_internal_attr": "changed",
+            },
+            last_updated="2026-07-28T10:00:07+00:00",
+        )
+    )
+    assert len(published) == 1
+    assert published[0]["card"]["state"] == "42"
+
+
+async def test_sensor_is_throttled_and_the_last_value_still_arrives(
+    tmp_path, monkeypatch
+):
+    """A rapid-fire sensor sends the leading edge at once and then at most one
+    card per interval — but the FINAL value is always flushed, so the card can
+    never freeze on a stale reading."""
+    monkeypatch.setattr(ha_watch, "_THROTTLE_INTERVAL_S", 0.05)
+    watcher, published = _watcher_capturing(tmp_path, "sensor.leistung")
+    for value in ("1", "2", "3", "4", "5"):
+        watcher._on_message(_state_changed("sensor.leistung", value))
+    assert [p["card"]["state"] for p in published] == ["1"]  # leading edge only
+    await asyncio.sleep(0.12)
+    assert [p["card"]["state"] for p in published] == ["1", "5"]
+    assert not watcher._flush_tasks  # the flush de-registered itself
+
+
+async def test_actuator_is_never_throttled(tmp_path):
+    """A dimmer's intermediate states go out immediately — a throttled switch
+    feels broken to the touch (#714)."""
+    watcher, published = _watcher_capturing(tmp_path, "light.buero")
+    for brightness in (10, 120, 254):
+        watcher._on_message(
+            _state_changed("light.buero", "on", {"brightness": brightness})
+        )
+    assert [p["card"]["brightness"] for p in published] == [10, 120, 254]
+
+
+async def test_filter_state_is_bounded_by_the_pinned_set(tmp_path, monkeypatch):
+    """Unpinning an entity drops its dedupe/throttle state and its pending
+    flush, so the per-entity maps can't grow without bound."""
+    watcher, _ = _watcher_capturing(tmp_path, "sensor.leistung")
+    watcher._on_message(_state_changed("sensor.leistung", "1"))
+    watcher._on_message(_state_changed("sensor.leistung", "2"))  # queues a flush
+    assert watcher._last_card and watcher._pending and watcher._flush_tasks
+    monkeypatch.setattr(favorites_store, "pinned_entity_owners", lambda _db: {})
+    watcher._refresh_pins()
+    assert not watcher._last_card
+    assert not watcher._ready_at
+    assert not watcher._pending
+    await asyncio.sleep(0)
+    assert not watcher._flush_tasks
 
 
 # ---- selective web push ----------------------------------------------------
