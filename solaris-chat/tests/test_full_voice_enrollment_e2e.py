@@ -19,6 +19,18 @@ from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat import enroll_requests_store, pending_residents_store
 
 
+def _gatekeeper_captured(db_path, uid):
+    """Simulate the gatekeeper writing one `.wav` and bumping the counter.
+
+    The counter is the gatekeeper's alone — captured audio is what counts. The
+    tool used to increment it too, so every spoken turn counted twice and the
+    dialog finished at five real recordings claiming ten.
+    """
+    from solaris_chat import wakeword_requests_store
+
+    return wakeword_requests_store.record_sample(db_path, uid)
+
+
 @pytest.mark.asyncio
 async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     db_path = str(tmp_path / "solaris_e2e.db")
@@ -102,11 +114,13 @@ async def test_full_voice_enrollment_multi_turn_e2e(tmp_path):
     assert w1["ok"] is True
     assert w1["say"].endswith("?")
 
+    _gatekeeper_captured(db_path, "alex")
     ws1 = json.loads(
         await sample_wake.handler({"uid": "alex", "transcript": "Solaris"})
     )
     assert ws1["say"].endswith("?")
 
+    _gatekeeper_captured(db_path, "alex")
     ws2 = json.loads(
         await sample_wake.handler({"uid": "alex", "transcript": "Solaris"})
     )
