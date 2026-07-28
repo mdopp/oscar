@@ -195,6 +195,19 @@ def test_wakeword_trainer_unit_allows_a_long_first_pull(pd):
     assert timeout >= 1800, "a multi-GB first pull needs more than the systemd default"
 
 
+def test_wakeword_trainer_unit_picks_up_a_rebuilt_image(pd):
+    """A deploy must not leave the trainer on the image it started with.
+
+    Box-observed 2026-07-28: after #1074 taught the trainer to fold residents'
+    own recordings into the positives, a deploy logged "current and active —
+    no-op" and the unit kept running the previous build. The chat surface was
+    already offering the new training button, so a run would have reported
+    success while quietly ignoring every recording the resident made.
+    """
+    unit = pd.render_wakeword_trainer_unit("/mnt/data")
+    assert "Pull=newer\n" in unit
+
+
 def test_install_wakeword_trainer_unit_skips_without_cdi(pd, monkeypatch):
     monkeypatch.setattr(pd, "cdi_available", lambda: False)
     monkeypatch.setattr(
