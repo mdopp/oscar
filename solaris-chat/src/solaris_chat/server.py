@@ -2015,6 +2015,63 @@ def build_app(
             status=status,
         )
 
+    async def servicebay_approval_detail(request: web.Request) -> web.Response:
+        """One pending ServiceBay approval, for the verdict page (#1085).
+
+        The companion cannot decide an approval with its device token
+        (servicebay#2249), so it opens `#/p/servicebay/approvals/<id>` in a
+        Custom Tab, which carries the Authelia cookies. That page has to show
+        WHAT is being approved before it offers the buttons — this serves it.
+
+        Same admin gate as the verdict route: whoever may not decide has no
+        business reading the request body either.
+
+        A missing id answers `gone`, not `not_found`. SB's companion feed lists
+        only pending requests, so the overwhelmingly likely reason is that the
+        approval was already decided — on another device or in the ServiceBay
+        UI. Calling that a broken link would send the admin looking for a bug
+        that isn't there.
+        """
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        if sb_companion is None or not sb_companion.enabled:
+            return web.json_response(
+                {"ok": False, "reason": "servicebay_unconfigured"}, status=503
+            )
+        approval_id = request.match_info["id"]
+        body = await sb_companion.read("approvals")
+        if body is None:
+            return web.json_response(
+                {"ok": False, "reason": "servicebay_unavailable"}, status=502
+            )
+        entries = body.get("approvals") if isinstance(body, dict) else None
+        match = next(
+            (
+                a
+                for a in (entries or [])
+                if isinstance(a, dict) and a.get("id") == approval_id
+            ),
+            None,
+        )
+        if match is None:
+            return web.json_response({"ok": False, "reason": "gone"}, status=404)
+        # Only the fields the page renders. SB's `payload`/`on_approve` carry
+        # the mechanics of the pending operation (token-request ids, tool args);
+        # the page shows none of it, so it does not travel to the browser.
+        return web.json_response(
+            {
+                "ok": True,
+                "approval": {
+                    "id": approval_id,
+                    "service": str(match.get("service") or ""),
+                    "title": str(match.get("title") or ""),
+                    "description": str(match.get("description") or ""),
+                    "node": str(match.get("node") or ""),
+                    "created_at": str(match.get("created_at") or ""),
+                },
+            }
+        )
+
     async def inject_message(request: web.Request) -> web.Response:
         # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
         # Wartung chat (#784) needs the server to speak first. Admin-gated — it
@@ -5853,6 +5910,8 @@ def build_app(
     app.router.add_post(
         "/api/servicebay/approvals/{id}/{verb}", servicebay_approval_verdict
     )
+    # What the verdict page shows before it offers the buttons (#1085).
+    app.router.add_get("/api/servicebay/approvals/{id}", servicebay_approval_detail)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
