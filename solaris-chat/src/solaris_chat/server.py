@@ -76,7 +76,7 @@ from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
-from solaris_chat.engine.knowledge import okf, projection
+from solaris_chat.engine.knowledge import okf, projection, safe_slug
 from solaris_chat.engine.knowledge.records import ConceptRecord
 from solaris_chat.engine.knowledge.writer import write_concept
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -4200,14 +4200,52 @@ def build_app(
         eid = await asyncio.to_thread(_create_document, uid, upload_rel, category, tags)
         return {"ok": True, "id": eid, "category": category, "tags": tags}
 
+    def _existing_contact_facts(uid: str, title: str) -> dict[str, str]:
+        """The `contact`-source email/phone already on this resident's person of
+        that name, or `{}`. A write replaces a source's facts wholesale (ADR
+        0003), so a second `.contacts` create that converges onto an existing
+        person must carry these forward or it silently drops them. Owner-gated by
+        `resolve_entity` (same `resident_uid`), like the create itself."""
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            entity_id = projection.resolve_entity(
+                conn,
+                type="person",
+                canonical_name=title,
+                resident_uid=uid,
+                aliases=[],
+            )
+            if entity_id is None:
+                return {}
+            return {
+                r["predicate"]: r["value"]
+                for r in conn.execute(
+                    "SELECT predicate, value FROM facts"
+                    " WHERE subject_entity_id = ? AND source = 'contact'"
+                    " AND predicate IN ('email', 'phone')",
+                    (entity_id,),
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
     def _create_contact(uid: str, name: str, email: str, phone: str) -> str:
         title = name or email or phone or "Kontakt"
+        # Identity is derived from the resident + the name, NOT a fresh uuid per
+        # create: a random key was the largest duplicate source in the ADR 0010
+        # audit — creating "Anna Meyer" twice minted two people, and neither
+        # carried the phone/email a later dedup pass could have matched on. With
+        # a stable key the second create converges on the same entity (writer,
+        # ADR 0010 §1) and an unchanged repeat short-circuits on `ingest_log`.
+        key = f"contact:{uid}:{safe_slug(title)}"
+        prior = _existing_contact_facts(uid, title)
+        email = email or prior.get("email", "")
+        phone = phone or prior.get("phone", "")
         facts: list[tuple[str, str, float | None]] = []
         if email:
             facts.append(("email", email, 1.0))
         if phone:
             facts.append(("phone", phone, 1.0))
-        key = f"contact:{uid}:{uuid.uuid4().hex[:12]}"
         rec = ConceptRecord(
             type="person",
             title=title,
