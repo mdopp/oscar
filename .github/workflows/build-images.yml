@@ -8,6 +8,8 @@ name: build-images
 # - On workflow_dispatch: builds + pushes for the dispatched ref (branch or tag).
 #   Use `gh workflow run build-images.yml --ref vX.Y.Z` to manually publish
 #   a versioned release (replaces the delete+repush workaround for #256).
+#
+# `:latest` is moved by a push to `main` and by nothing else — see the tags step.
 
 on:
   push:
@@ -38,6 +40,19 @@ on:
 permissions:
   contents: read
   packages: write
+
+# Two runs building the same ref must not overlap: each pushes its own tags per
+# image, so with both in flight whichever finishes an image LAST wins it and
+# `:latest` ends up a mix of commits ACROSS images — that is how the box got a
+# new gatekeeper against an old schema (#1110). Grouping by the ref actually
+# built serialises the main-push builds (the only runs that move `:latest`) and
+# leaves a release-tag build in its own group, where no main push can queue
+# behind or cancel it. cancel-in-progress only for pull_request runs: they push
+# nothing, so dropping a superseded one is free, while cancelling a publishing
+# run mid-flight would leave some images pushed and others not.
+concurrency:
+  group: build-images-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -109,13 +124,20 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          # `latest` is what the box pulls, so only a push to main may move it.
+          # `github.ref` alone is not enough: on workflow_dispatch it is the ref
+          # the run was STARTED from, not the ref checked out via inputs.ref, so a
+          # UI dispatch of an old tag (selected ref main + inputs.ref=vX.Y.Z) used
+          # to publish that old build as `latest` (#1110). Requiring event_name
+          # == push makes every dispatch ineligible whatever ref it built; the
+          # release-tag dispatch in release-please.yml never claimed it either.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', 'main') }}
           labels: |
             org.opencontainers.image.title=${{ matrix.image }}
             org.opencontainers.image.description=${{ matrix.description }}
