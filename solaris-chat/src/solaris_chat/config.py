@@ -188,6 +188,10 @@ class Settings:
     sync_dav_password: str
     contacts_sync_url: str
     deadlines_sync_url: str
+    # DAV base for the PER-RESIDENT contacts write-back (#996): each resident's
+    # `.contacts` persons are PUT to `{base}/{resident_uid}/solaris-contacts/`,
+    # under their OWN principal. Empty ⇒ the person write-back is disabled.
+    contacts_sync_url_base: str
     # DAV base for the PER-RESIDENT calendar sync (#997): the deadlines/tasks sync
     # writes `{deadlines_sync_url_base}/{resident_uid}/{calendar}/` — the same URL
     # shape the Takeout calendar importer uses. Empty ⇒ per-resident sync disabled.
@@ -383,6 +387,7 @@ class Settings:
             sync_dav_password=os.environ.get("SYNC_DAV_PASSWORD", "").strip(),
             contacts_sync_url=os.environ.get("CONTACTS_SYNC_URL", "").strip(),
             deadlines_sync_url=os.environ.get("DEADLINES_SYNC_URL", "").strip(),
+            contacts_sync_url_base=os.environ.get("CONTACTS_SYNC_URL_BASE", "").strip(),
             deadlines_sync_url_base=os.environ.get(
                 "DEADLINES_SYNC_URL_BASE", ""
             ).strip(),

@@ -503,15 +503,18 @@ class CronRunner:
         except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
             log.error("engine.night.document_extractor_failed", error=str(e))
         await self._run_in_worker(_reingest_step)
-        # Providers → phone book: now that the re-ingest has (re)built the org
-        # entities + their contact facts, project them into the residents'
-        # Radicale address books (#doc-graph). No-op when the sync URL/creds are unset.
+        # Providers + `.contacts` persons → phone book: now that the re-ingest has
+        # (re)built the entities + their contact facts, project them into the
+        # residents' Radicale address books (#doc-graph / #996). No-op when the
+        # sync URL/creds are unset.
         try:
             await document_contacts_sync.sync_contacts(
                 settings.solaris_db_path,
                 settings.contacts_sync_url,
                 settings.sync_dav_username,
                 settings.sync_dav_password,
+                settings.contacts_sync_url_base,
+                settings.household_calendar_uid,
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.contacts_sync_failed", error=str(e))
