@@ -658,6 +658,17 @@ beantwortet sein — siehe die Rückfragen im Begleittext.
   Abschnitt 11.1) — das Faktenmodell kann keine Pflichtattribute erzwingen.
 - **Der Batchpfad ist nicht unterbrechbar.** Das Wartungsfenster ist eine Zeitspanne,
   keine Grenze (Leitprinzip 2, Abschnitt 8.5).
+- **A5 ist kein Torwächter.** Der Rückbau in Spalte A0 findet unabhängig statt; A03
+  und A05 laufen parallel. Wo die Baseline rechtzeitig vorliegt, wird gegen sie
+  gemessen, sonst wird der Nachher-Wert allein festgehalten. **G-2 bleibt für neue
+  Tools unberührt** — dort ist die Messung Aufnahmebedingung, nicht Nice-to-have.
+- **Aufgaben erscheinen künftig als VTODO**, die Kalender-Kaskade entfällt (A4).
+  Ein Ding, ein Ort — Leitprinzip 4. Dokumentfristen bleiben Termine.
+- **Der `mcp`-2.x-Port ist zurückgestellt** (#1102, #1106): das Toolset ist auf 2.x
+  noch nicht verfügbar. Die `<2`-Kappe in beiden `pyproject.toml` bleibt bis dahin
+  die Lösung, nicht das Problem. Wiedervorlage in einigen Wochen bis Monaten.
+- **B1 ist bewusst offen.** Der Mistral-Zugang wird erst nach der Abnahmewoche
+  entschieden; bis B2 blockiert er nichts.
 
 ---
 
@@ -678,7 +689,7 @@ Zuschnitt dadurch geändert hat:
 
 | # | Angenommen | Tatsächlich |
 | :--- | :--- | :--- |
-| A4 | `todo_add`/`todo_list` neu bauen | `task_add`/`task_list`/`task_done` existieren und kaskadieren schon in den Kalender — fehlt nur die VTODO-Spiegelung |
+| A4 | `todo_add`/`todo_list` neu bauen | `task_add`/`task_list`/`task_done` existieren; sie landen heute als **VEVENT** im Kalender statt als VTODO in den Aufgaben |
 | A5 | Messverfahren erfinden | `scripts/bench_models.py` misst TTFT/Prefill/Tool-Genauigkeit engine-förmig |
 | C3 | Rückkanal bauen | `announce` und Web Push (`engine/notify.py`, VAPID) existieren; neu ist nur die Kopplung an Auftragsstatus |
 | F4 | Bestätigungsschritt bauen | Approval- und Action-Card-Pfad existiert, es fehlt ein Kartentyp |
@@ -704,7 +715,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | :--- | :--- | :--- | :--- |
 | A01 | `solaris-deep` (6-Pass-Loop) entfernen | ZA-04 | — |
 | A02 | `web_search` / `web_extract` entfernen | ZA-04 | — |
-| A03 | Toter Code aus dem Prompt entfernen, Prefill neu messen | Kleinerer Prompt, schnellere Antwort | A05 |
+| A03 | Toter Code aus dem Prompt entfernen, Prefill neu messen | Kleinerer Prompt, schnellere Antwort | — (läuft parallel zu A05) |
 
 ### Spalte A · Alltagstauglichkeit — V1
 
@@ -713,8 +724,8 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | A1 | Radicale-Kalender **und** -Todo-Listen als HA-Entitäten einbinden/verifizieren | `calendar.*` und `todo.*` in HA sichtbar | — · nur nötig, wenn offener Punkt 4 auf den HA-Weg fällt |
 | A2 | `calendar_create` als Kern-Tool **über `dav_client`** (ZA-09). Der DAV-Client, die Zugangsdaten und `household_calendar_uid` stehen bereits — neu ist das Tool und die Terminerzeugung | „Trag Donnerstag 15 Uhr Zahnarzt ein" funktioniert | — |
 | A3 | Datums- und Zeit-Parsing im Prompt (relative Angaben) | „übermorgen", „nächsten Dienstag" | A2 |
-| A4 | **Nicht neu bauen:** `task_add` / `task_list` / `task_done` existieren (`engine/tools/tasks_tools.py`, projektionsweise `task`-Entities) und kaskadieren über `cascade_task_event` bereits in den Haushaltskalender. Restumfang: die Liste **als VTODO** nach Radicale spiegeln, damit sie in CalDAV-Apps als Liste erscheint statt als Termin | Einkaufsliste per Sprache, sichtbar in jeder CalDAV-App | — |
-| A5 | Latenz-Baseline messen — `solaris-chat/scripts/bench_models.py` misst TTFT, Wall, Prefill/Decode und Tool-Genauigkeit mit engine-förmigem Prompt bereits. Restumfang: die zehn Befehle festlegen, auf der Box laufen lassen, Werte festhalten | Referenzwert vor allen Änderungen | — |
+| A4 | **Nicht neu bauen:** `task_add` / `task_list` / `task_done` existieren (`engine/tools/tasks_tools.py`, projektionsweise `task`-Entities). Restumfang: Aufgaben **als VTODO statt als VEVENT** ausspielen und die Kalender-Kaskade entfernen — die Dokumentfristen im selben `sync_deadlines` bleiben VEVENT. Plus einmalige Bereinigung der bestehenden `solaris-task-*`-Termine | Einkaufsliste per Sprache, in der App unter Aufgaben statt im Kalender | — |
+| A5 | Latenz-Baseline messen — `solaris-chat/scripts/bench_models.py` misst TTFT, Wall, Prefill/Decode und Tool-Genauigkeit mit engine-förmigem Prompt bereits. Restumfang: die zehn Befehle festlegen, auf der Box laufen lassen, Werte festhalten. **Kein Torwächter** — der Rückbau findet ohnehin statt, A5 läuft daneben | Referenzwert, soweit er rechtzeitig vorliegt | — |
 | A6 | G-1 umsetzen: Zahlen-/Datums-Nachprüfer im Antwortpfad | Keine halluzinierten Beträge mehr | — |
 | A7 | Sichtbarkeitsklasse als Pflichtfeld an allen Lese-Tools — das `Tool`-Dataclass (`engine/tools/__init__.py`) hat heute nur `name`/`description`/`parameters`/`handler`, das Feld ist also echt neu; die `uid`-Scoping-Mechanik und `notes_search.is_visible` (default-deny) sind der Präzedenzfall, an dem es sich orientiert | Grundlage für ZA-12 | — |
 | A8 | ServiceBay-Doku korrigieren: Musik ist Jellyfin, nicht Navidrome | Doku stimmt wieder | — |
