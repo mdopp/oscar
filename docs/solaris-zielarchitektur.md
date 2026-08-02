@@ -12,7 +12,14 @@
 Dieses Dokument beschreibt die Zielarchitektur des Haushaltssystems und legt fest, welche
 Fähigkeiten selbst gebaut, welche zugekauft und welche gelöscht werden. Es ist die
 Referenz für alle folgenden Entwicklungsschritte; Abweichungen davon gehören als neue
-ADR hier hinein und nicht in den Code.
+Entscheidung hier hinein und nicht in den Code.
+
+**Zwei Nummernkreise, nicht verwechseln.** Die Entscheidungen dieses Dokuments heißen
+**`ZA-01` … `ZA-18`** (Zielarchitektur). Die bestehenden, weiter gültigen ADRs des
+Repos heißen **`ADR 0001` … `ADR 0011`** und liegen einzeln in
+[`docs/adr/`](adr/README.md). Sie beschreiben unterschiedliche Ebenen: ADR = wie das
+Substrat und die Oberfläche gebaut sind, ZA = wo welche Last läuft und wer sie sieht.
+Wo beide dasselbe berühren, steht das Verhältnis in Abschnitt 11.1.
 
 Die zentrale Leitfrage lautet nicht „Solaris oder Hermes", sondern: **Welche Anfrage hat
 welches Zeitbudget, und wer darf sie sehen?**
@@ -24,18 +31,19 @@ welches Zeitbudget, und wer darf sie sehen?**
 | Randbedingung | Wert | Konsequenz |
 | :--- | :--- | :--- |
 | GPU | RTX 2000 Ada, 16,4 GB VRAM | Eine GPU serialisiert — jede zweite Last gefährdet die Sprachlatenz |
-| Lokales Sprachmodell | `gemma4:e4b` (einziges) | Kein zweites lokales Modell; `gemma4:12b` entfällt ersatzlos |
+| Lokales Dialogmodell | `gemma4:e4b` (einziges) | Kein zweites Modell im Sprach- oder Chatpfad |
+| Lokales Batchmodell | `gemma4:12b` (Vision) | Nur Crons/Dokumente, nie im Dialogpfad — siehe ZA-03 |
 | Sprachlatenz | ≤ 1,3 s ab Sprachende | Harte Grenze, kein Verhandlungsspielraum |
 | Restliche GPU-Last | Whisper · Kokoro-TTS · `nomic-embed-text` | Bleiben resident |
-| Anwärter auf freien VRAM | Immich ML · Wakeword-Trainer · ggf. OCR | Freiraum ist verplant, nicht Reserve |
+| Anwärter auf freien VRAM | Immich ML · Wakeword-Trainer (läuft bereits) | Freiraum ist verplant, nicht Reserve |
 | Identität | LLDAP + Authelia | Vorhanden für UI-Kanäle, nicht für Sprache |
 | Betrieb | ServiceBay auf Fedora CoreOS, Podman Quadlet | Alles Neue ist ein Template |
 | Musik | Jellyfin (nicht Navidrome) | ServiceBay-Doku ist an dieser Stelle veraltet |
 | Kalender & Listen | Radicale (CalDAV + VTODO) | Beides über eine Instanz, keine zweite Ablage |
-| Dokumente | Paperless-ngx — **noch nicht deployed** | Neues Template, Voraussetzung für Spalte F |
+| Dokumente | Paperless-ngx — **deployed und in Betrieb** (`paperless.dopp.cloud`) | Template liegt in `solarisbay/templates/paperless/`; Ingest-Adapter live (ADR 0008) |
 | Nutzerzahl | V1 einbenutzerfähig, mehrere ab V2 | Trennung wird vorbereitet, nicht gebaut |
 | Reifegrad | Testsystem. Im Alltag genutzt: HA-Steuerung über die Android-Widgets, Musik über Jellyfin + Symfonium. | Kein Rückbau-Risiko außerhalb dieser beiden Pfade |
-| Datensouveränität | EU oder eigene Hardware. Keine US- und keine chinesischen Anbieter. | Bestimmt die Modellwahl (ADR-17, ADR-18) |
+| Datensouveränität | EU oder eigene Hardware. Keine US- und keine chinesischen Anbieter. | Bestimmt die Modellwahl (ZA-17, ZA-18) |
 
 ### Versionsbänder
 
@@ -69,7 +77,11 @@ Diese fünf Sätze entscheiden im Zweifel jede Detailfrage.
 
 1. **Zeitbudget bestimmt den Ort.** Alles unter 1,3 s läuft lokal in der Solaris Engine.
    Alles darüber ist ein Auftrag, kein Dialogturn.
-2. **Die GPU gehört der Sprache.** Kein anderer Prozess belegt sie synchron.
+2. **Die GPU gehört der Sprache.** Kein anderer Prozess belegt sie synchron. Der
+   Batch-Vision-Pfad (ZA-03) ist die einzige Ausnahme und nur deshalb erlaubt, weil er
+   asynchron in Crons läuft; er kostet beim Verdrängen von `e4b` einen Reload von
+   ~6,8 s auf dem ersten Turn danach — das ist der bewusst akzeptierte Preis und
+   gehört in ein Wartungsfenster, nicht in den Abend.
 3. **Harte Fakten werden nicht generiert, sondern eingesetzt.** Ein 4B-Modell wählt aus,
    es formuliert keine Zahlen und keine Daten.
 4. **Ein Datum, ein Besitzer.** Jede Information hat genau ein System, das sie schreibt.
@@ -97,7 +109,7 @@ flowchart TD
 
     subgraph SCHNELL ["ZONE 1 · Schnellpfad — Solaris Engine (lokal, ≤1,3 s)"]
         ENGINE["Solaris Engine<br/>gemma4:e4b · think=false"]
-        ENGINE --> TOOLS["Kern-Tools<br/>• ha_call_service / ha_get_state<br/>• calendar_create (via HA)<br/>• todo_add / todo_list (via HA)<br/>• play_music / play_radio<br/>• timer_set / timer_cancel<br/>• notes_search (lesend)"]
+        ENGINE --> TOOLS["Kern-Tools<br/>• ha_call_service / ha_get_state<br/>• calendar_create<br/>• todo_add / todo_list<br/>• play_music / play_radio<br/>• timer_set / timer_cancel<br/>• notes_search (lesend)"]
         TOOLS --> GATE{"Treffer?"}
     end
 
@@ -115,13 +127,14 @@ flowchart TD
     QUEUE -->|Rückkanal| RUECK["announce am Speaker<br/>+ Push (solaris-android)<br/>+ /p/auftraege"]
 
     subgraph SPEICHER ["ZONE 3 · Speicher"]
-        VAULT[("Obsidian-Vault<br/>Syncthing")]
-        DB[("solaris.db<br/>FTS5 + Vektoren")]
+        VAULT[("Obsidian-Vault · Syncthing<br/>nur Selbst-Entstandenes")]
+        DB[("solaris.db<br/>OKF · FTS5 + Vektoren")]
         PFL[("Paperless-ngx")]
         OBL[("Verpflichtungen<br/>typisiert")]
     end
 
     VAULT -->|Indexer| DB
+    EXT["Jellyfin · Immich<br/>Radicale · Paperless"] -->|Ingest, ADR 0002| DB
     DB --> TOOLS
     OBL --> CAL["CalDAV-Termin + VTODO"]
 ```
@@ -134,15 +147,38 @@ Die Solaris Engine bleibt unverändert das, was sie ist: ein schlanker Ein-Pass-
 injizierter HA-Registry, ~2,1k Prompt, `think=false`. Sie beantwortet alles, was eine
 feste Antwortform hat.
 
-**Bestand:** Haussteuerung mit Confirmation Gates · Musik & Radio über Jellyfin ·
-Timer/Wecker mit Speaker-Rückmeldung · lesende Vault-Suche · Chat-UI · Startseite,
-Energie, Notizen, Konzeptseiten · Android-Widgets.
+**Bestand — Dialog:** Haussteuerung mit Confirmation Gates · Musik & Radio über
+Jellyfin · Timer/Wecker mit Speaker-Rückmeldung · lesende Vault-Suche · Chat-UI ·
+Startseite, Energie, Notizen, Konzeptseiten · Android-Widgets.
 
-**Neu, ohne neue Konnektoren:** Kalendereinträge und Listen laufen über bereits
-vorhandene Home-Assistant-Dienste (`calendar.create_event`, `todo.add_item`,
-`todo.get_items`) und damit über das existierende `ha_call_service`. Es entstehen keine
-zweiten Credentials und keine zweite CalDAV-Implementierung. Voraussetzung ist, dass
-Radicale als Kalender- und VTODO-Integration in HA eingebunden ist.
+**Bestand — Substrat und Oberflächen, die dieses Dokument nicht umbaut.** Sie sind
+hier vollständig genannt, damit die Auslassung nicht als Rückbau-Ansage gelesen wird:
+
+- **OKF-Substrat** — Entities, quellen-getaggte Fakten, Events, Konzepte, Vektoren in
+  `solaris.db` (ADR 0002 bis ADR 0005). Es ist der Speicher, nicht der Vault.
+- **Personen und Anbieter** — eine `person`-Entity je Mensch über alle Oberflächen
+  (ADR 0010, Epic #999). Läuft unabhängig von diesem Dokument weiter.
+- **Dokumente** — Paperless als Tresor, Solaris als Projektion (ADR 0008, Epic #934);
+  das Dokumente-Portal ist lesend, Korrektur passiert in Paperless.
+- **Import** — `Importer`-Protokoll mit Quellen als Plugins (ADR 0006): Google
+  Takeout, YouTube-Music-Wunschliste, Posteingang. Der Standalone-Dienst
+  `solaris-import-google` läuft noch und wird am Ende retired.
+- **Composer-Oberflächen** — `/`-Control und `.tool` mit dem Erfassen-und-Finden-Muster
+  (ADR 0009), Karten-SSOT und `.tool`-Plugins (ADR 0011).
+- **CalDAV/CardDAV-Client** — `engine/ingest/dav_client.py`, `caldav.py`,
+  `document_deadlines_sync.py`, `document_contacts_sync.py`. **Solaris hat bereits
+  eine CalDAV-Implementierung**; das ist für ZA-09 und für A2/A4 wesentlich, siehe
+  offener Punkt 4.
+
+**Neu — Kalender und Listen, Weg noch offen.** Der Entwurf sah vor, Kalendereinträge
+und Listen über die vorhandenen Home-Assistant-Dienste (`calendar.create_event`,
+`todo.add_item`, `todo.get_items`) und damit über `ha_call_service` zu schreiben, mit
+der Begründung „keine zweite CalDAV-Implementierung". Diese Begründung trägt nicht:
+Solaris **hat** bereits einen CalDAV/CardDAV-Client, und der Weg über HA wäre der
+zweite. Beide Wege sind vertretbar, aber sie sind gegeneinander abzuwägen statt
+vorausgesetzt — **offener Punkt 4**. A2 und A4 sind bis zu dieser Entscheidung
+funktional, nicht technisch spezifiziert. In beiden Fällen gilt: keine zweiten
+Credentials, und der Zustand muss in jeder CalDAV-App auf dem Handy sichtbar sein.
 
 **Was den Schnellpfad verlässt:** der 6-Pass-Loop `solaris-deep`, eigene Websuche und
 Scraper, die Wissens-Crons (Stenograph, Bibliothekar). Der **Timer- und
@@ -202,7 +238,7 @@ gleichzeitig ein UX- und ein Kostenproblem.
 
 ### 6.3 Hermes-Betrieb
 
-- **Eigenes Modell außerhalb der Voice-GPU.** Siehe ADR-02 und 6.4.
+- **Eigenes Modell außerhalb der Voice-GPU.** Siehe ZA-02 und 6.4.
 - **Ein Container pro Haushaltsmitglied** mit eigenen API-Keys für Paperless und Immich.
   Die Datentrennung übernehmen die Backends, nicht eigener Filtercode.
 - **Toolsets eng geschnitten.** Der Prefill besteht überwiegend aus Tool-Schemas.
@@ -212,7 +248,7 @@ gleichzeitig ein UX- und ein Kostenproblem.
 
 ### 6.4 Das Modell für Zone 2
 
-Die Anforderung ist Souveränität, nicht Kosten (ADR-17): keine US-amerikanischen und
+Die Anforderung ist Souveränität, nicht Kosten (ZA-17): keine US-amerikanischen und
 keine chinesischen Anbieter im Zielsystem. Damit bleibt **Mistral** als praktisch
 einzige Modellfamilie — was kein Trostpreis ist.
 
@@ -243,7 +279,7 @@ eine Veröffentlichung nicht. Devstral Small 2 und Large 3 sind Apache 2.0.
 
 Eine 128-GB-Box kostet weniger als eine einzelne 48-GB-Profikarte, liegt im Leerlauf bei
 10–30 W statt 60–100 W und steht **physisch neben** dem Sprachserver statt darin — damit
-gilt ADR-02 ohne Verrenkung.
+gilt ZA-02 ohne Verrenkung.
 
 #### Der Weg dorthin
 
@@ -261,22 +297,30 @@ Konfigurationsänderung bleibt.
 
 ## 7. Zone 3 — Speicher und Besitzverhältnisse
 
-Vier Klassen, vier Besitzer. Das ist die wichtigste Tabelle des Dokuments.
+Fünf Klassen, fünf Besitzer. Das ist die wichtigste Tabelle des Dokuments.
 
 | Klasse | Beispiel | Besitzer (schreibt) | Leser | Eigenschaft |
 | :--- | :--- | :--- | :--- | :--- |
 | **Weiches Gedächtnis** | Präferenzen, „wen habe ich getroffen" | Hermes (Memory-Loop, Curator) | Solaris via Index | darf verblassen, Fehler billig |
-| **Dokumente** | Rechnungen, Policen, Scans | Paperless-ngx | Hermes via MCP | OCR, Tags, Volltext |
+| **Dokumente** | Rechnungen, Policen, Scans | Paperless-ngx | Hermes via MCP, Solaris via Projektion | OCR, Tags, Volltext |
 | **Verpflichtungen** | Fristen, Beiträge, Laufzeiten | Mensch (bestätigt) | Solaris, Cron | typisiert, validiert, langlebig |
 | **Notizen** | manuell Geschriebenes | Mensch (Obsidian) | alle | frei |
+| **Extern Bezogenes** | Musik, Fotos, Kalender, Kontakte | das Fremdsystem (Jellyfin, Immich, Radicale, Paperless) | Solaris via OKF-Projektion | **kein** Markdown, neu-ingestierbar |
+
+Die letzte Zeile ist nicht neu, sondern **ADR 0002**: Provenienz entscheidet über das
+Substrat. Sie steht hier, weil ein früherer Entwurf dieses Dokuments den Vault als
+*den* Speicher beschrieb. Das stimmt nur für selbst Entstandenes. Alles extern
+Bezogene lebt ausschließlich als Projektion in `solaris.db` — genau deshalb ist der
+Vault klein und nicht das Zentrum.
 
 ```mermaid
 flowchart LR
     H["Hermes"] -->|schreibt| HW[("Hermes-Workdir<br/>lokal, kein Sync")]
-    HW -->|Export-Cron<br/>read-only Spiegel| V[("Obsidian-Vault<br/>Syncthing")]
+    HW -->|Export-Cron<br/>read-only Spiegel| V[("Obsidian-Vault<br/>Syncthing<br/>nur Selbst-Entstandenes")]
     M["👤 Mensch (Obsidian)"] -->|schreibt| VN["/vault/notizen/"]
     VN --> V
-    V -->|Indexer FTS5 + nomic| DB[("solaris.db")]
+    V -->|Indexer FTS5 + nomic| DB[("solaris.db<br/>OKF-Projektion")]
+    EXT["Jellyfin · Immich<br/>Radicale · Paperless"] -->|Ingest, ADR 0002| DB
     DB --> S["Solaris Engine<br/>notes_search"]
     M -.->|Korrektur über definierten Kanal| H
 ```
@@ -323,11 +367,13 @@ Am Speaker antwortet die vertrauliche Klasse mit einem Verweis, nicht mit Inhalt
 
 **Die Modellauswahl ist keine Konfiguration mehr, sondern eine Eigenschaft der Zone.**
 
-Zone 1 hat genau ein Modell: `gemma4:e4b`, `think=false`. Eine Auswahlmöglichkeit wäre
-nur eine Möglichkeit, die Latenzgarantie zu verletzen. Der Wert steht in ADR-01 und
-ADR-03, nicht in einer Einstellung. Damit entfällt auch der Per-Turn-Schalter `think`:
+Zone 1 hat genau ein Dialogmodell: `gemma4:e4b`, `think=false`. Eine Auswahlmöglichkeit
+wäre nur eine Möglichkeit, die Latenzgarantie zu verletzen. Der Wert steht in ZA-01 und
+ZA-03, nicht in einer Einstellung. Das Batch-Vision-Modell (`gemma4:12b`, ZA-03) ist
+davon unberührt — es ist ein Betriebsparameter des Ingest-Pfads, keine Dialogauswahl,
+und taucht in keiner Nutzer-Einstellung auf. Damit entfällt auch der Per-Turn-Schalter `think`:
 sein Zweck war das Umschalten zwischen schnell und gründlich, und diese Entscheidung ist
-jetzt die Eskalation — deterministisch nach ADR-10, nicht konfigurierbar.
+jetzt die Eskalation — deterministisch nach ZA-10, nicht konfigurierbar.
 
 Zone 2 wählt Hermes über seine eigene Provider- und Modellkonfiguration. Die wird
 **nicht** in Solaris gespiegelt; zwei Wahrheiten über dasselbe sind schlimmer als eine
@@ -438,28 +484,70 @@ Schema-Umbau mit Datenmigration. Siehe G-9.
 
 ---
 
-## 11. Architekturentscheidungen (ADR)
+## 11. Architekturentscheidungen (ZA)
 
 | ID | Entscheidung | Begründung |
 | :--- | :--- | :--- |
-| **ADR-01** | Die Solaris Engine behält das Ollama-Facade für HA Assist. | Garantiert ≤1,3 s am Voice PE. |
-| **ADR-02** | **Hermes erhält keinen Zugriff auf die Voice-GPU** und läuft auf getrennter Rechenkapazität — EU-gehostet in der Erprobung, eigene Hardware im Zielzustand. | Eine GPU serialisiert. Ein Hermes-Turn würde jeden Sprachbefehl dahinter einreihen — genau die 3–6 s, wegen derer Hermes im Juni entfernt wurde, nur diesmal sporadisch und damit schlimmer. |
-| **ADR-03** | `gemma4:e4b` ist das einzige lokale Sprachmodell. `gemma4:12b` entfällt. | 16,4 GB VRAM; freier Speicher ist für Immich-ML und Wakeword-Training verplant. Folge: der Chat-Modus „Solaris Gründlich" wird durch die Auftragsschicht ersetzt. |
-| **ADR-04** | Der eigene Agenten-Loop (`solaris-deep`), Websuche und Scraper werden gelöscht. | Redundanz zu Hermes; tausende Zeilen eigener Agentencode entfallen. |
-| **ADR-05** | Weiches Gedächtnis zieht zu Hermes (Memory-Loop + Curator). Stenograph und Bibliothekar werden abgeschaltet. | Gepflegtes Ökosystem statt Eigenbau; identisches Problem, fremde Wartung. |
-| **ADR-06** | **Hermes' Arbeitsverzeichnis liegt außerhalb des Syncthing-Vaults; ein Export-Cron spiegelt read-only.** | Autonomes Pruning + eventual consistency + parallele Handy-Edits = stiller Datenverlust. |
-| **ADR-07** | Verpflichtungen sind eine typisierte Tabelle mit menschlicher Bestätigung; Ausspielung über CalDAV/VTODO. | Fristen sind Domänenlogik, keine Agentenaufgabe. Hermes' Cron erinnert, entscheidet aber nicht. |
-| **ADR-08** | Paperless-ngx ist der Dokumententresor. Kein Eigenbau für OCR, Tagging, Ablage. | Fertig, ausgereift, ServiceBay-Template. |
-| **ADR-09** | Keine neuen Konnektoren in Solaris. Drittsysteme hängen als MCP an Hermes; Kalender- und Listenschreiben laufen über Home Assistant. | Keine zweiten Credentials, keine zweite CalDAV-Implementierung. |
-| **ADR-10** | Eskalation ist deterministisch (Fast-Loop zuerst, Fehlschlag eskaliert) plus explizite Phrase. | Ein Vorab-Klassifikator kostet Latenz und irrt beidseitig. |
-| **ADR-11** | Ergebnisse aus Zone 2 kommen asynchron über `announce` und Push zurück, nie als blockierender Call. | Ein Hermes-Turn ist zweistellig in Sekunden; am Speaker wäre das Stille. |
-| **ADR-12** | Sprechererkennung ist Kontext, nicht Autorisierung. Vertrauliches nie über Sprache. | Fernfeld-Erkennung ist täuschbar; Fehlerfall ist ein Datenleck in der Familie. |
-| **ADR-13** | Der harte Kostendeckel liegt beim Provider, nicht im Agenten. | Selbstbegrenzung versagt im Fehlerfall. |
-| **ADR-14** | `solaris-chat` bleibt die einzige Haushaltsoberfläche. | Eine PWA, ein SSO, ein Ort. |
-| **ADR-15** | **Die Modellwahl ist Zonen-Eigenschaft, keine Konfiguration.** Zone 1 hat genau ein Modell ohne Auswahl; der Per-Turn-Schalter `think` entfällt. Hermes' Modellkonfiguration wird nicht in Solaris gespiegelt. | Eine Auswahl in Zone 1 wäre nur ein Weg, die Latenzgarantie zu brechen. Zwei Wahrheiten über dieselbe Einstellung sind schlimmer als eine unbequeme. |
-| **ADR-16** | **Konfiguration wird nach Blast Radius aufgeteilt.** Verhalten (Benachrichtigung, Ton, Sichtbarkeit, Aufträge, Erinnerungen) in `solaris-chat`; Betrieb (Provider, Budget, Toolsets, MCP, Skills, Bridges) nur über ServiceBay/CLI. | Kein Haushaltsmitglied braucht die Hermes-CLI, um seinen Assistenten zu benutzen (ADR-14). Umgekehrt darf niemand versehentlich Prefill und Kosten verschieben. |
-| **ADR-17** | **Datensouveränität: EU oder eigene Hardware.** Keine US-amerikanischen und keine chinesischen Anbieter im Zielsystem — weder für Inferenz noch für Speicher. | Die rechtliche Lage außerhalb der EU ist zu fragil; Rechte an den eigenen Daten werden dort bereits heute unzureichend geschützt. Das ist keine Kostenfrage und wird nicht gegen Kosten abgewogen. |
-| **ADR-18** | **Zone 2 fährt Mistral.** Zielmodell `Mistral Small 4` (119B MoE, ~6B aktiv) auf einer eigenen 128-GB-Unified-Memory-Box; EU-gehostete API während der Erprobung. Kaufzeitpunkt nach Messung des Auftragsvolumens. | Aus ADR-17 folgt Mistral als praktisch einzige Familie. Die MoE-Bauform passt zum Keller: Kapazität ist billig, Bandbreite teuer, und asynchrone Aufträge haben kein Latenzbudget. |
+| **ZA-01** | Die Solaris Engine behält das Ollama-Facade für HA Assist. | Garantiert ≤1,3 s am Voice PE. |
+| **ZA-02** | **Hermes erhält keinen Zugriff auf die Voice-GPU** und läuft auf getrennter Rechenkapazität — EU-gehostet in der Erprobung, eigene Hardware im Zielzustand. | Eine GPU serialisiert. Ein Hermes-Turn würde jeden Sprachbefehl dahinter einreihen — genau die 3–6 s, wegen derer Hermes im Juni entfernt wurde, nur diesmal sporadisch und damit schlimmer. |
+| **ZA-03** | **`gemma4:e4b` ist das einzige Modell im Dialogpfad** — Sprache und Chat. `gemma4:12b` verlässt den Dialogpfad, **bleibt aber als Batch-Vision-Modell** für die Dokumenten-Extraktion. Es wird bedarfsweise geladen, nie resident gehalten und läuft ausschließlich in Crons/Ingest, nie in einem Turn. | 16,4 GB VRAM; freier Speicher ist für Immich-ML und Wakeword-Training verplant. Folge: der Chat-Modus „Solaris Gründlich" wird durch die Auftragsschicht ersetzt. Der Vision-Pfad bleibt, weil Paperless' eigenes Tesseract gedrehte deutsche Scans zu Müll macht (auf der Box belegt, PoC #929) — ohne 12b hätte Spalte F keine Textquelle. |
+| **ZA-04** | Der eigene Agenten-Loop (`solaris-deep`), Websuche und Scraper werden gelöscht. | Redundanz zu Hermes; tausende Zeilen eigener Agentencode entfallen. |
+| **ZA-05** | Weiches Gedächtnis zieht zu Hermes (Memory-Loop + Curator). Stenograph und Bibliothekar werden abgeschaltet. | Gepflegtes Ökosystem statt Eigenbau; identisches Problem, fremde Wartung. |
+| **ZA-06** | **Hermes' Arbeitsverzeichnis liegt außerhalb des Syncthing-Vaults; ein Export-Cron spiegelt read-only.** | Autonomes Pruning + eventual consistency + parallele Handy-Edits = stiller Datenverlust. |
+| **ZA-07** | Verpflichtungen sind eine typisierte Tabelle mit menschlicher Bestätigung; Ausspielung über CalDAV/VTODO. | Fristen sind Domänenlogik, keine Agentenaufgabe. Hermes' Cron erinnert, entscheidet aber nicht. |
+| **ZA-08** | Paperless-ngx ist der Dokumententresor. Kein Eigenbau für OCR, Tagging, Ablage. | Fertig, ausgereift, ServiceBay-Template. **Deckungsgleich mit ADR 0008**, dort bereits umgesetzt — ZA-08 bestätigt, es entscheidet nichts Neues. |
+| **ZA-09** | **Keine neuen** Drittsystem-Konnektoren in Solaris; neue Drittsysteme hängen als MCP an Hermes. Bestehende Konnektoren (CalDAV/CardDAV-Ingest, Jellyfin, Immich, Paperless) bleiben. Über welchen der beiden vorhandenen Wege Kalender und Listen **geschrieben** werden, entscheidet offener Punkt 4. | Keine zweiten Credentials. Der ursprüngliche Zusatz „keine zweite CalDAV-Implementierung" war eine Fehlannahme — Solaris hat schon eine; der HA-Weg wäre die zweite, nicht die erste. |
+| **ZA-10** | Eskalation ist deterministisch (Fast-Loop zuerst, Fehlschlag eskaliert) plus explizite Phrase. | Ein Vorab-Klassifikator kostet Latenz und irrt beidseitig. |
+| **ZA-11** | Ergebnisse aus Zone 2 kommen asynchron über `announce` und Push zurück, nie als blockierender Call. | Ein Hermes-Turn ist zweistellig in Sekunden; am Speaker wäre das Stille. |
+| **ZA-12** | Sprechererkennung ist Kontext, nicht Autorisierung. Vertrauliches nie über Sprache. | Fernfeld-Erkennung ist täuschbar; Fehlerfall ist ein Datenleck in der Familie. |
+| **ZA-13** | Der harte Kostendeckel liegt beim Provider, nicht im Agenten. | Selbstbegrenzung versagt im Fehlerfall. |
+| **ZA-14** | `solaris-chat` bleibt die einzige Haushaltsoberfläche. | Eine PWA, ein SSO, ein Ort. |
+| **ZA-15** | **Die Modellwahl ist Zonen-Eigenschaft, keine Konfiguration.** Zone 1 hat genau ein Modell ohne Auswahl; der Per-Turn-Schalter `think` entfällt. Hermes' Modellkonfiguration wird nicht in Solaris gespiegelt. | Eine Auswahl in Zone 1 wäre nur ein Weg, die Latenzgarantie zu brechen. Zwei Wahrheiten über dieselbe Einstellung sind schlimmer als eine unbequeme. |
+| **ZA-16** | **Konfiguration wird nach Blast Radius aufgeteilt.** Verhalten (Benachrichtigung, Ton, Sichtbarkeit, Aufträge, Erinnerungen) in `solaris-chat`; Betrieb (Provider, Budget, Toolsets, MCP, Skills, Bridges) nur über ServiceBay/CLI. | Kein Haushaltsmitglied braucht die Hermes-CLI, um seinen Assistenten zu benutzen (ZA-14). Umgekehrt darf niemand versehentlich Prefill und Kosten verschieben. |
+| **ZA-17** | **Datensouveränität: EU oder eigene Hardware.** Keine US-amerikanischen und keine chinesischen Anbieter im Zielsystem — weder für Inferenz noch für Speicher. | Die rechtliche Lage außerhalb der EU ist zu fragil; Rechte an den eigenen Daten werden dort bereits heute unzureichend geschützt. Das ist keine Kostenfrage und wird nicht gegen Kosten abgewogen. |
+| **ZA-18** | **Zone 2 fährt Mistral.** Zielmodell `Mistral Small 4` (119B MoE, ~6B aktiv) auf einer eigenen 128-GB-Unified-Memory-Box; EU-gehostete API während der Erprobung. Kaufzeitpunkt nach Messung des Auftragsvolumens. | Aus ZA-17 folgt Mistral als praktisch einzige Familie. Die MoE-Bauform passt zum Keller: Kapazität ist billig, Bandbreite teuer, und asynchrone Aufträge haben kein Latenzbudget. |
+
+---
+
+### 11.1 Verhältnis zu den bestehenden ADRs
+
+Die ADRs in [`docs/adr/`](adr/README.md) bleiben in Kraft. Sie beschreiben eine andere
+Ebene als dieses Dokument: **ADR = wie das Substrat und die Oberfläche gebaut sind,
+ZA = wo welche Last läuft und wer sie sehen darf.** Wo beide dieselbe Sache berühren,
+gilt Folgendes.
+
+**Deckungsgleich — hier entscheidet ZA nichts Neues:**
+
+| ADR | ZA | Verhältnis |
+| :--- | :--- | :--- |
+| ADR 0008 · Dokumente in Paperless | ZA-08 | identisch, ADR ist die ältere und detailliertere Fassung |
+| ADR 0007 · keine neue Oberfläche | ZA-14 | identisch, eine PWA, ein SSO |
+| ADR 0002 · Provenienz entscheidet das Substrat | Abschnitt 7 | ZA übernimmt ADR 0002, es ersetzt es nicht |
+
+**Nachgeführt — ZA hat sich der Realität angepasst, nicht umgekehrt:**
+
+- **ZA-03 vs. ADR 0008.** Der erste Entwurf strich `gemma4:12b` ersatzlos. Der
+  12b-Vision-Extraktor ist aber die Textquelle für Paperless (Rescope in #934, PoC
+  #929): Paperless' eigenes Tesseract garbled gedrehte deutsche Scans. ZA-03 trennt
+  daher Dialog- und Batchpfad, statt das Modell zu löschen. ADR 0008 sagte das
+  Gegenteil („retire the in-Solaris extractor") und war damit veraltet — nachgezogen
+  in **[ADR 0012](adr/0012-paperless-stores-solaris-extracts.md)**, das diese Klausel
+  ablöst.
+- **ZA-09 vs. ADR 0006.** ADR 0006 lässt Import-Plugins direkt nach Radicale schreiben
+  (CalDAV/CardDAV PUT). Das ist ein bestehender Konnektor und bleibt. ZA-09 verbietet
+  nur **neue**.
+
+**Offene Konflikte — Entscheidung nötig, bevor die jeweilige Spalte gezogen wird:**
+
+| Konflikt | Betrifft | Worum es geht |
+| :--- | :--- | :--- |
+| **ZA-05 vs. ADR 0003** | Spalte D/E | ADR 0003 nennt den Stenograph als Quelle quellen-getaggter Fakten (`used_to_love`, `source = stenograph`). ZA-05 schaltet ihn ab. Entweder erzeugt Hermes' Memory-Loop diese Fakten künftig im selben Format, oder ADR 0003 verliert eine Quelle. Vor D3 zu klären. |
+| **C4 vs. ADR 0007** | Spalte C | C4 will `/p/auftraege` als „vierten Tab". ADR 0007 schließt eine sechste Rail-Position ausdrücklich aus. Aufträge müssen also auf vorhandene Primitive (Posteingang, Action-Cards, Abschnitt der Notizen-Seite) statt auf eine neue Navigationsebene. |
+| **ZA-15 vs. ADR 0009** | Spalte E | ADR 0009 führt `/thinking` als Control-Kommando. Fällt der `think`-Schalter (ZA-15), fällt das Kommando mit — ADR 0009 ist dann in seiner Kommandoliste zu korrigieren. |
+| **Verpflichtungen vs. ADR 0003** | Spalte F | ZA-07 legt eine eigene typisierte Tabelle an. ADR 0003 sagt: eine Entity je realem Ding, quellen-getaggte Fakten. Vor F3 zu entscheiden, ob Verpflichtungen eine OKF-Entity mit Fakten sind oder eine bewusst ausgenommene Sondertabelle — und warum. |
+
+Diese vier sind **nicht** in diesem PR entschieden. Sie stehen hier, damit niemand sie
+beim Ziehen des Tickets neu entdeckt und still in eine Richtung auflöst.
 
 ---
 
@@ -515,17 +603,31 @@ beantwortet sein — siehe die Rückfragen im Begleittext.
    nicht V1.
 2. **Mistral-Zugang für die Erprobung:** eigene API (Paris) oder EU-Hoster offener
    Gewichte (IONOS, Scaleway, OVHcloud)? Plus Budgetgrenze. Blockiert B2.
-3. **Liegt der Vault heute bereits auf Syncthing, und schreibt der Stenograph dorthin?**
-   Falls ja, ist ADR-06 kein Vorsorgepunkt, sondern ein bestehendes Risiko und wandert
-   in Spalte A.
+3. **Schreibt der Stenograph in den Syncthing-Vault?** Syncthing läuft (`file-share`,
+   `sync.dopp.cloud`) — das ist geklärt. Offen bleibt nur, ob der Stenograph dorthin
+   schreibt oder in die OKF-Projektion; nach ADR 0003 schreibt er Fakten an Entities,
+   also in die Datenbank. Falls sich das bestätigt, ist ZA-06 reine Vorsorge für
+   Hermes und kein bestehendes Risiko.
+4. **Welchen Weg nehmen Kalender- und Listen-Schreibzugriffe?** Über
+   `ha_call_service` (HA als Vermittler, Radicale muss dort als Integration hängen)
+   oder über den bereits vorhandenen `dav_client` (direkt nach Radicale, kein
+   HA-Umweg, aber Solaris trägt die Logik selbst). Der ursprüngliche Text setzte HA
+   voraus mit einer Begründung, die nicht trägt. **Blockiert A2 und A4 technisch**,
+   nicht funktional — und A1 ist nur dann Voraussetzung, wenn der HA-Weg gewinnt.
 
 ### Geklärt
 
-- Radicale kann Kalender und Todo — beides läuft über eine Instanz.
+- Radicale kann Kalender und Todo — beides läuft über eine Instanz, sie läuft
+  (`caldav.dopp.cloud`).
 - Musik ist Jellyfin; die ServiceBay-Doku (Navidrome) ist veraltet.
-- Paperless-ngx ist noch nicht deployed und wird ein neues Template.
+- **Paperless-ngx ist deployed und in Betrieb**, das Template liegt in
+  `solarisbay/templates/paperless/`, SSO über Authelia und der Ingest-Adapter laufen
+  (#929–#931, #1042–#1052 alle geschlossen). F1 schrumpft entsprechend.
+- Der Vault ist **nicht** das Substrat — extern Bezogenes lebt als OKF-Projektion
+  (ADR 0002). Siehe Abschnitt 7.
 - Mehrbenutzer ist V2. V1 bereitet nur vor (G-9).
-- Modellfamilie und Hardware-Ziel stehen fest (ADR-17, ADR-18).
+- Modellfamilie und Hardware-Ziel stehen fest (ZA-17, ZA-18).
+- `gemma4:12b` bleibt als Batch-Vision-Modell erhalten (ZA-03).
 
 ---
 
@@ -545,21 +647,21 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| A01 | `solaris-deep` (6-Pass-Loop) entfernen | ADR-04 | — |
-| A02 | `web_search` / `web_extract` entfernen | ADR-04 | — |
+| A01 | `solaris-deep` (6-Pass-Loop) entfernen | ZA-04 | — |
+| A02 | `web_search` / `web_extract` entfernen | ZA-04 | — |
 | A03 | Toter Code aus dem Prompt entfernen, Prefill neu messen | Kleinerer Prompt, schnellere Antwort | A05 |
 
 ### Spalte A · Alltagstauglichkeit — V1
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| A1 | Radicale-Kalender **und** -Todo-Listen als HA-Entitäten einbinden/verifizieren | `calendar.*` und `todo.*` in HA sichtbar | — |
-| A2 | `calendar_create` als Kern-Tool über `ha_call_service` | „Trag Donnerstag 15 Uhr Zahnarzt ein" funktioniert | A1 |
+| A1 | Radicale-Kalender **und** -Todo-Listen als HA-Entitäten einbinden/verifizieren | `calendar.*` und `todo.*` in HA sichtbar | — · nur nötig, wenn offener Punkt 4 auf den HA-Weg fällt |
+| A2 | `calendar_create` als Kern-Tool — Weg nach offenem Punkt 4 | „Trag Donnerstag 15 Uhr Zahnarzt ein" funktioniert | Offener Punkt 4, dann ggf. A1 |
 | A3 | Datums- und Zeit-Parsing im Prompt (relative Angaben) | „übermorgen", „nächsten Dienstag" | A2 |
-| A4 | `todo_add` / `todo_list` als Kern-Tool | Einkaufsliste per Sprache, sichtbar in jeder CalDAV-App | A1 |
+| A4 | `todo_add` / `todo_list` als Kern-Tool — Weg nach offenem Punkt 4 | Einkaufsliste per Sprache, sichtbar in jeder CalDAV-App | Offener Punkt 4, dann ggf. A1 |
 | A5 | Latenz-Baseline messen (p50/p95, zehn häufigste Befehle) | Referenzwert vor allen Änderungen | — |
 | A6 | G-1 umsetzen: Zahlen-/Datums-Nachprüfer im Antwortpfad | Keine halluzinierten Beträge mehr | — |
-| A7 | Sichtbarkeitsklasse als Pflichtfeld an allen Lese-Tools | Grundlage für ADR-12 | — |
+| A7 | Sichtbarkeitsklasse als Pflichtfeld an allen Lese-Tools | Grundlage für ZA-12 | — |
 | A8 | ServiceBay-Doku korrigieren: Musik ist Jellyfin, nicht Navidrome | Doku stimmt wieder | — |
 | **A9** | **Abnahmewoche: eine Woche Alltagsnutzung** | Belastbare Liste, was der Schnellpfad nicht kann | A2–A6 |
 
@@ -570,26 +672,26 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| B1 | Mistral-Zugang wählen (eigene API oder EU-Hoster) + Budgetgrenze setzen | ADR-17, ADR-18 | — |
+| B1 | Mistral-Zugang wählen (eigene API oder EU-Hoster) + Budgetgrenze setzen | ZA-17, ZA-18 | — |
 | B2 | ServiceBay-Template `hermes` (ein Container, Mistral als Provider, Budget-Limit, **Profil-Parameter nach G-9**) | Hermes läuft, ohne Voice-GPU | B1 |
 | B3 | Toolset beschneiden, Prefill messen | Dokumentierter Wert | B2 |
 | B4 | ServiceBay-MCP mit `read`-Token anbinden | „Was ist kaputt?" beantwortbar | B2 |
 | B5 | Messaging-Gateway: Signal (+ Discord) | Haustür von unterwegs | B2 |
-| B6 | Hermes-Workdir außerhalb Syncthing, Export-Cron read-only | ADR-06 umgesetzt | B2 |
+| B6 | Hermes-Workdir außerhalb Syncthing, Export-Cron read-only | ZA-06 umgesetzt | B2 |
 | B7 | Wöchentlicher Markdown-Export als Backup-Job | Umzug reversibel | B6 |
 | B8 | Auftragsvolumen und -größe messen (Anzahl/Tag, Token/Auftrag, Kontextspitzen) | Kaufentscheidung wird Messung | C6 |
-| B9 | Eigene Inferenz-Box beschaffen und Hermes umziehen | ADR-18, Zielzustand | B8 |
+| B9 | Eigene Inferenz-Box beschaffen und Hermes umziehen | ZA-18, Zielzustand | B8 |
 
 ### Spalte C · Beobachtbarkeit (Voraussetzung für alles Weitere)
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
 | C1 | Auftrags-Queue in `solaris.db` (Schema aus 6.2, inkl. `requester` nach G-9) | Aufträge existieren als Objekt | B2 |
-| C2 | Deterministische Eskalation + Auslösephrase | ADR-10 | C1 |
-| C3 | Rückkanal: `announce` + Push + Statuswechsel | ADR-11 | C1 |
+| C2 | Deterministische Eskalation + Auslösephrase | ZA-10 | C1 |
+| C3 | Rückkanal: `announce` + Push + Statuswechsel | ZA-11 | C1 |
 | C4 | `/p/auftraege` als vierter Tab, live über Socket.IO | Sichtbarkeit | C1 |
 | C5 | Timeout mit Zustellung, Abbruch, Wiederholung | Keine Zombies | C1 |
-| C6 | Kosten pro Auftrag erfassen und anzeigen | ADR-13, zweiter Gürtel | C1 |
+| C6 | Kosten pro Auftrag erfassen und anzeigen | ZA-13, zweiter Gürtel | C1 |
 
 ### Spalte D · Wissens-Umzug — V1
 
@@ -597,7 +699,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | :--- | :--- | :--- | :--- |
 | D1 | Indexer auf den gespiegelten Vault (FTS5 + `nomic-embed-text`) | Solaris liest Hermes-Wissen | B6 |
 | D2 | Hermes-Memory-Loop aktivieren | Weiches Gedächtnis zieht um | B2, D1 |
-| D3 | Stenograph + Bibliothekar deaktivieren | ADR-05, Stufe 1 | D2 |
+| D3 | Stenograph + Bibliothekar deaktivieren | ZA-05, Stufe 1 | D2 |
 | D4 | Korrekturkanal Mensch → Hermes definieren | Erinnerungen korrigierbar | D1 |
 
 > Ein zweiwöchiger Parallelbetrieb zum Qualitätsvergleich entfällt: auf einem
@@ -608,22 +710,22 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| E1 | Wissens-Crons entfernen (**Timer-Scheduler bleibt!**) | ADR-05, Stufe 2 | D3 |
-| E2 | `gemma4:12b` aus dem VRAM-Plan streichen, UI-Modus „Gründlich" auf Auftrag umstellen | ADR-03 | C3 |
-| E3 | **Modellkonfiguration auf Betriebsparameter reduzieren** — Auswahllogik und `think`-Schalter entfernen, `post-deploy.py` bereinigen | ADR-15 | E2 |
-| E4 | **Konfigurationsgrenze umsetzen** — Benachrichtigungs-Routing und Korrekturkanal in `solaris-chat`, alles Weitere in ServiceBay/CLI | ADR-16 | C3, D4 |
-| E5 | Freien VRAM an Immich-ML / Wakeword-Trainer geben | Nutzen aus ADR-03 | E3 |
+| E1 | Wissens-Crons entfernen (**Timer-Scheduler bleibt!**) | ZA-05, Stufe 2 | D3 |
+| E2 | `gemma4:12b` aus dem **Dialog**pfad nehmen: UI-Modus „Gründlich" auf Auftrag umstellen, `OLLAMA_DEFAULT_MODEL` auf e4b, 12b nicht mehr resident (`keep_alive` kurz), Vision-Cron behalten | ZA-03 | C3 |
+| E3 | **Modellkonfiguration auf Betriebsparameter reduzieren** — Auswahllogik und `think`-Schalter entfernen, `post-deploy.py` bereinigen | ZA-15 | E2 |
+| E4 | **Konfigurationsgrenze umsetzen** — Benachrichtigungs-Routing und Korrekturkanal in `solaris-chat`, alles Weitere in ServiceBay/CLI | ZA-16 | C3, D4 |
+| E5 | Freien VRAM an Immich-ML / Wakeword-Trainer geben — mit der Einschränkung, dass der 12b-Vision-Cron ihn zeitweise zurückfordert | Nutzen aus ZA-03 | E3 |
 
 ### Spalte F · Dokumente & Fristen
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| F1 | Paperless-ngx als ServiceBay-Template (neu, inkl. SSO + Backup-Manifest) | Tresor steht | — |
+| F1 | **Restumfang:** Backup-Manifest für das vorhandene `templates/paperless/` (Template, SSO, Ingest-Adapter und Admin-Token stehen bereits) | Tresor ist gesichert, nicht nur vorhanden | — |
 | F2 | Paperless-MCP an Hermes | Dokumente lesbar | F1, B2 |
 | F3 | Verpflichtungs-Schema (typisiert) + `/p/vertraege` | Quelle der Wahrheit | — |
-| F4 | Extraktion als Vorschlag mit Bestätigungsschritt | ADR-07 | F2, F3 |
-| F5 | Ausspielung als CalDAV-Termin + VTODO mit Vorlauf | Erinnerung in jedem Client | F3, A1 |
-| F6 | Sprachantwort auf Verträge: Verweis statt Inhalt | ADR-12 | A7, F3 |
+| F4 | Extraktion als Vorschlag mit Bestätigungsschritt | ZA-07 | F2, F3 |
+| F5 | Ausspielung als CalDAV-Termin + VTODO mit Vorlauf — `document_deadlines_sync.py` macht das für Dokumentfristen bereits, hier nur auf das Verpflichtungs-Schema heben | Erinnerung in jedem Client | F3, offener Punkt 4 |
+| F6 | Sprachantwort auf Verträge: Verweis statt Inhalt | ZA-12 | A7, F3 |
 
 ### Spalte G · Härtung — V1
 
@@ -641,7 +743,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | H1 | Zweite Hermes-Instanz über den Profil-Parameter | Weg C | B2, G-9 |
 | H2 | Authelia-Header → Instanz-Routing | Trennung wirksam | H1 |
 | H3 | Eigene Paperless-/Immich-Keys pro Instanz | Backends isolieren nativ | H1, F1 |
-| H4 | Sprecher-ID setzt Kontext, nicht Rechte | ADR-12 | A7, offener Punkt 1 |
+| H4 | Sprecher-ID setzt Kontext, nicht Rechte | ZA-12 | A7, offener Punkt 1 |
 | H5 | Vault-Aufteilung `/household/` vs. `/users/<name>/` | Getrennt und gemeinsam | B6, H1 |
 
 ### Spalte I · Bewusst nicht
@@ -711,7 +813,7 @@ eintritt — nicht „weil es sauberer wäre".
 | E1–E3 Rückbau, VRAM | `solarisbay` | Templates und Engine |
 | E3 Modellkonfiguration | `solarisbay` | Engine-Config und `post-deploy.py` |
 | E4 Konfigurationsgrenze | `solarisbay` (+ Template) | UI in `solaris-chat`, Betriebswerte im Hermes-Template |
-| F1 Paperless-Template | `servicebay` | Haushaltsdienst wie Immich oder Vaultwarden |
+| F1 Paperless-Backup-Manifest | `solarisbay` | Das Template liegt hier (`templates/paperless/`), nicht in `servicebay` — es ist Teil des Assistenten-Stacks wie `ollama` |
 | F2 Paperless-MCP-Anbindung | `solarisbay` | Konfiguration des Hermes-Templates |
 | F3–F6 Verpflichtungen | `solarisbay` (vorerst) | Siehe unten |
 | G1/G4 Degradations-Probe | `servicebay` | Erweitert die vorhandene Probe-Batterie |
@@ -739,6 +841,6 @@ und kostet eine Pipeline.
 - **Kein eigenes Repo für Hermes-Skills.** Sie liegen bei `templates/solaris/skills/`
   im gleichen Format. Erst wenn du sie auf agentskills.io veröffentlichen willst, wird
   daraus ein eigenes Repo — dann aber als Publikation, nicht als Ordnungsmaßnahme.
-- **Kein eigenes Repo für Konnektoren.** Nach ADR-09 entstehen gar keine.
+- **Kein eigenes Repo für Konnektoren.** Nach ZA-09 entstehen gar keine.
 - **Kein `solaris-core`.** Eine Bibliothek zwischen zwei Repos, die derselbe Mensch
   wartet, erzeugt nur Versionskonflikte mit sich selbst.

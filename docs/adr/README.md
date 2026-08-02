@@ -23,6 +23,15 @@ knowledge graph.
 | [0009](0009-command-surfaces-control-and-tool.md) | `/control` vs `.tool` + create-and-find | `/` controls Solaris; `.` captures/finds data — the arg both fills a card AND filters. |
 | [0010](0010-one-person-entity-all-surfaces.md) | One person entity; every people-surface reads it | One `person` node per human (source-tagged facts + aliases); `.contacts`, Personen doorway and `@`-mentions all read it; orgs stay separate. |
 | [0011](0011-tool-plugins-and-card-ssot.md) | `.tool` plugins (like `/`-commands) + card SSOT | `.tools` become `kind: tool` SKILL.md defs (auto-listed, registry-dispatched); cards are one SSOT (`renderHaCard`/`renderActionCard`/`renderListCell`); a plugin brings a declarative schema, not JS. |
+| [0012](0012-paperless-stores-solaris-extracts.md) | paperless stores, Solaris extracts | The `gemma4:12b` vision pass stays permanently as the document text source; paperless's own OCR stays disabled. Supersedes ADR 0008's "retire the extractor". |
+
+## Two numbering spaces
+
+These `ADR 000x` records are **not** the same series as the `ZA-01…ZA-18` decisions in
+[`../solaris-zielarchitektur.md`](../solaris-zielarchitektur.md). ADRs say how the
+substrate and the surface are built; ZA says where a workload runs and who may see it.
+`ADR 0003` and `ZA-03` are unrelated documents — always write the space out.
+Section 11.1 of the Zielarchitektur lists where the two touch.
 
 See [`../data-flow.md`](../data-flow.md) for the human-facing overview: the
 consolidated requirements, the capability map (which data source flows to which
