@@ -387,6 +387,36 @@ class HttpDavClient:
                 if resp.status != 405:
                     resp.raise_for_status()
 
+    async def ensure_addressbook(self, collection_url: str, displayname: str) -> None:
+        """MKCOL a CardDAV ADDRESS BOOK so a following vCard PUT lands (#996).
+
+        A plain MKCOL makes a bare WebDAV collection Radicale won't accept cards
+        into, so the body carries the `{DAV:}resourcetype` that tags it
+        `VADDRESSBOOK` — the address-book counterpart of `ensure_calendar`'s
+        MKCALENDAR. An existing collection answers 405 (Radicale) or 409
+        (resource-must-be-null) — both mean "already there", so neither is an
+        error. Uses the CardDAV credentials.
+        """
+        url = collection_url if collection_url.endswith("/") else collection_url + "/"
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<mkcol xmlns="DAV:" xmlns:CR="urn:ietf:params:xml:ns:carddav">'
+            "<set><prop><resourcetype><collection/><CR:addressbook/></resourcetype>"
+            f"<displayname>{displayname}</displayname>"
+            "</prop></set></mkcol>"
+        )
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, auth=self._carddav_auth
+        ) as session:
+            async with session.request(
+                "MKCOL",
+                url,
+                data=body.encode("utf-8"),
+                headers={"Content-Type": "application/xml; charset=utf-8"},
+            ) as resp:
+                if resp.status not in (405, 409):
+                    resp.raise_for_status()
+
     async def _iter_resources(
         self, url: str, auth: aiohttp.BasicAuth | None, suffix: str
     ) -> AsyncIterator[tuple[str, str, str]]:

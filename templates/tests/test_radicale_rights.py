@@ -117,7 +117,65 @@ def test_inserts_rights_heredoc_and_body(pd):
     assert "[solaris-subcal]" in script
     assert "user: solaris" in script
     assert "collection: [^/]+/solaris(/.*)?" in script
-    assert script.count("permissions: RrWw") == 2
+    # …and the address book the contacts write-back creates (#996).
+    assert "[solaris-contacts]" in script
+    assert "collection: [^/]+/solaris-contacts(/.*)?" in script
+    assert script.count("permissions: RrWw") == 3
+
+
+# ── privacy: what the ruleset does NOT grant (#996) ──────────────────────────
+# These contacts are real. Radicale's from_file backend matches a request with
+# `re.fullmatch(user)` then `re.fullmatch(collection.format(*user_groups))`
+# against the STRIPPED path (`mdopp/solaris-contacts`, no leading slash). This
+# replays exactly that, so a widened regex fails the suite instead of silently
+# handing the service account (or another resident) a resident's private data.
+
+
+def _permissions(pd, user: str, path: str) -> str:
+    import configparser
+    import re
+
+    cfg = configparser.RawConfigParser()
+    cfg.read_string("\n".join(pd._RADICALE_RIGHTS_BODY))
+    for section in cfg.sections():
+        user_match = re.fullmatch(cfg.get(section, "user"), user)
+        if not user_match:
+            continue
+        pattern = cfg.get(section, "collection").format(
+            *map(re.escape, user_match.groups())
+        )
+        if re.fullmatch(pattern, path):
+            return cfg.get(section, "permissions")
+    return ""
+
+
+def test_solaris_may_write_only_its_two_collections(pd):
+    assert _permissions(pd, "solaris", "mdopp/solaris") == "RrWw"
+    assert _permissions(pd, "solaris", "mdopp/solaris-contacts") == "RrWw"
+    assert _permissions(pd, "solaris", "mdopp/solaris-contacts/x.vcf") == "RrWw"
+
+
+def test_solaris_reaches_no_other_collection_of_a_resident(pd):
+    # A resident's own calendars/address books, the principal root, and any name
+    # that merely STARTS with the granted one stay closed to the service account.
+    for path in (
+        "mdopp",
+        "mdopp/kontakte",
+        "mdopp/privat",
+        "mdopp/solaris-privat",
+        "mdopp/solaris-contacts-alt",
+        "mdopp/solarisfoo",
+        "mdopp/eb58abcb-1111-2222-3333-444455556666",
+    ):
+        assert _permissions(pd, "solaris", path) == "", path
+
+
+def test_a_resident_reaches_only_their_own_tree(pd):
+    # owner_only's guarantee, unchanged: the {0} substitution is anchored to the
+    # requesting user's own principal — no cross-resident read of the new book.
+    assert _permissions(pd, "alice", "alice/solaris-contacts") == "RrWw"
+    assert _permissions(pd, "alice", "mdopp/solaris-contacts") == ""
+    assert _permissions(pd, "alice", "mdopp/privat") == ""
 
 
 def test_result_is_valid_shell_heredoc(pd):
