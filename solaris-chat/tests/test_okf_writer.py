@@ -18,7 +18,7 @@ from solaris_chat.engine.knowledge import (
     Relationship,
     safe_slug,
 )
-from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.knowledge.writer import OkfWriter
 
 
@@ -148,6 +148,98 @@ def test_dedup_is_per_resident(env):
     # Same name, different residents -> two distinct entities (§6).
     assert projection.row_count(conn, "entities") == 2
     conn.close()
+
+
+# --- ADR 0010 §1: a person converges even with an identity_key (#994) --------
+
+
+def _contact(title: str, uid: str = "mdopp") -> ConceptRecord:
+    """A `.contacts`-shaped person record: its identity key is derived from the
+    resident + name, so it carries one (which used to skip resolve_entity)."""
+    key = f"contact:{uid}:{safe_slug(title)}"
+    return ConceptRecord(
+        type="person",
+        title=title,
+        source="contact",
+        external_id=key,
+        identity_key=key,
+        resident=uid,
+    )
+
+
+def test_person_with_identity_key_converges_on_the_existing_person(env):
+    writer, db_path, _ = env
+    first = writer.write_concept(
+        _person(title="Anna Meyer", external_id="a"), ingesting_uid="mdopp"
+    )
+    # A second create with its OWN identity key: pre-#994 the key short-circuited
+    # resolve_entity and minted a parallel "Anna Meyer".
+    second = writer.write_concept(_contact("Anna Meyer"), ingesting_uid="mdopp")
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 1
+    conn.close()
+    assert second.ref_id == first.ref_id
+
+
+def test_person_with_identity_key_refuses_a_near_miss_name(env):
+    writer, db_path, _ = env
+    writer.write_concept(
+        _person(title="Anna Meyer", external_id="a"), ingesting_uid="mdopp"
+    )
+    # "Anna Meier" is NOT "Anna Meyer": convergence is exact name/alias only, so a
+    # near miss stays its own person. Conflating two humans is worse than a dupe.
+    writer.write_concept(_contact("Anna Meier"), ingesting_uid="mdopp")
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 2
+    conn.close()
+
+
+def test_person_convergence_never_crosses_residents(env):
+    writer, db_path, _ = env
+    writer.write_concept(
+        _person(title="Anna Meyer", external_id="a"), ingesting_uid="mdopp"
+    )
+    # Same name, another resident's contact — and the household one. Neither may
+    # converge onto mdopp's private person: that would publish her facts/aliases
+    # to a scope she was never in.
+    for scope in ("lena", "household"):
+        writer.write_concept(_contact("Anna Meyer", uid=scope), ingesting_uid=scope)
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 3
+    scopes = {
+        r["resident_uid"] for r in conn.execute("SELECT resident_uid FROM entities")
+    }
+    assert scopes == {"mdopp", "lena", "household"}
+    conn.close()
+
+
+def test_non_person_identity_key_still_pins_identity(env):
+    writer, db_path, _ = env
+    # Two document uploads that happen to share a title must stay two entities —
+    # collapsing them is data loss (#doc). The person exception is person-only.
+    for upload in ("uploads/a.pdf", "uploads/b.pdf"):
+        writer.write_concept(
+            ConceptRecord(
+                type="document",
+                title="Rechnung",
+                source="upload",
+                external_id=f"upload:{upload}",
+                identity_key=upload,
+                resident="mdopp",
+            ),
+            ingesting_uid="mdopp",
+        )
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 2
+    conn.close()
+
+
+def test_new_person_with_identity_key_keeps_the_deterministic_id(env):
+    writer, _, _ = env
+    # Nothing to converge onto -> the key still pins the id (the fast path is
+    # respected, not deleted), so a re-create lands on the same entity.
+    res = writer.write_concept(_contact("Bernd"), ingesting_uid="mdopp")
+    assert res.ref_id == okf.deterministic_id("contact:mdopp:bernd")
 
 
 # --- OKF file shape ----------------------------------------------------------

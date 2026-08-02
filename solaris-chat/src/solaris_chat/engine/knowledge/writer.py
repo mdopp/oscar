@@ -81,23 +81,35 @@ class OkfWriter:
                     if record.projection_only
                     else uuid.uuid4().hex
                 )
-            elif record.identity_key:
-                # Identity is pinned to a stable key (a document's source upload),
-                # not the canonical name — so two uploads with the same title don't
-                # collide into one entity (data loss), and re-extracting the same
-                # upload updates the same entity (#doc).
-                ref_id = okf.deterministic_id(record.identity_key)
             else:
-                ref_id = (
-                    projection.resolve_entity(
+                # An `identity_key` pins identity to a stable key (a document's
+                # source upload) instead of the canonical name, so two uploads
+                # that share a title don't collide into one entity (data loss)
+                # and re-extracting the same upload updates the same one (#doc).
+                #
+                # A person is the exception (ADR 0010 §1): the same human must be
+                # ONE entity across sources, so a person-typed record runs the
+                # name/alias match even when it carries a key, and falls back to
+                # the key only for a person that doesn't exist yet. Converging
+                # can't conflate scopes: `resolve_entity` matches the same `type`
+                # and the same `resident_uid`, so it never pulls in a non-person
+                # and never merges a private person into another resident's or
+                # into the shared household one.
+                ref_id = None
+                if record.type == "person" or not record.identity_key:
+                    ref_id = projection.resolve_entity(
                         conn,
                         type=record.type,
                         canonical_name=record.title,
                         resident_uid=resident,
                         aliases=record.aliases,
                     )
-                    or uuid.uuid4().hex
-                )
+                if ref_id is None:
+                    ref_id = (
+                        okf.deterministic_id(record.identity_key)
+                        if record.identity_key
+                        else uuid.uuid4().hex
+                    )
 
             # OKF file text + its content_hash (the re-ingest skip key).
             text = okf.render(record, entity_id=ref_id)
