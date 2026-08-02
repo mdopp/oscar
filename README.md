@@ -27,7 +27,9 @@ registry injected.
 
 Detail docs live in [`docs/features/`](docs/features/); the architecture record
 is [`solaris-architecture.md`](solaris-architecture.md) and the design
-rationale [`docs/solaris-concept.md`](docs/solaris-concept.md).
+rationale [`docs/solaris-concept.md`](docs/solaris-concept.md). Where the system
+is headed — zones, ADRs and the V1 backlog — is
+[`docs/solaris-zielarchitektur.md`](docs/solaris-zielarchitektur.md).
 
 ### Assistant
 
