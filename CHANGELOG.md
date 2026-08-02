@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.37.0](https://github.com/mdopp/solarisbay/compare/v0.36.1...v0.37.0) (2026-08-02)
+
+
+### Features
+
+* **gatekeeper:** store several voice fingerprints per resident and require a match margin ([#1107](https://github.com/mdopp/solarisbay/issues/1107)) ([a0196cb](https://github.com/mdopp/solarisbay/commit/a0196cbcf83a09e094e67fd686cd6a0fc1c09e3d)), closes [#1084](https://github.com/mdopp/solarisbay/issues/1084)
+
+
+### Bug Fixes
+
+* **chat:** converge person entities instead of minting one per contacts create ([#1112](https://github.com/mdopp/solarisbay/issues/1112)) ([ee12641](https://github.com/mdopp/solarisbay/commit/ee126412a19c899d7f39af621e449f74c053cbbf)), closes [#994](https://github.com/mdopp/solarisbay/issues/994)
+* **ci:** let only a push to main move the latest image tag ([5d838ff](https://github.com/mdopp/solarisbay/commit/5d838ff1c7fd71cf1a81fb1d4cc484c451685c0f))
+* **ci:** let only a push to main move the latest image tag ([5d838ff](https://github.com/mdopp/solarisbay/commit/5d838ff1c7fd71cf1a81fb1d4cc484c451685c0f)), closes [#1110](https://github.com/mdopp/solarisbay/issues/1110)
+
 ## [0.36.1](https://github.com/mdopp/solarisbay/compare/v0.36.0...v0.36.1) (2026-07-28)
 
 
