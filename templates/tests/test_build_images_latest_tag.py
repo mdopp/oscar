@@ -30,9 +30,13 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
-def _latest_tag_line() -> str:
+def _meta_step() -> dict:
     steps = _workflow()["jobs"]["build"]["steps"]
-    meta = next(s for s in steps if s.get("id") == "meta")
+    return next(s for s in steps if s.get("id") == "meta")
+
+
+def _latest_tag_line() -> str:
+    meta = _meta_step()
     lines = [ln.strip() for ln in meta["with"]["tags"].splitlines() if ln.strip()]
     latest = [ln for ln in lines if "value=latest" in ln]
     assert len(latest) == 1, f"expected exactly one latest tag rule, got {latest}"
@@ -53,6 +57,30 @@ def test_latest_requires_a_push_event():
 def test_latest_requires_main():
     line = _latest_tag_line()
     assert "refs/heads/{0}', 'main'" in line or "refs/heads/main" in line, line
+
+
+def test_flavor_disables_the_implicit_latest():
+    """The second path to `:latest` — metadata-action's own `latest=auto`.
+
+    Without an explicit flavor the action appends `latest` whenever a semver /
+    pep440 / match rule or a tag ref matches, regardless of the `type=raw` rule
+    above. A dispatch of v0.37.0 published `:latest` that way while the raw rule
+    logged `enable=false`. `latest=false` leaves the raw rule as the only way in.
+    """
+    flavor = _meta_step()["with"].get("flavor")
+    assert flavor is not None, "metadata-action step has no flavor: block"
+    entries = [ln.strip() for ln in str(flavor).splitlines() if ln.strip()]
+    assert "latest=false" in entries, flavor
+
+
+def test_flavor_leaves_prefix_and_suffix_alone():
+    """Only `latest` may be pinned — prefix/suffix keep the action's defaults."""
+    entries = [
+        ln.strip()
+        for ln in str(_meta_step()["with"].get("flavor", "")).splitlines()
+        if ln.strip()
+    ]
+    assert entries == ["latest=false"], entries
 
 
 def test_concurrency_group_is_per_built_ref():
