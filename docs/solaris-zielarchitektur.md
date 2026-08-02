@@ -186,10 +186,12 @@ vorausgesetzt — **offener Punkt 4**. A2 und A4 sind bis zu dieser Entscheidung
 funktional, nicht technisch spezifiziert. In beiden Fällen gilt: keine zweiten
 Credentials, und der Zustand muss in jeder CalDAV-App auf dem Handy sichtbar sein.
 
-**Was den Schnellpfad verlässt:** der 6-Pass-Loop `solaris-deep`, eigene Websuche und
-Scraper, die Wissens-Crons (Stenograph, Bibliothekar). Der **Timer- und
-Alarm-Scheduler bleibt** — er ist Kernfunktion, nicht Wissensarbeit, und liefert
-zusätzlich den Rückkanal für Zone 2.
+**Was den Schnellpfad verlässt:** das Profil `solaris-deep` (nicht ein eigener Loop —
+siehe ZA-04), eigene Websuche und Scraper, die Wissens-Crons (Stenograph,
+Bibliothekar). Der **Timer- und Alarm-Scheduler bleibt** — er ist Kernfunktion, nicht
+Wissensarbeit, und liefert zusätzlich den Rückkanal für Zone 2. Reihenfolge beachten:
+der Stenograph läuft auf `solaris-deep` und die Dokument-Faktenextraktion auf dem
+Bibliothekar-Client, beide müssen also vor ihrem jeweiligen Rückbau umziehen.
 
 ---
 
@@ -517,7 +519,7 @@ Schema-Umbau mit Datenmigration. Siehe G-9.
 | **ZA-01** | Die Solaris Engine behält das Ollama-Facade für HA Assist. | Garantiert ≤1,3 s am Voice PE. |
 | **ZA-02** | **Hermes erhält keinen Zugriff auf die Voice-GPU** und läuft auf getrennter Rechenkapazität — EU-gehostet in der Erprobung, eigene Hardware im Zielzustand. | Eine GPU serialisiert. Ein Hermes-Turn würde jeden Sprachbefehl dahinter einreihen — genau die 3–6 s, wegen derer Hermes im Juni entfernt wurde, nur diesmal sporadisch und damit schlimmer. |
 | **ZA-03** | **`gemma4:e4b` ist das einzige Modell im Dialogpfad** — Sprache und Chat. `gemma4:12b` verlässt den Dialogpfad, **bleibt aber als Batch-Vision-Modell** für die Dokumenten-Extraktion. Es wird bedarfsweise geladen, nie resident gehalten und läuft ausschließlich in Crons/Ingest, nie in einem Turn. | 16,4 GB VRAM; freier Speicher ist für Immich-ML und Wakeword-Training verplant. Folge: der Chat-Modus „Solaris Gründlich" wird durch die Auftragsschicht ersetzt. Der Vision-Pfad bleibt, weil Paperless' eigenes Tesseract gedrehte deutsche Scans zu Müll macht (auf der Box belegt, PoC #929) — ohne 12b hätte Spalte F keine Textquelle. |
-| **ZA-04** | Der eigene Agenten-Loop (`solaris-deep`), Websuche und Scraper werden gelöscht. | Redundanz zu Hermes; tausende Zeilen eigener Agentencode entfallen. |
+| **ZA-04** | Das `solaris-deep`-**Profil**, Websuche und Scraper werden gelöscht. | Redundanz zu Hermes. **Korrektur der ursprünglichen Begründung:** `solaris-deep` ist kein eigener Agenten-Loop und kein 6-Pass-Loop. Es ist ein Profil mit derselben Toolbox, derselben Registry und demselben Modell wie `household` — nur `think_default=True` (`engine/profiles.py`). Die sechs Pässe (`_MAX_PASSES = 6` in `client.py`) sind das Tool-Call-Budget des **einen** gemeinsamen Loops und gelten für jedes Profil, auch für den Schnellpfad. Es entfallen also keine tausenden Zeilen Agentencode, sondern ein Profil und der Modus Gründlich. **Vorsicht:** die Nacht-Crons laufen auf diesem Profil — siehe A01. |
 | **ZA-05** | Weiches Gedächtnis zieht zu Hermes (Memory-Loop + Curator). Stenograph und Bibliothekar werden abgeschaltet — **unter der Bedingung, dass Export und Indexer die Quellenangabe je Fakt durchreichen** (ADR 0003). Ohne erfüllte Bedingung wird nicht abgeschaltet. | Gepflegtes Ökosystem statt Eigenbau; identisches Problem, fremde Wartung. Die Bedingung steht, weil ADR 0003 den Stenograph als Quelle quellen-getaggter Fakten führt (`used_to_love`, `source = stenograph`); ginge die Provenienz beim Umzug verloren, verlöre ZA-05 etwas Reales statt nur etwas Selbstgebautes. |
 | **ZA-06** | **Hermes' Arbeitsverzeichnis liegt außerhalb des Syncthing-Vaults; ein Export-Cron spiegelt read-only.** | Autonomes Pruning + eventual consistency + parallele Handy-Edits = stiller Datenverlust. |
 | **ZA-07** | Verpflichtungen sind eine **typisierte Tabelle** mit menschlicher Bestätigung, **projiziert als OKF-Entity** damit Chat und Suche sie finden; Ausspielung über CalDAV/VTODO. | Fristen sind Domänenlogik, keine Agentenaufgabe. Die Sondertabelle ist geprüft und begründet: das OKF-Faktenmodell kennt **keine** typisierten Pflichtattribute und **keine** Validierung — `facts(predicate, value, confidence)` speichert jeden Wert als Text, `writer.py` validiert nichts außer dem Pfad, und die Pflichtangaben in `docs/okf-write-contract.md` §3 sind Konvention, nicht Zwang. Für eine Kündigungsfrist, die entweder stimmt oder eine automatische Verlängerung kostet, reicht das nicht. Die Projektion nach OKF hält gleichzeitig ADR 0003 ein: **eine** Entity je Vertrag, die Tabelle ist die Wahrheit, die Entity die auffindbare Sicht. |
@@ -624,17 +626,67 @@ ist hart verdrahtet. Kein Filtercode, keine zweite Instanz — nur keine Sackgas
 Diese Fragen blockieren einzelne Backlog-Positionen und sollten vor Phase 2
 beantwortet sein — siehe die Rückfragen im Begleittext.
 
-1. **Sprechererkennung:** Läuft sie im Voice-PE-Pfad oder nur im `voice-gatekeeper`?
-   Die PE nutzt laut Repo die HA-Assist-Pipeline, der Gatekeeper bedient
-   wyoming-satellite-Hardware — das wären zwei verschiedene Wege. Blockiert G3 (V2),
-   nicht V1.
-2. **Mistral-Zugang für die Erprobung:** eigene API (Paris) oder EU-Hoster offener
-   Gewichte (IONOS, Scaleway, OVHcloud)? Plus Budgetgrenze. Blockiert B2.
-3. **Schreibt der Stenograph in den Syncthing-Vault?** Syncthing läuft (`file-share`,
-   `sync.dopp.cloud`) — das ist geklärt. Offen bleibt nur, ob der Stenograph dorthin
-   schreibt oder in die OKF-Projektion; nach ADR 0003 schreibt er Fakten an Entities,
-   also in die Datenbank. Falls sich das bestätigt, ist ZA-06 reine Vorsorge für
-   Hermes und kein bestehendes Risiko.
+1. **Mistral-Zugang für die Erprobung:** eigene API (Paris) oder EU-Hoster offener
+   Gewichte (IONOS, Scaleway, OVHcloud)? Plus Budgetgrenze. Blockiert B2. Bewusst
+   offen bis nach der Abnahmewoche.
+
+Das war es. Die beiden früheren Punkte zur Sprechererkennung und zum Stenograph sind
+beantwortet und stehen in 13.1 und 13.2 — beide Mechanismen standen bisher nirgends
+zusammenhängend beschrieben.
+
+### 13.1 Sprechererkennung — ein Weg, nicht zwei
+
+Die frühere Vermutung war, PE-Pfad und Gatekeeper seien zwei getrennte Wege. Sind sie
+nicht: **die Erkennung liegt ausschließlich im `voice-gatekeeper`, der PE-Pfad liest
+ihr Ergebnis.**
+
+- **Erkennung.** `voice-gatekeeper/src/gatekeeper/speaker.py` — ECAPA-TDNN über
+  SpeechBrain, 192-dimensionale Embeddings, k-NN gegen `voice_embeddings` in
+  `solaris.db`. Der Resolver selbst ist reines numpy und ML-frei; nur der Extraktor
+  braucht SpeechBrain.
+- **Aktivierung.** Zwei Bedingungen: das ML-Image (`solaris-gatekeeper-ml`, das
+  SpeechBrain/torch mitbringt) und `SOLARIS_SPEAKER_ID_ENABLED`. **Beide sind auf der
+  Box erfüllt** — das Pod-Spec fährt das ML-Image mit `SPEAKER_ID_ENABLED=true`,
+  Schwelle 0,55, Kollisionsschwelle 0,65, Match-Marge 0,10.
+- **Die Brücke zum PE-Pfad.** Ist Sprecher-ID an, registriert `post-deploy.py` den
+  Gatekeeper als **Wyoming-STT-Entity** und die Assist-Pipeline nimmt ihn statt des
+  nackten Whisper (`ensure_assist_pipeline(prefer_gatekeeper_stt=…)`). Der Gatekeeper
+  transkribiert intern über denselben Whisper — die STT-Ausgabe ist identisch —,
+  löst zusätzlich den Sprecher auf und legt `{Transkript → uid}` in `solaris.db` ab.
+  Die Engine-Facade liest diesen Stash auf dem Rohtranskript wieder aus
+  (`voice_uid_stash.consume_uid`).
+- **Fehlerfälle.** Erkannt, aber keinem Bewohner zuzuordnen → Gast-uid → Gast-Profil
+  (eingeschränkte Tools, ephemer, schreibt nichts). Stash-Miss, weil Sprecher-ID aus
+  ist oder nicht lief → `DEFAULT_UID`. Der Unterschied ist gewollt: *unbekannt
+  erkannt* ist etwas anderes als *nicht erkannt*.
+
+Für ZA-12 heißt das: Sprecher-ID ist **im Betrieb, nicht in Planung**. Der Satz
+*Kontext, nicht Autorisierung* beschreibt damit einen laufenden Mechanismus, und A7
+setzt auf etwas Reales auf. Für V2 (H4) ist keine zweite Erkennung zu bauen — nur
+Routing auf das vorhandene Ergebnis.
+
+### 13.2 Stenograph — was er ist und wohin er schreibt
+
+Ein nächtlicher Cron (`engine/crons.py::_stenograph`). Er liest je aktiver Session die
+Turns seit dem letzten Wasserzeichen und destilliert sie. Er schreibt **in beide
+Substrate**, nach klarer Regel:
+
+| Was | Wohin | Wie |
+| :--- | :--- | :--- |
+| Musik-Affinität (*war früher mein Lieblingsalbum*) | **nur Projektion** in `solaris.db` | deterministischer Pfad, kein LLM: `used_to_love`-Fakt am Album, `source=stenograph`, `projection_only=True` |
+| Die Erinnerung dazu, wenn sie Erzählung enthält | **Vault-Markdown** | Musik-Erinnerungs-Notiz, mit dem Album verlinkt — selbst entstanden, also Markdown nach ADR 0002 |
+| Allgemeine dauerhafte Fakten | **Vault-Markdown** | über das `fact_store`-Tool in einem LLM-Turn: `facts/` bzw. `users/<uid>/facts/` als Tagesdatei |
+
+**Damit ist ZA-06 kein reiner Vorsorgepunkt — aber auch kein akutes Risiko.** Der
+Stenograph schreibt heute in den Syncthing-Vault, allerdings nur *anlegend*, nie
+kürzend. Das Risiko aus ZA-06 ist autonomes **Löschen** auf einem
+eventually-consistent Ordner; das tut der Stenograph nicht, der Hermes-Curator soll es
+tun. ZA-06 bleibt also richtig und bleibt Vorsorge — die Begründung *bei uns schreibt
+niemand in den Vault* wäre aber falsch.
+
+**Und er hängt an `solaris-deep`.** Die LLM-Hälfte läuft über den `deep`-Client
+(`crons.py`: *The Stenograph runs LIVE deep-client turns*). A01 entfernt genau dieses
+Profil — siehe die Korrektur an ZA-04.
 ### Geklärt
 
 - Radicale kann Kalender und Todo — beides läuft über eine Instanz, sie läuft
@@ -713,7 +765,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| A01 | `solaris-deep` (6-Pass-Loop) entfernen | ZA-04 | — |
+| A01 | `solaris-deep`-**Profil** entfernen (kein 6-Pass-Loop, siehe ZA-04). **Der Stenograph läuft darauf** — er muss vorher auf das `household`-Profil umziehen oder mit D3 abgeschaltet werden, sonst nimmt A01 ihn still mit | ZA-04 | — |
 | A02 | `web_search` / `web_extract` entfernen | ZA-04 | — |
 | A03 | Toter Code aus dem Prompt entfernen, Prefill neu messen | Kleinerer Prompt, schnellere Antwort | — (läuft parallel zu A05) |
 
