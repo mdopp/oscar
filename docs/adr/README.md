@@ -24,6 +24,7 @@ knowledge graph.
 | [0010](0010-one-person-entity-all-surfaces.md) | One person entity; every people-surface reads it | One `person` node per human (source-tagged facts + aliases); `.contacts`, Personen doorway and `@`-mentions all read it; orgs stay separate. |
 | [0011](0011-tool-plugins-and-card-ssot.md) | `.tool` plugins (like `/`-commands) + card SSOT | `.tools` become `kind: tool` SKILL.md defs (auto-listed, registry-dispatched); cards are one SSOT (`renderHaCard`/`renderActionCard`/`renderListCell`); a plugin brings a declarative schema, not JS. |
 | [0012](0012-paperless-stores-solaris-extracts.md) | paperless stores, Solaris extracts | The `gemma4:12b` vision pass stays permanently as the document text source; paperless's own OCR stays disabled. Supersedes ADR 0008's "retire the extractor". |
+| [0013](0013-thinking-command-retired.md) | `/thinking` retires with the `think` switch | Zone 1 has one model and no per-turn thinking, so the command loses its capability. Supersedes that entry in ADR 0009's command list. |
 
 ## Two numbering spaces
 

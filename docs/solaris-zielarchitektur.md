@@ -78,10 +78,16 @@ Diese fünf Sätze entscheiden im Zweifel jede Detailfrage.
 1. **Zeitbudget bestimmt den Ort.** Alles unter 1,3 s läuft lokal in der Solaris Engine.
    Alles darüber ist ein Auftrag, kein Dialogturn.
 2. **Die GPU gehört der Sprache.** Kein anderer Prozess belegt sie synchron. Der
-   Batch-Vision-Pfad (ZA-03) ist die einzige Ausnahme und nur deshalb erlaubt, weil er
-   asynchron in Crons läuft; er kostet beim Verdrängen von `e4b` einen Reload von
-   ~6,8 s auf dem ersten Turn danach — das ist der bewusst akzeptierte Preis und
-   gehört in ein Wartungsfenster, nicht in den Abend.
+   Batch-Vision-Pfad (ZA-03) ist die einzige Ausnahme — und sein Preis ist ein
+   **Zeitraum, kein Zeitpunkt**: `OLLAMA_MAX_LOADED_MODELS=2` hält `e4b` und das
+   Embedding-Modell resident, 12b verdrängt beim Laden `e4b`. Während eines
+   Dokumentenlaufs zahlt **jeder** Sprachbefehl den Reload (~6,8 s box-gemessen),
+   und der Lauf zahlt ihn danach zurück — die beiden Modelle verdrängen sich
+   wechselseitig, solange der Lauf dauert. Ollama kennt keine Preemption: fällt ein
+   Sprachbefehl in eine laufende 12b-Generierung, **wartet er, bis sie fertig ist**,
+   und zahlt den Reload obendrauf. Deshalb ist das Wartungsfenster als **Zeitspanne**
+   zu definieren, in der niemand spricht — nicht als Zeitpunkt, nach dem es einmal
+   ruckelt.
 3. **Harte Fakten werden nicht generiert, sondern eingesetzt.** Ein 4B-Modell wählt aus,
    es formuliert keine Zahlen und keine Daten.
 4. **Ein Datum, ein Besitzer.** Jede Information hat genau ein System, das sie schreibt.
@@ -371,7 +377,27 @@ Zone 1 hat genau ein Dialogmodell: `gemma4:e4b`, `think=false`. Eine Auswahlmög
 wäre nur eine Möglichkeit, die Latenzgarantie zu verletzen. Der Wert steht in ZA-01 und
 ZA-03, nicht in einer Einstellung. Das Batch-Vision-Modell (`gemma4:12b`, ZA-03) ist
 davon unberührt — es ist ein Betriebsparameter des Ingest-Pfads, keine Dialogauswahl,
-und taucht in keiner Nutzer-Einstellung auf. Damit entfällt auch der Per-Turn-Schalter `think`:
+und taucht in keiner Nutzer-Einstellung auf.
+
+**Was der Batchpfad kostet, gemessen statt geschätzt.** `OLLAMA_MAX_LOADED_MODELS=2`
+(box-gemessen, `templates/ollama/variables.json`): `e4b` und `nomic-embed-text` sind
+resident, 12b passt nicht dazu und verdrängt beim Laden `e4b`. Ollama fährt zwar je
+Modell einen eigenen Runner — deshalb läuft ein Embedding-Request parallel zu einer
+Generierung —, aber der Deckel greift trotzdem. Folge während eines Dokumentenlaufs:
+
+- Ein Sprachbefehl, der in eine **laufende** 12b-Generierung fällt, wartet auf deren
+  Ende. Ollama kann eine Generierung nicht unterbrechen.
+- Danach lädt `e4b` neu: ~6,8 s. Der Lauf zahlt beim nächsten Dokument denselben Preis
+  in die Gegenrichtung.
+- Über einen längeren Lauf wechseln sich die beiden Modelle also im Verdrängen ab.
+
+**Der Batchpfad ist damit nicht unterbrechbar, sondern nur planbar.** Das
+Wartungsfenster ist eine Zeitspanne, in der niemand spricht. Wer das ändern will,
+braucht entweder ein VRAM-Budget für drei Modelle (dann muss `OLLAMA_CONTEXT_LENGTH`
+sinken) oder das Verschieben der Vision-Transkription auf die Zone-2-Hardware — beides
+ist eine eigene Entscheidung, keine Einstellung.
+
+Damit entfällt auch der Per-Turn-Schalter `think`:
 sein Zweck war das Umschalten zwischen schnell und gründlich, und diese Entscheidung ist
 jetzt die Eskalation — deterministisch nach ZA-10, nicht konfigurierbar.
 
@@ -492,11 +518,11 @@ Schema-Umbau mit Datenmigration. Siehe G-9.
 | **ZA-02** | **Hermes erhält keinen Zugriff auf die Voice-GPU** und läuft auf getrennter Rechenkapazität — EU-gehostet in der Erprobung, eigene Hardware im Zielzustand. | Eine GPU serialisiert. Ein Hermes-Turn würde jeden Sprachbefehl dahinter einreihen — genau die 3–6 s, wegen derer Hermes im Juni entfernt wurde, nur diesmal sporadisch und damit schlimmer. |
 | **ZA-03** | **`gemma4:e4b` ist das einzige Modell im Dialogpfad** — Sprache und Chat. `gemma4:12b` verlässt den Dialogpfad, **bleibt aber als Batch-Vision-Modell** für die Dokumenten-Extraktion. Es wird bedarfsweise geladen, nie resident gehalten und läuft ausschließlich in Crons/Ingest, nie in einem Turn. | 16,4 GB VRAM; freier Speicher ist für Immich-ML und Wakeword-Training verplant. Folge: der Chat-Modus „Solaris Gründlich" wird durch die Auftragsschicht ersetzt. Der Vision-Pfad bleibt, weil Paperless' eigenes Tesseract gedrehte deutsche Scans zu Müll macht (auf der Box belegt, PoC #929) — ohne 12b hätte Spalte F keine Textquelle. |
 | **ZA-04** | Der eigene Agenten-Loop (`solaris-deep`), Websuche und Scraper werden gelöscht. | Redundanz zu Hermes; tausende Zeilen eigener Agentencode entfallen. |
-| **ZA-05** | Weiches Gedächtnis zieht zu Hermes (Memory-Loop + Curator). Stenograph und Bibliothekar werden abgeschaltet. | Gepflegtes Ökosystem statt Eigenbau; identisches Problem, fremde Wartung. |
+| **ZA-05** | Weiches Gedächtnis zieht zu Hermes (Memory-Loop + Curator). Stenograph und Bibliothekar werden abgeschaltet — **unter der Bedingung, dass Export und Indexer die Quellenangabe je Fakt durchreichen** (ADR 0003). Ohne erfüllte Bedingung wird nicht abgeschaltet. | Gepflegtes Ökosystem statt Eigenbau; identisches Problem, fremde Wartung. Die Bedingung steht, weil ADR 0003 den Stenograph als Quelle quellen-getaggter Fakten führt (`used_to_love`, `source = stenograph`); ginge die Provenienz beim Umzug verloren, verlöre ZA-05 etwas Reales statt nur etwas Selbstgebautes. |
 | **ZA-06** | **Hermes' Arbeitsverzeichnis liegt außerhalb des Syncthing-Vaults; ein Export-Cron spiegelt read-only.** | Autonomes Pruning + eventual consistency + parallele Handy-Edits = stiller Datenverlust. |
-| **ZA-07** | Verpflichtungen sind eine typisierte Tabelle mit menschlicher Bestätigung; Ausspielung über CalDAV/VTODO. | Fristen sind Domänenlogik, keine Agentenaufgabe. Hermes' Cron erinnert, entscheidet aber nicht. |
+| **ZA-07** | Verpflichtungen sind eine **typisierte Tabelle** mit menschlicher Bestätigung, **projiziert als OKF-Entity** damit Chat und Suche sie finden; Ausspielung über CalDAV/VTODO. | Fristen sind Domänenlogik, keine Agentenaufgabe. Die Sondertabelle ist geprüft und begründet: das OKF-Faktenmodell kennt **keine** typisierten Pflichtattribute und **keine** Validierung — `facts(predicate, value, confidence)` speichert jeden Wert als Text, `writer.py` validiert nichts außer dem Pfad, und die Pflichtangaben in `docs/okf-write-contract.md` §3 sind Konvention, nicht Zwang. Für eine Kündigungsfrist, die entweder stimmt oder eine automatische Verlängerung kostet, reicht das nicht. Die Projektion nach OKF hält gleichzeitig ADR 0003 ein: **eine** Entity je Vertrag, die Tabelle ist die Wahrheit, die Entity die auffindbare Sicht. |
 | **ZA-08** | Paperless-ngx ist der Dokumententresor. Kein Eigenbau für OCR, Tagging, Ablage. | Fertig, ausgereift, ServiceBay-Template. **Deckungsgleich mit ADR 0008**, dort bereits umgesetzt — ZA-08 bestätigt, es entscheidet nichts Neues. |
-| **ZA-09** | **Keine neuen** Drittsystem-Konnektoren in Solaris; neue Drittsysteme hängen als MCP an Hermes. Bestehende Konnektoren (CalDAV/CardDAV-Ingest, Jellyfin, Immich, Paperless) bleiben. Über welchen der beiden vorhandenen Wege Kalender und Listen **geschrieben** werden, entscheidet offener Punkt 4. | Keine zweiten Credentials. Der ursprüngliche Zusatz „keine zweite CalDAV-Implementierung" war eine Fehlannahme — Solaris hat schon eine; der HA-Weg wäre die zweite, nicht die erste. |
+| **ZA-09** | **HA ist der Weg zu Geräten. Für Datenspeicher, mit denen Solaris ohnehin spricht, ist der eigene Client der Weg.** Neue Drittsystem-Konnektoren entstehen weiterhin nicht; neue Drittsysteme hängen als MCP an Hermes. Kalender und Listen werden folglich direkt über `dav_client` geschrieben, nicht über `ha_call_service`. | Eine Implementierung pro Fremdsystem. Solaris schreibt über `document_deadlines_sync.py` bereits direkt CalDAV — der HA-Weg wäre die zweite Abstraktion auf denselben Radicale-Server. Dazu drei Betriebsgründe: HA-Neustarts sind häufig und würden eine Kernfunktion des Schnellpfads mitreißen; `calendar.create_event` kennt weder VALARM noch nennenswerte Recurrence, die ZA-07 für Fristen-Vorläufe braucht; und es ist ein Hop weniger im Latenzbudget. |
 | **ZA-10** | Eskalation ist deterministisch (Fast-Loop zuerst, Fehlschlag eskaliert) plus explizite Phrase. | Ein Vorab-Klassifikator kostet Latenz und irrt beidseitig. |
 | **ZA-11** | Ergebnisse aus Zone 2 kommen asynchron über `announce` und Push zurück, nie als blockierender Call. | Ein Hermes-Turn ist zweistellig in Sekunden; am Speaker wäre das Stille. |
 | **ZA-12** | Sprechererkennung ist Kontext, nicht Autorisierung. Vertrauliches nie über Sprache. | Fernfeld-Erkennung ist täuschbar; Fehlerfall ist ein Datenleck in der Familie. |
@@ -537,17 +563,18 @@ gilt Folgendes.
   (CalDAV/CardDAV PUT). Das ist ein bestehender Konnektor und bleibt. ZA-09 verbietet
   nur **neue**.
 
-**Offene Konflikte — Entscheidung nötig, bevor die jeweilige Spalte gezogen wird:**
+**Aufgelöste Konflikte — alle vier entschieden, keiner mehr offen:**
 
 | Konflikt | Betrifft | Worum es geht |
 | :--- | :--- | :--- |
-| **ZA-05 vs. ADR 0003** | Spalte D/E | ADR 0003 nennt den Stenograph als Quelle quellen-getaggter Fakten (`used_to_love`, `source = stenograph`). ZA-05 schaltet ihn ab. Entweder erzeugt Hermes' Memory-Loop diese Fakten künftig im selben Format, oder ADR 0003 verliert eine Quelle. Vor D3 zu klären. |
-| **C4 vs. ADR 0007** | Spalte C | C4 will `/p/auftraege` als „vierten Tab". ADR 0007 schließt eine sechste Rail-Position ausdrücklich aus. Aufträge müssen also auf vorhandene Primitive (Posteingang, Action-Cards, Abschnitt der Notizen-Seite) statt auf eine neue Navigationsebene. |
-| **ZA-15 vs. ADR 0009** | Spalte E | ADR 0009 führt `/thinking` als Control-Kommando. Fällt der `think`-Schalter (ZA-15), fällt das Kommando mit — ADR 0009 ist dann in seiner Kommandoliste zu korrigieren. |
-| **Verpflichtungen vs. ADR 0003** | Spalte F | ZA-07 legt eine eigene typisierte Tabelle an. ADR 0003 sagt: eine Entity je realem Ding, quellen-getaggte Fakten. Vor F3 zu entscheiden, ob Verpflichtungen eine OKF-Entity mit Fakten sind oder eine bewusst ausgenommene Sondertabelle — und warum. |
+| **ZA-05 vs. ADR 0003** | Spalte D/E | **Konditioniert statt entschieden.** ADR 0003 bleibt unangetastet; ZA-05 und D3 tragen jetzt die Vorbedingung, dass Export und Indexer die Quellenangabe je Fakt durchreichen. Ist sie nicht erfüllt, wird der Stenograph nicht abgeschaltet. |
+| **C4 vs. ADR 0007** | Spalte C | **ADR 0007 gewinnt.** C4 heißt jetzt „eine Auftrags-Ansicht" ohne festgelegte Platzierung; keine sechste Rail-Position. Panel im Chat oder die Stelle, an der „Gründlich" verschwindet — entschieden wird beim Bauen, nicht hier. |
+| **ZA-15 vs. ADR 0009** | Spalte E | **ZA-15 gewinnt.** `/thinking` fällt mit dem `think`-Schalter. ADR 0009 wird nicht editiert — **[ADR 0013](adr/0013-thinking-command-retired.md)** löst seine Kommandoliste ab. |
+| ~~Verpflichtungen vs. ADR 0003~~ | Spalte F | **Geprüft und entschieden.** Das Entity-Modell kann keine typisierten Pflichtattribute und keine Validierung (Belege in ZA-07). ZA-07 bleibt daher als Tabelle, bekommt aber eine OKF-Projektion, damit ADR 0003 gewahrt bleibt: eine Entity je Vertrag, kein zweiter Personen-/Anbieter-Namensraum. |
 
-Diese vier sind **nicht** in diesem PR entschieden. Sie stehen hier, damit niemand sie
-beim Ziehen des Tickets neu entdeckt und still in eine Richtung auflöst.
+Kein bestehendes ADR wurde dafür editiert. Wo ein ADR überholt war, löst ein neues es
+ab (ADR 0012, ADR 0013) — die Append-only-Regel aus `docs/adr/README.md` gilt auch für
+Abweichungen, die aus diesem Dokument kommen.
 
 ---
 
@@ -608,13 +635,6 @@ beantwortet sein — siehe die Rückfragen im Begleittext.
    schreibt oder in die OKF-Projektion; nach ADR 0003 schreibt er Fakten an Entities,
    also in die Datenbank. Falls sich das bestätigt, ist ZA-06 reine Vorsorge für
    Hermes und kein bestehendes Risiko.
-4. **Welchen Weg nehmen Kalender- und Listen-Schreibzugriffe?** Über
-   `ha_call_service` (HA als Vermittler, Radicale muss dort als Integration hängen)
-   oder über den bereits vorhandenen `dav_client` (direkt nach Radicale, kein
-   HA-Umweg, aber Solaris trägt die Logik selbst). Der ursprüngliche Text setzte HA
-   voraus mit einer Begründung, die nicht trägt. **Blockiert A2 und A4 technisch**,
-   nicht funktional — und A1 ist nur dann Voraussetzung, wenn der HA-Weg gewinnt.
-
 ### Geklärt
 
 - Radicale kann Kalender und Todo — beides läuft über eine Instanz, sie läuft
@@ -628,6 +648,16 @@ beantwortet sein — siehe die Rückfragen im Begleittext.
 - Mehrbenutzer ist V2. V1 bereitet nur vor (G-9).
 - Modellfamilie und Hardware-Ziel stehen fest (ZA-17, ZA-18).
 - `gemma4:12b` bleibt als Batch-Vision-Modell erhalten (ZA-03).
+- **Kalender und Listen werden direkt über `dav_client` geschrieben**, nicht über
+  `ha_call_service` (ZA-09). Damit ist A1 kein Vorläufer mehr, sondern optional.
+  Praxishinweis für den Fall, dass HA-Dashboards die Termine trotzdem zeigen sollen:
+  HAs CalDAV-Integration pollt, direkt geschriebene Termine erscheinen dort erst im
+  nächsten Zyklus — ein `homeassistant.update_entity` nach dem Schreiben behebt das
+  und ist latenzmäßig vernachlässigbar.
+- **Verpflichtungen bleiben eine typisierte Tabelle** mit OKF-Projektion (ZA-07,
+  Abschnitt 11.1) — das Faktenmodell kann keine Pflichtattribute erzwingen.
+- **Der Batchpfad ist nicht unterbrechbar.** Das Wartungsfenster ist eine Zeitspanne,
+  keine Grenze (Leitprinzip 2, Abschnitt 8.5).
 
 ---
 
@@ -638,6 +668,31 @@ die Beobachtbarkeit, dann der Umzug, dann erst der Rückbau.
 
 Spalten A bis G gehören zu **V1** (ein Nutzer), Spalte H zu **V2**, Spalte I ist die
 Negativliste.
+
+### Bestandsprüfung — was es schon gibt
+
+Dieses Dokument entstand ohne vollständige Kenntnis des Repos und führte an mehreren
+Stellen Vorhandenes als Neubau. Jede Position ist inzwischen gegen den Code geprüft;
+die Zeilen unten nennen nur noch den **Restumfang**. Die Fälle, in denen sich der
+Zuschnitt dadurch geändert hat:
+
+| # | Angenommen | Tatsächlich |
+| :--- | :--- | :--- |
+| A4 | `todo_add`/`todo_list` neu bauen | `task_add`/`task_list`/`task_done` existieren und kaskadieren schon in den Kalender — fehlt nur die VTODO-Spiegelung |
+| A5 | Messverfahren erfinden | `scripts/bench_models.py` misst TTFT/Prefill/Tool-Genauigkeit engine-förmig |
+| C3 | Rückkanal bauen | `announce` und Web Push (`engine/notify.py`, VAPID) existieren; neu ist nur die Kopplung an Auftragsstatus |
+| F4 | Bestätigungsschritt bauen | Approval- und Action-Card-Pfad existiert, es fehlt ein Kartentyp |
+| F5 | CalDAV-Ausspielung bauen | `document_deadlines_sync.py` spielt Dokumentfristen bereits aus |
+| G3 | Post-Run-Audit bauen | `engine/trace.py` deckt Zone 1 vollständig ab; offen ist nur Zone 2 |
+| F1 | Neues Template in `servicebay` | Template, SSO und Ingest laufen in `solarisbay` — offen ist das Backup-Manifest |
+
+Zwei Warnungen, die aus derselben Prüfung stammen und **keine** Umfangsänderung sind,
+sondern Fallen:
+
+- **E1 nimmt Spalte F mit**, wenn man es wörtlich nimmt: die Dokument-Faktenextraktion
+  hängt am selben `CronRunner`/Bibliothekar wie die Wissens-Crons.
+- **`engine/escalation.py` ist nicht die Eskalation aus ZA-10.** Der Name ist vergeben
+  für die einmalige Rechte-Eskalation der ServiceBay-Destruktivops.
 
 ### Spalte A0 · Aufräumen (sofort) — V1
 
@@ -656,12 +711,12 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
 | A1 | Radicale-Kalender **und** -Todo-Listen als HA-Entitäten einbinden/verifizieren | `calendar.*` und `todo.*` in HA sichtbar | — · nur nötig, wenn offener Punkt 4 auf den HA-Weg fällt |
-| A2 | `calendar_create` als Kern-Tool — Weg nach offenem Punkt 4 | „Trag Donnerstag 15 Uhr Zahnarzt ein" funktioniert | Offener Punkt 4, dann ggf. A1 |
+| A2 | `calendar_create` als Kern-Tool **über `dav_client`** (ZA-09). Der DAV-Client, die Zugangsdaten und `household_calendar_uid` stehen bereits — neu ist das Tool und die Terminerzeugung | „Trag Donnerstag 15 Uhr Zahnarzt ein" funktioniert | — |
 | A3 | Datums- und Zeit-Parsing im Prompt (relative Angaben) | „übermorgen", „nächsten Dienstag" | A2 |
-| A4 | `todo_add` / `todo_list` als Kern-Tool — Weg nach offenem Punkt 4 | Einkaufsliste per Sprache, sichtbar in jeder CalDAV-App | Offener Punkt 4, dann ggf. A1 |
-| A5 | Latenz-Baseline messen (p50/p95, zehn häufigste Befehle) | Referenzwert vor allen Änderungen | — |
+| A4 | **Nicht neu bauen:** `task_add` / `task_list` / `task_done` existieren (`engine/tools/tasks_tools.py`, projektionsweise `task`-Entities) und kaskadieren über `cascade_task_event` bereits in den Haushaltskalender. Restumfang: die Liste **als VTODO** nach Radicale spiegeln, damit sie in CalDAV-Apps als Liste erscheint statt als Termin | Einkaufsliste per Sprache, sichtbar in jeder CalDAV-App | — |
+| A5 | Latenz-Baseline messen — `solaris-chat/scripts/bench_models.py` misst TTFT, Wall, Prefill/Decode und Tool-Genauigkeit mit engine-förmigem Prompt bereits. Restumfang: die zehn Befehle festlegen, auf der Box laufen lassen, Werte festhalten | Referenzwert vor allen Änderungen | — |
 | A6 | G-1 umsetzen: Zahlen-/Datums-Nachprüfer im Antwortpfad | Keine halluzinierten Beträge mehr | — |
-| A7 | Sichtbarkeitsklasse als Pflichtfeld an allen Lese-Tools | Grundlage für ZA-12 | — |
+| A7 | Sichtbarkeitsklasse als Pflichtfeld an allen Lese-Tools — das `Tool`-Dataclass (`engine/tools/__init__.py`) hat heute nur `name`/`description`/`parameters`/`handler`, das Feld ist also echt neu; die `uid`-Scoping-Mechanik und `notes_search.is_visible` (default-deny) sind der Präzedenzfall, an dem es sich orientiert | Grundlage für ZA-12 | — |
 | A8 | ServiceBay-Doku korrigieren: Musik ist Jellyfin, nicht Navidrome | Doku stimmt wieder | — |
 | **A9** | **Abnahmewoche: eine Woche Alltagsnutzung** | Belastbare Liste, was der Schnellpfad nicht kann | A2–A6 |
 
@@ -687,9 +742,9 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
 | C1 | Auftrags-Queue in `solaris.db` (Schema aus 6.2, inkl. `requester` nach G-9) | Aufträge existieren als Objekt | B2 |
-| C2 | Deterministische Eskalation + Auslösephrase | ZA-10 | C1 |
-| C3 | Rückkanal: `announce` + Push + Statuswechsel | ZA-11 | C1 |
-| C4 | `/p/auftraege` als vierter Tab, live über Socket.IO | Sichtbarkeit | C1 |
+| C2 | Deterministische Eskalation + Auslösephrase. **Achtung Namenskollision:** `engine/escalation.py` existiert, meint aber etwas anderes (einmalige Rechte-Eskalation für SB-MCP-Destruktivops). Nicht dort einbauen | ZA-10 | C1 |
+| C3 | Rückkanal — **beide Kanäle existieren**: `announce` am Speaker über den Timer-Scheduler, Web Push über `engine/notify.py` (VAPID, ohne Google/FCM). Restumfang: Statuswechsel der Queue daran hängen und das Dringlichkeits-Routing aus 8.2 | ZA-11 | C1 |
+| C4 | **Eine Auftrags-Ansicht**, live über Socket.IO — Platzierung offen (Panel im Chat, oder die Stelle, an der „Gründlich" verschwindet). **Keine sechste Rail-Position**, ADR 0007 gilt. | Sichtbarkeit | C1 |
 | C5 | Timeout mit Zustellung, Abbruch, Wiederholung | Keine Zombies | C1 |
 | C6 | Kosten pro Auftrag erfassen und anzeigen | ZA-13, zweiter Gürtel | C1 |
 
@@ -699,7 +754,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | :--- | :--- | :--- | :--- |
 | D1 | Indexer auf den gespiegelten Vault (FTS5 + `nomic-embed-text`) | Solaris liest Hermes-Wissen | B6 |
 | D2 | Hermes-Memory-Loop aktivieren | Weiches Gedächtnis zieht um | B2, D1 |
-| D3 | Stenograph + Bibliothekar deaktivieren | ZA-05, Stufe 1 | D2 |
+| D3 | Stenograph + Bibliothekar deaktivieren. **Vorbedingung: Export und Indexer reichen die Quellenangabe je Fakt durch** — vorher wird nicht abgeschaltet | ZA-05, Stufe 1 | D2 + erfüllte Vorbedingung |
 | D4 | Korrekturkanal Mensch → Hermes definieren | Erinnerungen korrigierbar | D1 |
 
 > Ein zweiwöchiger Parallelbetrieb zum Qualitätsvergleich entfällt: auf einem
@@ -710,7 +765,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| E1 | Wissens-Crons entfernen (**Timer-Scheduler bleibt!**) | ZA-05, Stufe 2 | D3 |
+| E1 | Wissens-Crons entfernen (**Timer-Scheduler bleibt!**). **Vorsicht:** die Dokument-Faktenextraktion läuft über denselben `CronRunner`/Bibliothekar-Client (`engine/crons.py:801/818`, `extractor_model`) — sie muss vorher woanders hin, sonst nimmt E1 Spalte F mit. Die Vision-Transkription (`ingest/paperless.py`) hängt dagegen am Ingest-Zyklus und ist nicht betroffen | ZA-05, Stufe 2 | D3 |
 | E2 | `gemma4:12b` aus dem **Dialog**pfad nehmen: UI-Modus „Gründlich" auf Auftrag umstellen, `OLLAMA_DEFAULT_MODEL` auf e4b, 12b nicht mehr resident (`keep_alive` kurz), Vision-Cron behalten | ZA-03 | C3 |
 | E3 | **Modellkonfiguration auf Betriebsparameter reduzieren** — Auswahllogik und `think`-Schalter entfernen, `post-deploy.py` bereinigen | ZA-15 | E2 |
 | E4 | **Konfigurationsgrenze umsetzen** — Benachrichtigungs-Routing und Korrekturkanal in `solaris-chat`, alles Weitere in ServiceBay/CLI | ZA-16 | C3, D4 |
@@ -720,10 +775,10 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| F1 | **Restumfang:** Backup-Manifest für das vorhandene `templates/paperless/` (Template, SSO, Ingest-Adapter und Admin-Token stehen bereits) | Tresor ist gesichert, nicht nur vorhanden | — |
+| F1 | **Restumfang:** Backup-Manifest für das vorhandene `templates/paperless/` — heute trägt das Manifest nur `label`/`ports`/`dependencies`/`healthcheck`, keine Backup-Annotation (Template, SSO, Ingest-Adapter und Admin-Token stehen bereits) | Tresor ist gesichert, nicht nur vorhanden | — |
 | F2 | Paperless-MCP an Hermes | Dokumente lesbar | F1, B2 |
-| F3 | Verpflichtungs-Schema (typisiert) + `/p/vertraege` | Quelle der Wahrheit | — |
-| F4 | Extraktion als Vorschlag mit Bestätigungsschritt | ZA-07 | F2, F3 |
+| F3 | Verpflichtungs-Schema (typisiert) **plus OKF-Projektion** (ZA-07) + Vertragsansicht | Quelle der Wahrheit | — |
+| F4 | Extraktion als Vorschlag mit Bestätigungsschritt — der Approval-/Action-Card-Pfad (`engine/approvals.py`, `action_cards.py`) trägt das bereits, hier nur ein neuer Kartentyp | ZA-07 | F2, F3 |
 | F5 | Ausspielung als CalDAV-Termin + VTODO mit Vorlauf — `document_deadlines_sync.py` macht das für Dokumentfristen bereits, hier nur auf das Verpflichtungs-Schema heben | Erinnerung in jedem Client | F3, offener Punkt 4 |
 | F6 | Sprachantwort auf Verträge: Verweis statt Inhalt | ZA-12 | A7, F3 |
 
@@ -733,7 +788,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 | :--- | :--- | :--- | :--- |
 | G1 | Degradationsmodus + ServiceBay-Probe | G-8 wirksam | C2 |
 | G2 | WAN-Stecker-Test mit den zehn häufigsten Befehlen | Verifiziert statt gehofft | G1, A5 |
-| G3 | `agenttrace` oder Analytics-Plugin für Post-Run-Audit | Retry-Loops sichtbar | C6 |
+| G3 | Post-Run-Audit **für Zone 2**. Für Zone 1 existiert es: `engine/trace.py` zeichnet jeden Ollama-Call mit Per-Turn-Waterfall und persistierten `session_traces` auf. `agenttrace` deckt nur die Hermes-Seite ab | Retry-Loops sichtbar | C6 |
 | G4 | Stille Abhängigkeiten prüfen (Authelia, AdGuard-DNS, NTP, Zertifikate) | Keine Überraschung im Ausfall | G1 |
 
 ### Spalte H · Mehrbenutzer — V2
