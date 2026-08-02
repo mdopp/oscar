@@ -124,6 +124,16 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          # Two independent paths can publish `latest`, and #1110's first fix
+          # closed only one. metadata-action's default flavor is `latest=auto`,
+          # which appends `latest` on its own whenever a semver/pep440/match rule
+          # or a tag ref matches — that is how the v0.37.0 dispatch published
+          # `latest` while the raw rule below was correctly `enable=false`.
+          # `latest=false` gates that auto path off; the explicit `type=raw`
+          # value is unaffected (it is a literal tag value, not the auto flag),
+          # so the rule below stays the single source of truth. prefix/suffix
+          # keep their empty defaults — unlisted flavor keys are untouched.
+          flavor: latest=false
           # `latest` is what the box pulls, so only a push to main may move it.
           # `github.ref` alone is not enough: on workflow_dispatch it is the ref
           # the run was STARTED from, not the ref checked out via inputs.ref, so a
