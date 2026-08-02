@@ -280,6 +280,12 @@ spec:
       value: "{{SYNC_DAV_PASSWORD}}"
     - name: CONTACTS_SYNC_URL
       value: "{{CONTACTS_SYNC_URL}}"
+    # The Radicale ROOT the PER-RESIDENT contacts write-back appends
+    # `{resident_uid}/solaris-contacts/` to (#996) — the address-book twin of
+    # DEADLINES_SYNC_URL_BASE, covered by the same converged rights ruleset. A
+    # resident's `.contacts` persons land only under their OWN principal.
+    - name: CONTACTS_SYNC_URL_BASE
+      value: "{{CONTACTS_SYNC_URL_BASE}}"
     - name: DEADLINES_SYNC_URL
       value: "{{DEADLINES_SYNC_URL}}"
     # The Radicale ROOT the per-resident calendar sync writes under (#997 /

@@ -251,6 +251,11 @@
     "description": "Optional: the CardDAV collection URL the `solaris` account writes provider contacts into (e.g. https://caldav.<domain>/solaris/anbieter/). Blank to disable the contact sync (#doc-graph).",
     "default": ""
   },
+  "CONTACTS_SYNC_URL_BASE": {
+    "type": "text",
+    "description": "The Radicale ROOT the PER-RESIDENT contacts write-back writes under (#996). The engine PUTs each resident's `.contacts` persons to `{base}/{resident_uid}/solaris-contacts/` — under that RESIDENT's own principal, the one address book the converged Radicale rights let the `solaris` account create and write. Blank disables the person write-back.",
+    "default": "http://127.0.0.1:5232/"
+  },
   "DEADLINES_SYNC_URL": {
     "type": "text",
     "description": "Optional: the CalDAV collection URL the `solaris` account writes document deadlines into (e.g. https://caldav.<domain>/solaris/fristen/). Blank to disable the deadline sync (#doc-graph).",

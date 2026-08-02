@@ -86,7 +86,8 @@ DEADLINES_SYNC_URL_BASE_DEFAULT = "http://127.0.0.1:5232/"
 # touch ONLY its own tree, so the `solaris` DAV account gets 403 writing
 # `/<resident>/solaris/`. We converge Radicale's rights to an equivalent
 # `from_file` ruleset that keeps owner_only's guarantee AND grants `solaris`
-# write access to `<resident>/solaris` (and nothing else). Radicale is a
+# write access to `<resident>/solaris` and `<resident>/solaris-contacts` (and
+# nothing else — no other collection, no principal root). Radicale is a
 # ServiceBay-registry service, so its pod manifest is regenerated (back to
 # owner_only) on a radicale re-render; this re-applies on the next solaris
 # deploy — the same converge model as the Jellyfin credential. `solaris` is a
@@ -115,6 +116,16 @@ _RADICALE_RIGHTS_BODY = [
     "[solaris-subcal]",
     "user: solaris",
     "collection: [^/]+/solaris(/.*)?",
+    "permissions: RrWw",
+    "",
+    "# Same grant for the per-resident `solaris-contacts` ADDRESS BOOK the",
+    "# person/provider CardDAV write-back creates and fills (#996). A separate",
+    "# section naming the ONE extra collection literally, deliberately not a",
+    "# widened `solaris(-[a-z]+)?` in the rule above: an enumerated grant cannot",
+    "# be stretched by a resident naming a private collection `solaris-privat`.",
+    "[solaris-contacts]",
+    "user: solaris",
+    "collection: [^/]+/solaris-contacts(/.*)?",
     "permissions: RrWw",
 ]
 
@@ -1799,6 +1810,88 @@ def apply_caldav_read_to_engine(data_dir: str, password: str) -> bool:
     return True
 
 
+# The address book name under each resident's own principal, matching the
+# `[solaris-contacts]` rights rule above: `{base}/{resident_uid}/solaris-contacts/`.
+CONTACTS_COLLECTION = "solaris-contacts"
+
+
+def _patched_contacts_sync_yaml(src: str, uid: str) -> tuple[str, int]:
+    """Wire the CardDAV write targets into the engine env (pure, #996).
+
+    `CONTACTS_SYNC_URL_BASE` is the Radicale root the PER-RESIDENT person
+    write-back appends `{resident_uid}/solaris-contacts/` to;
+    `CONTACTS_SYNC_URL` is the household book the provider orgs land in — the
+    primary resident's own `{uid}/solaris-contacts/`, since `household` is not a
+    Radicale principal. Returns (new_text, n) with n>0 when both entries are
+    present afterwards — presence, not change, so a re-deploy is a clean no-op
+    rather than a spurious failure."""
+    base = (
+        os.environ.get("CONTACTS_SYNC_URL_BASE")
+        or os.environ.get("DEADLINES_SYNC_URL_BASE")
+        or DEADLINES_SYNC_URL_BASE_DEFAULT
+    ).rstrip("/")
+    new = _patch_or_insert_env(src, "CONTACTS_SYNC_URL_BASE", base + "/")
+    new = _patch_or_insert_env(
+        new, "CONTACTS_SYNC_URL", f"{base}/{uid}/{CONTACTS_COLLECTION}/"
+    )
+    present = all(
+        re.search(rf"- name: {name}\n\s+value:", new)
+        for name in ("CONTACTS_SYNC_URL_BASE", "CONTACTS_SYNC_URL")
+    )
+    return new, (1 if present else 0)
+
+
+def apply_contacts_sync_to_engine(data_dir: str) -> bool:
+    """Stamp the CardDAV write targets into the deployed solaris.yml (#996).
+
+    Both vars resolve empty in the rendered pod (the renderer prunes them like
+    the SYNC_DAV block), so the contacts sync was a no-op on the box even though
+    the code existed. No-op when no household/default uid is known;
+    best-effort."""
+    uid = (
+        _persisted_household_calendar_uid(data_dir)
+        or os.environ.get("DEFAULT_UID", "").strip()
+    )
+    if not uid:
+        return False
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "contacts-sync", "solaris.yml not found", path=pod_yml)
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "contacts-sync", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patched_contacts_sync_yaml(src, uid)
+    if n == 0:
+        jlog(
+            "warn",
+            "contacts-sync",
+            "could not wire CONTACTS_SYNC_URL* into solaris.yml — no entry to "
+            "patch nor a CALDAV_URL anchor to insert after; the write-back "
+            "stays dormant",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "contacts-sync", "could not write solaris.yml", error=str(e))
+        return False
+    jlog(
+        "info",
+        "contacts-sync",
+        "stamped CardDAV write targets at /<uid>/solaris-contacts/",
+        uid=uid,
+    )
+    return True
+
+
 # ── Paperless managed admin + DRF token converge (#1034) ─────────────────────
 # The #931 PaperlessIngest handoff no-op'd on the box: paperless is SSO-only
 # (Authelia remote-user, no native login), so there was no API-token-bearing
@@ -2139,7 +2232,8 @@ def converge_radicale_rights() -> bool:
     jlog(
         "info",
         "radicale-rights",
-        "granted solaris write to <resident>/solaris (from_file); restarting radicale",
+        "granted solaris write to <resident>/solaris + /solaris-contacts "
+        "(from_file); restarting radicale",
     )
     subprocess.run(
         ["systemctl", "--user", "restart", "radicale.service"],
@@ -3294,6 +3388,10 @@ def main() -> int:
     # fills, reusing the managed `solaris` DAV password. Renderer prunes these env
     # entries, so we stamp them; the restart below picks them up.
     apply_caldav_read_to_engine(data_dir, jellyfin_password)
+    # Give the CardDAV write-back a target (#996): the renderer prunes both
+    # CONTACTS_SYNC_URL* entries, so stamp the per-resident address-book base +
+    # the household provider book ourselves. The engine MKCOLs the book itself.
+    apply_contacts_sync_to_engine(data_dir)
     # Make the #931 paperless-ingest handoff run for real (#1034, option A):
     # persist a managed paperless admin password, mint that admin's DRF API token
     # once paperless is reachable, and stamp PAPERLESS_URL + PAPERLESS_TOKEN into

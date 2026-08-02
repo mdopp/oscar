@@ -138,6 +138,39 @@ def test_no_anchor_leaves_file_untouched(pd, monkeypatch):
     assert new == no_anchor
 
 
+# ── CardDAV write targets (#996) ─────────────────────────────────────────────
+
+
+def test_contacts_urls_inserted_when_absent(pd, monkeypatch):
+    monkeypatch.delenv("CONTACTS_SYNC_URL_BASE", raising=False)
+    monkeypatch.delenv("DEADLINES_SYNC_URL_BASE", raising=False)
+    new, n = pd._patched_contacts_sync_yaml(_POD_NO_SYNC, "mdopp")
+    assert n == 1
+    env = _env_map(new)
+    root = pd.DEADLINES_SYNC_URL_BASE_DEFAULT.rstrip("/")
+    assert env["CONTACTS_SYNC_URL_BASE"] == root + "/"
+    # The provider book is the primary resident's OWN address book, not a
+    # service-account collection the resident cannot read.
+    assert env["CONTACTS_SYNC_URL"] == f"{root}/mdopp/solaris-contacts/"
+
+
+def test_contacts_urls_are_idempotent(pd, monkeypatch):
+    monkeypatch.delenv("CONTACTS_SYNC_URL_BASE", raising=False)
+    monkeypatch.delenv("DEADLINES_SYNC_URL_BASE", raising=False)
+    once, _ = pd._patched_contacts_sync_yaml(_POD_NO_SYNC, "mdopp")
+    twice, n = pd._patched_contacts_sync_yaml(once, "mdopp")
+    assert twice == once and n == 1  # a re-deploy re-stamps the same values
+    assert once.count("- name: CONTACTS_SYNC_URL\n") == 1
+
+
+def test_contacts_urls_report_failure_without_an_anchor(pd, monkeypatch):
+    monkeypatch.delenv("CONTACTS_SYNC_URL_BASE", raising=False)
+    no_anchor = "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n  - name: chat\n"
+    new, n = pd._patched_contacts_sync_yaml(no_anchor, "mdopp")
+    assert n == 0
+    assert new == no_anchor
+
+
 def test_apply_writes_and_returns_true_on_insert(pd, tmp_path, monkeypatch):
     monkeypatch.delenv("DEADLINES_SYNC_URL_BASE", raising=False)
     pod_yml = tmp_path / "solaris.yml"
