@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from solaris_chat import enroll_requests_store, pending_residents_store
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -138,6 +138,7 @@ def build_register_tools(
                 "properties": {},
             },
             handler=start,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="register_pending_resident",
@@ -156,5 +157,6 @@ def build_register_tools(
                 "required": ["uid", "display_name"],
             },
             handler=register,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

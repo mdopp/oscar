@@ -44,7 +44,7 @@ from solaris_chat.engine.fuzzy import (
     fuzzy_score,
 )
 from solaris_chat.engine.knowledge import projection
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.ha import call_service_scoped
 from solaris_chat.engine.tools.radio import (
     _SAY_NEED_DEFAULT_DEVICE,
@@ -938,6 +938,7 @@ def build_music_query_tools(
                 "required": ["op"],
             },
             handler=music_query,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]
     # Playlist write needs only a live Jellyfin client (no HA cast); playlists
@@ -966,6 +967,7 @@ def build_music_query_tools(
                     },
                 },
                 handler=playlist_add,
+                visibility=Visibility.HOUSEHOLD,
             )
         )
     # A distinct tool name (not another music_query op) steers far better: the
@@ -999,6 +1001,7 @@ def build_music_query_tools(
                     },
                 },
                 handler=play_music,
+                visibility=Visibility.HOUSEHOLD,
             )
         )
     return tools

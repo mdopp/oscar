@@ -22,7 +22,7 @@ from typing import Any
 from solaris_chat import favorites_store
 from solaris_chat.engine import confirm
 from solaris_chat.engine.registry import EntityRegistry
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.ha import _SERVICE_ALIASES, resolve_entity_ref
 from solaris_chat.engine.trace import TraceRecorder
 
@@ -193,6 +193,7 @@ def build_favorites_tools(
                 },
             },
             handler=pin,
+            visibility=Visibility.HOUSEHOLD,
         )
     ]
 

@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.ha import call_service_scoped
 
 _MIRROR = "https://de1.api.radio-browser.info"
@@ -393,5 +393,6 @@ def build_radio_tools(
                 },
             },
             handler=play_radio,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

@@ -23,7 +23,7 @@ from solaris_chat import notes_index, notes_search
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.logging import log
 from solaris_chat.notes_search import SHARED_UID, _USER_PATH_RE
 
@@ -456,6 +456,7 @@ def build_notes_tools(
                 "required": ["query"],
             },
             handler=search,
+            visibility=Visibility.PERSONAL,
         ),
         Tool(
             name="notes_read",
@@ -466,6 +467,7 @@ def build_notes_tools(
                 "required": ["path"],
             },
             handler=read,
+            visibility=Visibility.PERSONAL,
         ),
         Tool(
             name="note_write",
@@ -483,6 +485,7 @@ def build_notes_tools(
                 "required": ["path", "content"],
             },
             handler=write,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="fact_store",
@@ -496,5 +499,6 @@ def build_notes_tools(
                 "required": ["fact"],
             },
             handler=fact_store,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

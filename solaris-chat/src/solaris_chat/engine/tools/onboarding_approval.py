@@ -40,7 +40,7 @@ from typing import Any
 import aiohttp
 
 from solaris_chat import pending_residents_store
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.mcp_tools import call_sb_tool
 
 # Same uid shape the gatekeeper's /enrolments/{uid} enforces.
@@ -195,6 +195,7 @@ def build_onboarding_approval_tools(
                 "required": ["uid"],
             },
             handler=file_approval,
+            visibility=Visibility.CONFIDENTIAL,
         ),
         Tool(
             name="check_resident_approval",
@@ -212,5 +213,6 @@ def build_onboarding_approval_tools(
                 "required": ["uid"],
             },
             handler=check_approval,
+            visibility=Visibility.CONFIDENTIAL,
         ),
     ]

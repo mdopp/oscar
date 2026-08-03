@@ -17,7 +17,7 @@ from solaris_chat.engine import store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ollama import ChatResult, OllamaError
-from solaris_chat.engine.tools import Tool, Toolbox
+from solaris_chat.engine.tools import Tool, Toolbox, Visibility
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.server import build_app
 
@@ -1365,6 +1365,9 @@ async def test_chat_strips_room_prefix_and_sets_current_room(aiohttp_client, db,
         description="capture the current room",
         parameters={"type": "object", "properties": {}},
         handler=_capture,
+        # A room lookup is household-visible; without a class the #1130 gate
+        # would (correctly) withhold it on this voice route.
+        visibility=Visibility.HOUSEHOLD,
     )
     # Pass 1 calls the capturing tool; pass 2 answers.
     results = [

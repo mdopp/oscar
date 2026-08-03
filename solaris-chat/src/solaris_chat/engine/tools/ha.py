@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 
 from solaris_chat.engine.areas import AreaRegistry
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 # Per-turn sink for the read-only state cards a turn surfaces (#475). Each HA
 # state read appends a card-spec here; the engine loop drains it at turn end and
@@ -1032,6 +1032,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "required": ["domain", "service", "entity_id"],
             },
             handler=call_service,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_get_state",
@@ -1042,6 +1043,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "required": ["entity_id"],
             },
             handler=get_state,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_list_entities",
@@ -1065,6 +1067,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 },
             },
             handler=list_entities,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_list_rooms",
@@ -1075,6 +1078,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             ),
             parameters={"type": "object", "properties": {}},
             handler=list_rooms,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_room_cards",
@@ -1090,6 +1094,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "required": ["room"],
             },
             handler=room_cards,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_state_history",
@@ -1110,6 +1115,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "required": ["entity"],
             },
             handler=get_state_history,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_list_scenes_scripts",
@@ -1122,6 +1128,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "properties": {"domain": {"type": "string"}},
             },
             handler=list_runnable,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="ha_run_scene_script",
@@ -1140,5 +1147,6 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "required": ["entity"],
             },
             handler=run_runnable,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

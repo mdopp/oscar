@@ -21,7 +21,7 @@ from xml.etree import ElementTree
 
 import aiohttp
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.ha import call_service_scoped
 from solaris_chat.engine.tools.radio import cast_with_fallback
 
@@ -245,5 +245,6 @@ def build_media_tools(
                 "required": ["name"],
             },
             handler=find_podcast,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

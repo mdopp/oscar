@@ -35,6 +35,11 @@ from solaris_chat import trace_store
 from solaris_chat.engine import store
 from solaris_chat.engine.client import EngineClient, EngineError, current_room
 from solaris_chat.engine.notify import EventBus, Notifier, emit_chat
+from solaris_chat.engine.tools import (
+    CHANNEL_VOICE,
+    current_channel,
+    current_speaker_matched,
+)
 from solaris_chat.logging import log
 from solaris_chat.voice_uid_stash import consume_uid
 
@@ -237,9 +242,16 @@ def add_facade_routes(
         # the newest one does not.
         _strip_room_from_messages(messages)
         current_room.set(room)
-        uid = consume_uid(solaris_db_path, transcript) or str(
-            body.get("user") or default_uid
-        )
+        matched_uid = consume_uid(solaris_db_path, transcript)
+        uid = matched_uid or str(body.get("user") or default_uid)
+        # Visibility gate (#1130, ADR-12 / G-6): everything on this route is
+        # spoken out loud, so the tool's declared class decides whether it may
+        # answer with content at all. A stash hit is a real speaker-ID match and
+        # unlocks the PERSONAL class; it never unlocks CONFIDENTIAL, because
+        # far-field recognition is spoofable and the failure mode is a leak
+        # inside the family.
+        current_channel.set(CHANNEL_VOICE)
+        current_speaker_matched.set(bool(matched_uid) and matched_uid != GUEST_UID)
         # An unknown speaker (speaker-ID ran but matched no resident, #351) is
         # routed to the ephemeral guest profile, not the resident's household
         # session — only when speaker-ID actively resolved UNKNOWN, never on a

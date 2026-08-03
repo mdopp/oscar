@@ -35,7 +35,7 @@ from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
-from solaris_chat.engine.tools import Toolbox
+from solaris_chat.engine.tools import Toolbox, current_channel, current_speaker_matched
 from solaris_chat.engine.tools import choices as choice_tools
 from solaris_chat.engine.tools import ha as ha_tools
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -806,6 +806,10 @@ class EngineClient:
         # (the server handler set it before dispatch) so it can be re-pinned in
         # the gather child task below — prepare() already runs in this task.
         admin_identity = current_admin_identity.get()
+        # The turn's surface + speaker-ID outcome (#1130), captured here for the
+        # same reason: the visibility gate runs inside the gather child task.
+        channel = current_channel.get()
+        speaker_matched = current_speaker_matched.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
 
@@ -1068,6 +1072,8 @@ class EngineClient:
                 # SB-MCP toolbox reads it from this task to exchange for a
                 # short-lived token, so it must survive the gather task hop.
                 current_admin_identity.set(admin_identity)
+                current_channel.set(channel)
+                current_speaker_matched.set(speaker_matched)
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
                 async with sem:

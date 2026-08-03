@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from solaris_chat.engine import scheduler
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 
 def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
@@ -50,12 +50,14 @@ def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
                 },
             },
             handler=timer_set,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="timer_list",
             description="Listet die laufenden Timer/Wecker/Erinnerungen.",
             parameters={"type": "object", "properties": {}},
             handler=timer_list,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="timer_cancel",
@@ -66,5 +68,6 @@ def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
                 "required": ["id"],
             },
             handler=timer_cancel,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

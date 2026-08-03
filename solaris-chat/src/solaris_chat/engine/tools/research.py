@@ -19,7 +19,7 @@ import asyncio
 import json
 from typing import Any
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.web import _ddgs_search, _tavily_search
 
@@ -143,5 +143,6 @@ def build_research_tools(
                 "required": ["query"],
             },
             handler=research,
+            visibility=Visibility.PERSONAL,
         ),
     ]

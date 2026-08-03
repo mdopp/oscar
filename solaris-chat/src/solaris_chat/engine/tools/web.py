@@ -18,7 +18,7 @@ from typing import Any
 
 import aiohttp
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 
@@ -53,6 +53,7 @@ def build_web_tools(tavily_api_key: str = "") -> list[Tool]:
                 "required": ["query"],
             },
             handler=search,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="web_extract",
@@ -63,6 +64,7 @@ def build_web_tools(tavily_api_key: str = "") -> list[Tool]:
                 "required": ["url"],
             },
             handler=extract,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]
 

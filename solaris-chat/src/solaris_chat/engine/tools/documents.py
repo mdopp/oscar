@@ -15,7 +15,7 @@ from pathlib import Path
 
 from solaris_chat import notes_search
 from solaris_chat.engine.knowledge import safe_slug
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.logging import log
 
 _CLASSIFIED_MARKER = "<!-- classified -->"
@@ -165,5 +165,6 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
             ),
             parameters=params,
             handler=document_extract,
+            visibility=Visibility.CONFIDENTIAL,
         )
     ]
