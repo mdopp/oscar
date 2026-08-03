@@ -91,6 +91,11 @@ def build_calendar_tools(uid_getter) -> list[Tool]:
         client = HttpDavClient(caldav_username=username, caldav_password=password)
         try:
             await client.ensure_calendar(url)
+        except Exception as e:  # noqa: BLE001 — a missing collection fails the PUT below.
+            log.error(
+                "engine.calendar_create.ensure_failed", uid=event_uid, error=str(e)
+            )
+        try:
             await client.put_item(
                 url,
                 event_uid,
