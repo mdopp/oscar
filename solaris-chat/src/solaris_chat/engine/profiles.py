@@ -1,14 +1,12 @@
 """Profile assembly — three constructor calls replace three Hermes gateways.
 
 household — fast model, never thinks, full household toolbox + the injected
-            entity registry (the voice/chat hot path, ≤3k-token prompt).
-deep      — same model, thinks by default, same household toolbox + the
-            registry (the voice "Solaris Gründlich" mode and the night crons;
-            12b retired 2026-07-13 — thorough is now e4b-with-thought).
+            entity registry (the voice/chat hot path, ≤3k-token prompt, and the
+            night crons — they ask for reasoning per call).
 admin     — thorough model + the admin soul + the operator skill pack as
             prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
             mutate scopes — Phase 3).
-guest     — fast model, restricted toolbox (HA control/state + web Q&A, no
+guest     — fast model, restricted toolbox (HA control/state only, no
             notes/timers/admin), and ephemeral: a guest turn writes nothing to
             the store, so nothing about a guest survives the conversation (#353).
 
@@ -21,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from solaris_chat import settings_store
+from solaris_chat.config import settings
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
@@ -28,6 +27,7 @@ from solaris_chat.engine.ingest.jellyfin import RestJellyfinMusicClient
 from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
+from solaris_chat.engine.tools.calendar_tools import build_calendar_tools
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.favorites import build_favorites_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
@@ -42,10 +42,8 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
-from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
-from solaris_chat.engine.tools.web import build_web_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
 
@@ -97,7 +95,6 @@ def build_engine_clients(
     sb_api_url: str = "",
     hass_url: str = "",
     hass_token: str = "",
-    tavily_api_key: str = "",
     notes_dir: str = "",
     gatekeeper_url: str = "",
     gatekeeper_token: str = "",
@@ -116,7 +113,7 @@ def build_engine_clients(
     TraceRecorder,
     SessionBus,
 ]:
-    """Returns (household, deep, admin, guest, librarian) clients + recorder + bus."""
+    """Returns (household, admin, guest, librarian, enrollment) + recorder + bus."""
     ollama = OllamaChat(ollama_url)
     recorder = TraceRecorder()
     bus = SessionBus()
@@ -125,33 +122,26 @@ def build_engine_clients(
     ha_tools: list[Tool] = (
         build_ha_tools(hass_url, hass_token) if hass_url and hass_token else []
     )
-    web_tools = build_web_tools(tavily_api_key)
-    # Research-synthesis (#574): one tool does gather+trust-rank+cite so the
-    # small model only phrases. Rides with the web fan-out, so it's gated on web
-    # availability exactly as the web tools are; it pulls in the notes vault too.
-    research_tools = build_research_tools(
-        notes_dir=notes_dir,
-        uid_getter=_current_uid,
-        tavily_api_key=tavily_api_key,
-    )
-
     # Quick-reply chips (#555): offered on any profile that holds a conversation,
-    # so household, deep and guest all get the offer_choices tool.
+    # so household and guest both get the offer_choices tool.
     choice_tools = build_choice_tools()
 
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += build_wakeword_tools(db_path, _current_uid)
-    household_tools += web_tools
-    household_tools += research_tools
     household_tools += choice_tools
+    # calendar_create (#1125): writes straight to Radicale via the existing
+    # dav_client. Registered only where that DAV target exists, so an install
+    # without Radicale doesn't pay the tool schema's prefill (G-2).
+    if settings.deadlines_sync_url_base and settings.sync_dav_username:
+        household_tools += build_calendar_tools(_current_uid)
     if hass_url and hass_token:
         household_tools += build_media_tools(
             hass_url, hass_token, area_fallback=registry.media_player_fallbacks
         )
         # play_radio (#u94): casts a resident's favorite station via the same
         # scoped HA play_media path; the favorite is a per-user note, so it needs
-        # the vault as well. Household + deep share this list (not guest).
+        # the vault as well. Household holds this list (not guest).
         if notes_dir:
             household_tools += build_radio_tools(
                 notes_dir,
@@ -167,12 +157,12 @@ def build_engine_clients(
             notes_dir, _current_uid, db_path=db_path, ollama=ollama
         )
     # Aufgaben (to-do) tools (#todo): add/list/complete tasks on the one shared
-    # list. Household + deep share it; scoped to the caller via _current_uid.
+    # list. Household holds it; scoped to the caller via _current_uid.
     if db_path and notes_dir:
         household_tools += build_tasks_tools(db_path, _current_uid, notes_dir=notes_dir)
     # Start-page pins (#645): pin_favorite reads the last action from the shared
-    # recorder and resolves target devices against HA. Household + deep share
-    # this list; guest gets nothing (its list is separate + ephemeral).
+    # recorder and resolves target devices against HA. Household holds this
+    # list; guest gets nothing (its list is separate + ephemeral).
     if db_path:
         household_tools += build_favorites_tools(
             db_path,
@@ -183,8 +173,8 @@ def build_engine_clients(
             hass_url,
             hass_token,
         )
-    # Structured music-library queries (#588): household + deep share this list,
-    # so both get music_query; guest (its own list below) is withheld. A live
+    # Structured music-library queries (#588): household holds this list, so it
+    # gets music_query; guest (its own list below) is withheld. A live
     # Jellyfin client (built once, the same read-only creds the ingest uses) is
     # passed in so on-demand lyrics (#593) can fetch /Audio/{id}/Lyrics at query
     # time; when Jellyfin is unconfigured the other ops still register and
@@ -202,7 +192,7 @@ def build_engine_clients(
         )
         # play_music (#604) casts a library track via the same scoped HA
         # play_media path; it registers only when a Jellyfin client + HA creds
-        # are present, so on household+deep (not guest) and not when unconfigured.
+        # are present, so on household (not guest) and not when unconfigured.
         household_tools += build_music_query_tools(
             db_path,
             _current_uid,
@@ -228,17 +218,14 @@ def build_engine_clients(
             db_path, gatekeeper_url, gatekeeper_token
         )
 
-    # A guest may ask questions (web) and control devices/read state (HA), but
-    # may NOT write anything durable — no notes/fact_store, no timers, no admin
-    # MCP. The denial is the absence of those tool modules here (#353).
+    # A guest may control devices/read state (HA), but may NOT write anything
+    # durable — no notes/fact_store, no timers, no admin MCP. The denial is the
+    # absence of those tool modules here (#353).
     # ha_run_scene_script fires whole routines/automations; that's beyond a
     # guest's "simple home control" remit, so it's withheld here (#370).
-    guest_tools: list[Tool] = (
-        [t for t in ha_tools if t.name != "ha_run_scene_script"]
-        + list(web_tools)
-        + list(research_tools)
-        + choice_tools
-    )
+    guest_tools: list[Tool] = [
+        t for t in ha_tools if t.name != "ha_run_scene_script"
+    ] + choice_tools
     # The registration flow runs under the guest profile (an unknown speaker is
     # a guest turn, #353) but only the onboarding skill ever invokes it: enrol
     # the voice + file a pending request (#376). It's the one durable write a
@@ -268,17 +255,6 @@ def build_engine_clients(
             registry=registry,
             think_default=False,
             temperature=0.2,
-            toolbox=Toolbox(household_tools),
-            default_uid=default_uid,
-        )
-    )
-    deep = make(
-        EngineProfile(
-            name="solaris-deep",
-            model=thorough_model or "gemma4:e4b",
-            soul_path=soul_path,
-            registry=registry,
-            think_default=True,
             toolbox=Toolbox(household_tools),
             default_uid=default_uid,
         )
@@ -335,7 +311,7 @@ def build_engine_clients(
     )
     # Bibliothekar (#653): the nightly vault-curation agent. Deep model (it
     # thinks about merges), but a notes-tools-ONLY toolbox — an unattended file
-    # rewriter must not hold ha_call_service/media/timers/web. The restriction
+    # rewriter must not hold ha_call_service/media/timers. The restriction
     # is in code (the register.py lesson), not a prompt instruction; the toolbox
     # physically cannot delete or touch HA. Per-scope ephemeral sessions re-root
     # every write to the scope's subtree, so default-deny holds by construction.
@@ -358,7 +334,7 @@ def build_engine_clients(
 
     # Enrollment profile (#1056): dedicated, isolated session for voice profile
     # and wakeword setup. Ephemeral (no history persistence), no HA tools,
-    # no timers, no research — only register + wakeword tools. Prevents the
+    # no timers — only register + wakeword tools. Prevents the
     # household context from polluting the enrollment dialog with device states.
     enrollment_tools: list[Tool] = []
     enrollment_tools += build_register_tools(
@@ -395,4 +371,4 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    return household, deep, admin, guest, librarian, enrollment, recorder, bus
+    return household, admin, guest, librarian, enrollment, recorder, bus

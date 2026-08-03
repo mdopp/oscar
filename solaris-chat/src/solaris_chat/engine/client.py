@@ -30,7 +30,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from solaris_chat import favorites_store
-from solaris_chat.engine import confirm, remember, store
+from solaris_chat.engine import confirm, grounding, remember, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
@@ -128,9 +128,6 @@ _TOOL_DISCIPLINE = (
     " Nutzer im nächsten Zug bestätigt. Alles andere (Licht, Schalter,"
     " media_player, Klima, Ventilator, Szenen, Skripte, normale"
     " Rollos/Jalousien) führst du ohne Rückfrage direkt aus."
-    " Bei einer Wissensfrage rufst du research(query) auf und antwortest"
-    " DIREKT aus den gelieferten Quellen MIT Quellenangabe — ohne vorher"
-    " eine Rückfrage zu stellen."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
@@ -939,11 +936,17 @@ class EngineClient:
             # each pass: a freshly appended tool result is "current" until the
             # next user turn, so the boundary is always the last user message.
             sent = compact_history(messages)
+            # G-1 (#1129): once this turn has retrieved a structured record, the
+            # answer is only final after the number/date check below — so hold
+            # its deltas back rather than streaming a sum that may be discarded.
+            # Turn end then surfaces it as one late delta (the #258 pattern).
+            grounded = grounding.context_from_turn(messages) is not None
             async for kind, payload in self._ollama.stream(
                 model, sent, tools=tools, think=think, options=options
             ):
                 if kind == "delta":
-                    yield {"type": "assistant.delta", "data": {"delta": payload}}
+                    if not grounded:
+                        yield {"type": "assistant.delta", "data": {"delta": payload}}
                 elif kind == "done":
                     result = payload
             assert result is not None
@@ -1160,6 +1163,13 @@ class EngineClient:
 
         final_content, anchors = _split_anchors(final_content)
         final_content, suggestions = _split_followups(final_content)
+        # G-1 (#1129): when this turn retrieved a structured record, every number
+        # and date in the answer must come from the retrieval context — e4b
+        # occasionally misstates a sum or a deadline, and there that is not
+        # cosmetic. A mismatch discards the answer and reads the record verbatim.
+        retrieved = grounding.context_from_turn(messages)
+        if retrieved is not None and final_content:
+            final_content = grounding.ground(final_content, retrieved)
         if persist:
             store.append_message(
                 self._db_path,

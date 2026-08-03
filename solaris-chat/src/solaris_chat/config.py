@@ -149,7 +149,6 @@ class Settings:
     hass_token: str
     alarm_sound_media_id: str
     alarm_sound_path: str
-    tavily_api_key: str
     admin_soul_path: str
     admin_skills_dir: str
     sb_mcp_url: str
@@ -318,8 +317,6 @@ class Settings:
             alarm_sound_path=os.environ.get(
                 "ALARM_SOUND_PATH", "/data/skills/media/solaris-alarm.ogg"
             ).strip(),
-            # Web search backend. Empty => the keyless ddgs backend.
-            tavily_api_key=os.environ.get("TAVILY_API_KEY", "").strip(),
             # The operator persona's soul for the admin profile; falls back to
             # the household soul when unset.
             admin_soul_path=os.environ.get("ADMIN_SOUL_PATH", "").strip(),

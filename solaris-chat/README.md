@@ -11,8 +11,8 @@ a trace proxy.
 - **Agent loop** — streaming `/api/chat` with hand-written, token-lean tool
   definitions (HA device control, timers, web, notes), bounded passes.
   Model + reasoning are **per turn**: `solaris` (fast, `FAST_MODEL`) for the
-  household hot path, `solaris-deep` (`THOROUGH_MODEL`, thinks) for "Gründlich"
-  chats, the admin persona and the night crons.
+  household hot path and the night crons, `THOROUGH_MODEL` for the admin
+  persona and the nightly Bibliothekar.
 - **HA entity registry injection** — controllable domains (id | name | area,
   no live state) ride the system prompt, so a device command needs no
   list-entities round trip. Stable + sorted → prefix-cache friendly.
@@ -24,7 +24,7 @@ a trace proxy.
 - **Scheduler** — timers/alarms/reminders in `engine_timers`; firing rings
   the Voice PE speaker via HA `assist_satellite.announce`.
 - **Night crons** — daily-chronicle, problem-summarizer, chat-compactor as
-  code-defined jobs on the deep profile (durable last-run stamps in
+  code-defined jobs on the household profile (durable last-run stamps in
   `engine_cron_runs`; idempotent by construction).
 - **Admin persona** — operator soul + skill pack as prompt assembly, with
   the `servicebay_admin` MCP toolbox (official `mcp` SDK; token scopes
@@ -36,7 +36,8 @@ HA 2026.6's `openai_conversation` has no custom base_url, but its `ollama`
 integration takes a free URL + Bearer api_key — so the engine exposes a
 minimal Ollama-compatible surface and **is** the Assist conversation agent:
 
-- `GET /ollama/api/tags` — lists the profiles as models (`solaris`, `solaris-deep`).
+- `GET /ollama/api/tags` — lists the profiles as models (`solaris`, plus
+  `solaris-guest`/`solaris-enrollment` when wired).
 - `POST /ollama/api/chat` — stateless turn; the caller owns the history.
   NDJSON stream or single JSON (`stream: false`).
 

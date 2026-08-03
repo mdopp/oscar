@@ -122,12 +122,12 @@ class _FakeEngine:
     async def list_toolsets(self):
         return [
             {
-                "name": "web",
-                "label": "Web",
-                "description": "search",
+                "name": "haus",
+                "label": "Haus",
+                "description": "Geräte",
                 "enabled": True,
                 "configured": True,
-                "tools": ["web_search"],
+                "tools": ["ha_get_state"],
             }
         ]
 
@@ -2267,7 +2267,7 @@ async def test_toolsets_endpoint(aiohttp_client):
     client = await aiohttp_client(app)
     body = await (await client.get("/api/toolsets")).json()
     assert body["ok"] is True
-    assert body["toolsets"][0]["name"] == "web"
+    assert body["toolsets"][0]["name"] == "haus"
 
 
 async def test_whoami_reports_context_window(aiohttp_client):
@@ -3044,22 +3044,20 @@ async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
     _assert_turns(fake.turns, [("maint-1", "status")])
 
 
-# --- Solaris Gründlich = e4b + reasoning (12b retired, #809) ------------------
+# --- one everyday gateway: reasoning is a per-turn knob (#809, #1121) --------
 
 
-async def test_chat_never_routes_to_deep_gateway(aiohttp_client, tmp_path):
-    # 12b retired 2026-07-13: no chat persona/pref routes a turn to the deep
-    # gateway anymore — "Gründlich" is the reasoning knob on the household model
-    # (covered in test_gateway_routing), so the chat path never touches deep.
+async def test_unknown_persona_stays_on_the_household_gateway(aiohttp_client, tmp_path):
+    # The retired thorough profile (#1121) left stale persona ids behind: such an
+    # id is just an unknown overlay — the turn stays on household, reasoning
+    # driven by the pref.
     from solaris_chat import settings_store
 
     household = _FakeEngine()
-    deep = _FakeEngine()
     db = str(tmp_path / "solaris.db")
     settings_store.set_other_model_pref(db, "thorough")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -3067,16 +3065,13 @@ async def test_chat_never_routes_to_deep_gateway(aiohttp_client, tmp_path):
     )
     client = await aiohttp_client(app)
 
-    # A once-"solaris-deep" persona is now just an unknown overlay id: it does not
-    # switch gateways — the turn stays on household, reasoning driven by the pref.
     resp = await client.post(
         "/api/chat",
-        json={"input": "denk gründlich nach", "personality": "solaris-deep"},
+        json={"input": "denk gründlich nach", "personality": "retired-profile"},
         headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
     )
     assert resp.status == 200
     assert household.created == ["cdopp"]
-    assert deep.created == [] and deep.turns == []
 
 
 async def test_default_persona_with_fast_pref_stays_on_household(
@@ -3088,12 +3083,10 @@ async def test_default_persona_with_fast_pref_stays_on_household(
     from solaris_chat import settings_store
 
     household = _FakeEngine()
-    deep = _FakeEngine()
     db = str(tmp_path / "solaris.db")
     settings_store.set_other_model_pref(db, "fast")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -3109,8 +3102,6 @@ async def test_default_persona_with_fast_pref_stays_on_household(
     assert resp.status == 200
     assert household.created == ["cdopp"]
     assert household.efforts == ["none"]
-    assert deep.created == []
-    assert deep.turns == []
 
 
 async def test_csp_header_from_default_frame_ancestors(aiohttp_client):

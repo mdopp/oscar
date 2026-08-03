@@ -119,7 +119,7 @@ async def test_tool_discipline_pinned_last_before_caller_prompt(db, soul):
     # discipline and the model narrated device actions again.
     assert system.index("Du bist Solaris.") < system.index("Antworte kurz.")
     assert system.index("Antworte kurz.") < system.index("Sage NIEMALS nur")
-    assert system.rstrip().endswith("ohne vorher eine Rückfrage zu stellen.")
+    assert system.rstrip().endswith("führst du ohne Rückfrage direkt aus.")
 
 
 async def test_no_tool_discipline_without_tools(db, soul):
@@ -182,10 +182,8 @@ async def test_respond_runs_tool_loop(db, soul):
 
 def _app(db, soul, results, api_key="", bus=None):
     household, fake = _engine(db, soul, results, bus=bus)
-    deep, _ = _engine(db, soul, [], name="solaris-deep", bus=bus)
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -200,7 +198,7 @@ async def test_tags_lists_profiles(aiohttp_client, db, soul):
     client = await aiohttp_client(app)
     body = await (await client.get("/ollama/api/tags")).json()
     names = [m["model"] for m in body["models"]]
-    assert names == ["solaris", "solaris-deep"]
+    assert names == ["solaris"]
 
 
 async def test_tags_requires_bearer_when_key_set(aiohttp_client, db, soul):
@@ -291,10 +289,8 @@ async def test_followup_turn_final_text_ends_with_question_mark_non_stream(
     # the mic without a re-wake (#566). The model's text lacks the `?`.
     household, _ = _engine(db, soul, _offer_then_say("Soll ich das Garagentor öffnen"))
     household._profile.toolbox = Toolbox(_offer_tool())
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -319,10 +315,8 @@ async def test_followup_turn_final_text_ends_with_question_mark_stream(
 ):
     household, _ = _engine(db, soul, _offer_then_say("Meinst du das Büro oder das Bad"))
     household._profile.toolbox = Toolbox(_offer_tool())
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -348,10 +342,8 @@ async def test_followup_does_not_double_existing_question_mark(
     # The model already asked properly — don't append a second `?`.
     household, _ = _engine(db, soul, _offer_then_say("Garage öffnen?"))
     household._profile.toolbox = Toolbox(_offer_tool())
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -465,10 +457,8 @@ async def test_quick_replies_without_trailing_question_still_continues(
     # the trailing `?` to keep the mic open (#566).
     household, _ = _engine(db, soul, _offer_then_say("Wähle eine Option"))
     household._profile.toolbox = Toolbox(_offer_tool())
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -750,10 +740,8 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
         recorder=TraceRecorder(),
         context_window=32768,
     )
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -876,11 +864,11 @@ async def test_mirror_is_per_resident_scoped(aiohttp_client, db, soul):
 
 
 async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
-    # The guest toolbox = HA control/state + web Q&A; it must NOT carry any
+    # The guest toolbox = HA control/state only; it must NOT carry any
     # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
     from solaris_chat.engine.profiles import build_engine_clients
 
-    _, _, _, guest, _, _, _, _ = build_engine_clients(
+    _, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://x",
         fast_model="gemma4:e2b",
@@ -888,13 +876,14 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
         soul_path="/nonexistent/SOUL.md",
         hass_url="http://ha",
         hass_token="t",
-        tavily_api_key="",
         notes_dir="/tmp/notes",  # household gets notes; guest must not
     )
     toolsets = await guest.list_toolsets()
     names = set(toolsets[0]["tools"])
-    # Allowed: device control + state reads + web Q&A.
-    assert {"ha_call_service", "ha_get_state", "web_search"} <= names
+    # Allowed: device control + state reads.
+    assert {"ha_call_service", "ha_get_state"} <= names
+    # The web-search path is gone (#1122) — no guest web tools either.
+    assert not (names & {"web_search", "web_extract", "research"})
     # Denied: durable writes and admin.
     assert not (
         names & {"note_write", "fact_store", "timer_set", "timer_list", "timer_cancel"}
@@ -910,7 +899,7 @@ async def test_household_profile_reads_persisted_model(tmp_path):
     from solaris_chat.engine.profiles import build_engine_clients
 
     db = str(tmp_path / "solaris.db")
-    household, _, _, _, _, _, _, _ = build_engine_clients(
+    household, _, _, _, _, _, _ = build_engine_clients(
         db_path=db,
         ollama_url="http://x",
         fast_model="gemma4:e2b",
@@ -1376,10 +1365,8 @@ async def test_chat_strips_room_prefix_and_sets_current_room(aiohttp_client, db,
         ChatResult(content="Läuft.", prompt_tokens=6, completion_tokens=2),
     ]
     household, fake = _engine(db, soul, results, tools=[capture])
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1423,12 +1410,10 @@ async def test_voice_turn_pushes_when_no_sse_client(aiohttp_client, db, soul):
     household, _ = _engine(
         db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
     )
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     bus = EventBus()  # nobody subscribed → app backgrounded
     notifier = _FakeNotifier()
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1461,12 +1446,10 @@ async def test_voice_turn_does_not_push_when_sse_client_open(aiohttp_client, db,
     household, _ = _engine(
         db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
     )
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     bus = EventBus()
     notifier = _FakeNotifier()
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1496,7 +1479,6 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
     from solaris_chat.engine.notify import EventBus
 
     household, _ = _engine(db, soul, [])
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     guest_fake = FakeOllama(
         [ChatResult(content="Hallo.", prompt_tokens=5, completion_tokens=1)]
     )
@@ -1517,7 +1499,6 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
     notifier = _FakeNotifier()
     app = build_app(
         engine=household,
-        engine_deep=deep,
         engine_guest=guest,
         remote_user_header="Remote-User",
         default_uid="household",
@@ -1768,7 +1749,6 @@ async def test_a_held_action_still_gets_its_no(aiohttp_client, db, soul):
             )
         ],
     )
-    deep, _ = _engine(db, soul, [], name="solaris-deep")
     # The gate is keyed by the durable household session the voice path runs in.
     household._pending.stash(
         store.household_session_id("michael"),
@@ -1782,7 +1762,6 @@ async def test_a_held_action_still_gets_its_no(aiohttp_client, db, soul):
     )
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

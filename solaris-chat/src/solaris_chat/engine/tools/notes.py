@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from solaris_chat import notes_index, notes_search
+from solaris_chat.engine import grounding
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
@@ -351,6 +352,21 @@ def build_notes_tools(
             notes_search.owner_of(canon, text), uid_getter()
         ):
             return '{"error": "not found"}'
+        # G-1 (#1129): a life-document goes back as the structured record it
+        # already is, plus the readout rendered from those fields — the model
+        # renders instead of re-narrating, and that readout is what the grounding
+        # check reads out when the answer misstates an amount or a date.
+        parsed = grounding.parse_document(text)
+        if parsed is not None:
+            record, body = parsed
+            payload: dict[str, Any] = {
+                "path": rel,
+                "record": record,
+                "verbatim": grounding.render(record),
+            }
+            if body:
+                payload["content"] = body[:8000]
+            return json.dumps(payload, ensure_ascii=False)
         return json.dumps({"path": rel, "content": text[:8000]}, ensure_ascii=False)
 
     async def write(args: dict[str, Any]) -> str:

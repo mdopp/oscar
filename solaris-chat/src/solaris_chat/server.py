@@ -1263,7 +1263,6 @@ def build_app(
     *,
     engine: EngineClient | Any,
     engine_admin: EngineClient | Any = None,
-    engine_deep: EngineClient | Any = None,
     engine_guest: EngineClient | Any = None,
     engine_enrollment: EngineClient | Any = None,
     remote_user_header: str,
@@ -1338,10 +1337,6 @@ def build_app(
     # client is configured both fall back to `engine` (offline-test topology).
     household_gw = engine
     admin_gw = engine_admin or engine
-    # The deep (e4b + think_default) profile still backs the `/ollama` facade's
-    # `solaris-deep` model (voice "Gründlich") and the night crons; chat turns no
-    # longer route to it — thorough is the reasoning knob on the household model.
-    deep_gw = engine_deep or engine
     enrollment_gw = engine_enrollment or engine
     admin_sessions: set[str] = set()
     # Sessions pinned to the household (e4b) gateway — the pinned "Zuhause"
@@ -2934,7 +2929,7 @@ def build_app(
 
     # The model tags whose combined VRAM footprint the headroom estimate sums:
     # the household model (selected or fast default), the thorough model the
-    # deep/"Gründlich" facade path runs, and the embedding model — i.e. what's
+    # admin/librarian profiles run, and the embedding model — i.e. what's
     # actually meant to be co-resident on the box. fast/thorough collapse to one
     # e4b tag now; combined_selected_bytes dedups, so it's counted once.
     def selected_models() -> list[str]:
@@ -6073,7 +6068,7 @@ def build_app(
     # points here so Solaris is the Assist conversation agent; the gatekeeper
     # speaks the same surface for wyoming-satellite hardware.
     if hasattr(engine, "respond"):
-        facade_clients = {"solaris": engine, "solaris-deep": deep_gw}
+        facade_clients = {"solaris": engine}
         # The guest profile (#353) is reachable as its own model but not yet
         # auto-triggered — speaker-ID routing into it is #351 (blocked).
         if engine_guest is not None:
@@ -6323,7 +6318,6 @@ async def serve(
     *,
     engine: EngineClient,
     engine_admin: EngineClient | None = None,
-    engine_deep: EngineClient | None = None,
     engine_guest: EngineClient | None = None,
     engine_enrollment: EngineClient | None = None,
     remote_user_header: str,
@@ -6386,7 +6380,6 @@ async def serve(
     app = build_app(
         engine=engine,
         engine_admin=engine_admin,
-        engine_deep=engine_deep,
         engine_guest=engine_guest,
         engine_enrollment=engine_enrollment,
         remote_user_header=remote_user_header,
