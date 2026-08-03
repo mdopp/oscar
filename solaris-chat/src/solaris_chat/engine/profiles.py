@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from solaris_chat import settings_store
+from solaris_chat.config import settings
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
@@ -26,6 +27,7 @@ from solaris_chat.engine.ingest.jellyfin import RestJellyfinMusicClient
 from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
+from solaris_chat.engine.tools.calendar_tools import build_calendar_tools
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.favorites import build_favorites_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
@@ -128,6 +130,11 @@ def build_engine_clients(
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += choice_tools
+    # calendar_create (#1125): writes straight to Radicale via the existing
+    # dav_client. Registered only where that DAV target exists, so an install
+    # without Radicale doesn't pay the tool schema's prefill (G-2).
+    if settings.deadlines_sync_url_base and settings.sync_dav_username:
+        household_tools += build_calendar_tools(_current_uid)
     if hass_url and hass_token:
         household_tools += build_media_tools(
             hass_url, hass_token, area_fallback=registry.media_player_fallbacks
