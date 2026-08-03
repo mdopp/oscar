@@ -119,7 +119,7 @@ async def test_tool_discipline_pinned_last_before_caller_prompt(db, soul):
     # discipline and the model narrated device actions again.
     assert system.index("Du bist Solaris.") < system.index("Antworte kurz.")
     assert system.index("Antworte kurz.") < system.index("Sage NIEMALS nur")
-    assert system.rstrip().endswith("ohne vorher eine Rückfrage zu stellen.")
+    assert system.rstrip().endswith("führst du ohne Rückfrage direkt aus.")
 
 
 async def test_no_tool_discipline_without_tools(db, soul):
@@ -864,7 +864,7 @@ async def test_mirror_is_per_resident_scoped(aiohttp_client, db, soul):
 
 
 async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
-    # The guest toolbox = HA control/state + web Q&A; it must NOT carry any
+    # The guest toolbox = HA control/state only; it must NOT carry any
     # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
     from solaris_chat.engine.profiles import build_engine_clients
 
@@ -876,13 +876,14 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
         soul_path="/nonexistent/SOUL.md",
         hass_url="http://ha",
         hass_token="t",
-        tavily_api_key="",
         notes_dir="/tmp/notes",  # household gets notes; guest must not
     )
     toolsets = await guest.list_toolsets()
     names = set(toolsets[0]["tools"])
-    # Allowed: device control + state reads + web Q&A.
-    assert {"ha_call_service", "ha_get_state", "web_search"} <= names
+    # Allowed: device control + state reads.
+    assert {"ha_call_service", "ha_get_state"} <= names
+    # The web-search path is gone (#1122) — no guest web tools either.
+    assert not (names & {"web_search", "web_extract", "research"})
     # Denied: durable writes and admin.
     assert not (
         names & {"note_write", "fact_store", "timer_set", "timer_list", "timer_cancel"}

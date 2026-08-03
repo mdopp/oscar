@@ -110,18 +110,6 @@ TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Sucht im Web nach aktuellen Informationen.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
 ]
 
 # (user message, expected tool name or None, expected entity_id substring or None)
@@ -140,7 +128,6 @@ TASKS = [
     ),
     ("Ist das Garagentor zu?", "ha_get_state", "cover.garagentor"),
     ("Stell einen Timer auf 10 Minuten für die Pizza.", "timer_set", None),
-    ("Wie wird das Wetter morgen in Hamburg?", "web_search", None),
 ]
 
 

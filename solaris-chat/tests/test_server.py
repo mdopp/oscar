@@ -122,12 +122,12 @@ class _FakeEngine:
     async def list_toolsets(self):
         return [
             {
-                "name": "web",
-                "label": "Web",
-                "description": "search",
+                "name": "haus",
+                "label": "Haus",
+                "description": "Geräte",
                 "enabled": True,
                 "configured": True,
-                "tools": ["web_search"],
+                "tools": ["ha_get_state"],
             }
         ]
 
@@ -2267,7 +2267,7 @@ async def test_toolsets_endpoint(aiohttp_client):
     client = await aiohttp_client(app)
     body = await (await client.get("/api/toolsets")).json()
     assert body["ok"] is True
-    assert body["toolsets"][0]["name"] == "web"
+    assert body["toolsets"][0]["name"] == "haus"
 
 
 async def test_whoami_reports_context_window(aiohttp_client):

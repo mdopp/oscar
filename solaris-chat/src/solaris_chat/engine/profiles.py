@@ -6,7 +6,7 @@ household — fast model, never thinks, full household toolbox + the injected
 admin     — thorough model + the admin soul + the operator skill pack as
             prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
             mutate scopes — Phase 3).
-guest     — fast model, restricted toolbox (HA control/state + web Q&A, no
+guest     — fast model, restricted toolbox (HA control/state only, no
             notes/timers/admin), and ephemeral: a guest turn writes nothing to
             the store, so nothing about a guest survives the conversation (#353).
 
@@ -40,10 +40,8 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
-from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
-from solaris_chat.engine.tools.web import build_web_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
 
@@ -95,7 +93,6 @@ def build_engine_clients(
     sb_api_url: str = "",
     hass_url: str = "",
     hass_token: str = "",
-    tavily_api_key: str = "",
     notes_dir: str = "",
     gatekeeper_url: str = "",
     gatekeeper_token: str = "",
@@ -123,16 +120,6 @@ def build_engine_clients(
     ha_tools: list[Tool] = (
         build_ha_tools(hass_url, hass_token) if hass_url and hass_token else []
     )
-    web_tools = build_web_tools(tavily_api_key)
-    # Research-synthesis (#574): one tool does gather+trust-rank+cite so the
-    # small model only phrases. Rides with the web fan-out, so it's gated on web
-    # availability exactly as the web tools are; it pulls in the notes vault too.
-    research_tools = build_research_tools(
-        notes_dir=notes_dir,
-        uid_getter=_current_uid,
-        tavily_api_key=tavily_api_key,
-    )
-
     # Quick-reply chips (#555): offered on any profile that holds a conversation,
     # so household and guest both get the offer_choices tool.
     choice_tools = build_choice_tools()
@@ -140,8 +127,6 @@ def build_engine_clients(
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += build_wakeword_tools(db_path, _current_uid)
-    household_tools += web_tools
-    household_tools += research_tools
     household_tools += choice_tools
     if hass_url and hass_token:
         household_tools += build_media_tools(
@@ -226,17 +211,14 @@ def build_engine_clients(
             db_path, gatekeeper_url, gatekeeper_token
         )
 
-    # A guest may ask questions (web) and control devices/read state (HA), but
-    # may NOT write anything durable — no notes/fact_store, no timers, no admin
-    # MCP. The denial is the absence of those tool modules here (#353).
+    # A guest may control devices/read state (HA), but may NOT write anything
+    # durable — no notes/fact_store, no timers, no admin MCP. The denial is the
+    # absence of those tool modules here (#353).
     # ha_run_scene_script fires whole routines/automations; that's beyond a
     # guest's "simple home control" remit, so it's withheld here (#370).
-    guest_tools: list[Tool] = (
-        [t for t in ha_tools if t.name != "ha_run_scene_script"]
-        + list(web_tools)
-        + list(research_tools)
-        + choice_tools
-    )
+    guest_tools: list[Tool] = [
+        t for t in ha_tools if t.name != "ha_run_scene_script"
+    ] + choice_tools
     # The registration flow runs under the guest profile (an unknown speaker is
     # a guest turn, #353) but only the onboarding skill ever invokes it: enrol
     # the voice + file a pending request (#376). It's the one durable write a
@@ -322,7 +304,7 @@ def build_engine_clients(
     )
     # Bibliothekar (#653): the nightly vault-curation agent. Deep model (it
     # thinks about merges), but a notes-tools-ONLY toolbox — an unattended file
-    # rewriter must not hold ha_call_service/media/timers/web. The restriction
+    # rewriter must not hold ha_call_service/media/timers. The restriction
     # is in code (the register.py lesson), not a prompt instruction; the toolbox
     # physically cannot delete or touch HA. Per-scope ephemeral sessions re-root
     # every write to the scope's subtree, so default-deny holds by construction.
@@ -345,7 +327,7 @@ def build_engine_clients(
 
     # Enrollment profile (#1056): dedicated, isolated session for voice profile
     # and wakeword setup. Ephemeral (no history persistence), no HA tools,
-    # no timers, no research — only register + wakeword tools. Prevents the
+    # no timers — only register + wakeword tools. Prevents the
     # household context from polluting the enrollment dialog with device states.
     enrollment_tools: list[Tool] = []
     enrollment_tools += build_register_tools(

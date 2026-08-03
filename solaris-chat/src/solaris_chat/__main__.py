@@ -42,7 +42,6 @@ async def _run() -> None:
             sb_api_url=settings.sb_api_url,
             hass_url=settings.hass_url,
             hass_token=settings.hass_token,
-            tavily_api_key=settings.tavily_api_key,
             notes_dir=settings.notes_dir,
             gatekeeper_url=settings.gatekeeper_url,
             gatekeeper_token=settings.gatekeeper_token,

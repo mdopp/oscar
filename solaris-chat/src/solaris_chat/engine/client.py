@@ -128,9 +128,6 @@ _TOOL_DISCIPLINE = (
     " Nutzer im nächsten Zug bestätigt. Alles andere (Licht, Schalter,"
     " media_player, Klima, Ventilator, Szenen, Skripte, normale"
     " Rollos/Jalousien) führst du ohne Rückfrage direkt aus."
-    " Bei einer Wissensfrage rufst du research(query) auf und antwortest"
-    " DIREKT aus den gelieferten Quellen MIT Quellenangabe — ohne vorher"
-    " eine Rückfrage zu stellen."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
