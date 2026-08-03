@@ -1,10 +1,8 @@
 """Profile assembly — three constructor calls replace three Hermes gateways.
 
 household — fast model, never thinks, full household toolbox + the injected
-            entity registry (the voice/chat hot path, ≤3k-token prompt).
-deep      — same model, thinks by default, same household toolbox + the
-            registry (the voice "Solaris Gründlich" mode and the night crons;
-            12b retired 2026-07-13 — thorough is now e4b-with-thought).
+            entity registry (the voice/chat hot path, ≤3k-token prompt, and the
+            night crons — they ask for reasoning per call).
 admin     — thorough model + the admin soul + the operator skill pack as
             prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
             mutate scopes — Phase 3).
@@ -116,7 +114,7 @@ def build_engine_clients(
     TraceRecorder,
     SessionBus,
 ]:
-    """Returns (household, deep, admin, guest, librarian) clients + recorder + bus."""
+    """Returns (household, admin, guest, librarian, enrollment) + recorder + bus."""
     ollama = OllamaChat(ollama_url)
     recorder = TraceRecorder()
     bus = SessionBus()
@@ -136,7 +134,7 @@ def build_engine_clients(
     )
 
     # Quick-reply chips (#555): offered on any profile that holds a conversation,
-    # so household, deep and guest all get the offer_choices tool.
+    # so household and guest both get the offer_choices tool.
     choice_tools = build_choice_tools()
 
     household_tools: list[Tool] = list(ha_tools)
@@ -151,7 +149,7 @@ def build_engine_clients(
         )
         # play_radio (#u94): casts a resident's favorite station via the same
         # scoped HA play_media path; the favorite is a per-user note, so it needs
-        # the vault as well. Household + deep share this list (not guest).
+        # the vault as well. Household holds this list (not guest).
         if notes_dir:
             household_tools += build_radio_tools(
                 notes_dir,
@@ -167,12 +165,12 @@ def build_engine_clients(
             notes_dir, _current_uid, db_path=db_path, ollama=ollama
         )
     # Aufgaben (to-do) tools (#todo): add/list/complete tasks on the one shared
-    # list. Household + deep share it; scoped to the caller via _current_uid.
+    # list. Household holds it; scoped to the caller via _current_uid.
     if db_path and notes_dir:
         household_tools += build_tasks_tools(db_path, _current_uid, notes_dir=notes_dir)
     # Start-page pins (#645): pin_favorite reads the last action from the shared
-    # recorder and resolves target devices against HA. Household + deep share
-    # this list; guest gets nothing (its list is separate + ephemeral).
+    # recorder and resolves target devices against HA. Household holds this
+    # list; guest gets nothing (its list is separate + ephemeral).
     if db_path:
         household_tools += build_favorites_tools(
             db_path,
@@ -183,8 +181,8 @@ def build_engine_clients(
             hass_url,
             hass_token,
         )
-    # Structured music-library queries (#588): household + deep share this list,
-    # so both get music_query; guest (its own list below) is withheld. A live
+    # Structured music-library queries (#588): household holds this list, so it
+    # gets music_query; guest (its own list below) is withheld. A live
     # Jellyfin client (built once, the same read-only creds the ingest uses) is
     # passed in so on-demand lyrics (#593) can fetch /Audio/{id}/Lyrics at query
     # time; when Jellyfin is unconfigured the other ops still register and
@@ -202,7 +200,7 @@ def build_engine_clients(
         )
         # play_music (#604) casts a library track via the same scoped HA
         # play_media path; it registers only when a Jellyfin client + HA creds
-        # are present, so on household+deep (not guest) and not when unconfigured.
+        # are present, so on household (not guest) and not when unconfigured.
         household_tools += build_music_query_tools(
             db_path,
             _current_uid,
@@ -268,17 +266,6 @@ def build_engine_clients(
             registry=registry,
             think_default=False,
             temperature=0.2,
-            toolbox=Toolbox(household_tools),
-            default_uid=default_uid,
-        )
-    )
-    deep = make(
-        EngineProfile(
-            name="solaris-deep",
-            model=thorough_model or "gemma4:e4b",
-            soul_path=soul_path,
-            registry=registry,
-            think_default=True,
             toolbox=Toolbox(household_tools),
             default_uid=default_uid,
         )
@@ -395,4 +382,4 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    return household, deep, admin, guest, librarian, enrollment, recorder, bus
+    return household, admin, guest, librarian, enrollment, recorder, bus

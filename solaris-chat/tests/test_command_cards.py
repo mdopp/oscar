@@ -65,7 +65,7 @@ def test_model_card_keeps_the_picker_and_vram_loaders():
     # The model + voice panes still exist to be moved into their cards.
     assert 'id="view-model"' in _HTML
     assert 'id="view-voice"' in _HTML
-    assert 'id="model-select"' in _HTML
+    assert 'id="household-model-select"' in _HTML
     assert 'id="vram-bar"' in _HTML
 
 

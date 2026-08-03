@@ -241,17 +241,15 @@ def test_skill_promotion_tools_are_admin_only(tmp_path):
     never file or complete an approval)."""
     from solaris_chat.engine import profiles
 
-    household, _deep, admin, guest, _lib, _enroll, _rec, _bus = (
-        profiles.build_engine_clients(
-            db_path=str(tmp_path / "solaris.db"),
-            ollama_url="http://ollama",
-            fast_model="m",
-            thorough_model="m",
-            soul_path="",
-            skills_dir=str(tmp_path / "skills"),
-            sb_mcp_url="http://sb/mcp",
-            sb_mcp_token_path="/tmp/token",
-        )
+    household, admin, guest, _lib, _enroll, _rec, _bus = profiles.build_engine_clients(
+        db_path=str(tmp_path / "solaris.db"),
+        ollama_url="http://ollama",
+        fast_model="m",
+        thorough_model="m",
+        soul_path="",
+        skills_dir=str(tmp_path / "skills"),
+        sb_mcp_url="http://sb/mcp",
+        sb_mcp_token_path="/tmp/token",
     )
     admin_names = set(admin._profile.toolbox.names())
     assert {"file_skill_approval", "check_skill_approval"} <= admin_names

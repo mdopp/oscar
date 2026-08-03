@@ -323,7 +323,7 @@ async def test_call_service_unknown_service_still_errors(monkeypatch):
 async def test_guest_toolset_excludes_run_tool():
     from solaris_chat.engine.profiles import build_engine_clients
 
-    household, _, _, guest, _, _, _, _ = build_engine_clients(
+    household, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://o",
         fast_model="m",
@@ -348,7 +348,7 @@ async def test_household_has_self_enrollment_tools():
     # can never bootstrap the first voice profile.
     from solaris_chat.engine.profiles import build_engine_clients
 
-    household, deep, _, guest, _, _, _, _ = build_engine_clients(
+    household, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
         ollama_url="http://o",
         fast_model="m",
@@ -360,11 +360,9 @@ async def test_household_has_self_enrollment_tools():
         gatekeeper_token="t",
     )
     household_names = set((await household.list_toolsets())[0]["tools"])
-    deep_names = set((await deep.list_toolsets())[0]["tools"])
     guest_names = set((await guest.list_toolsets())[0]["tools"])
     for name in ("start_voice_enrollment", "register_pending_resident"):
         assert name in household_names
-        assert name in deep_names
         # the guest path keeps them too (the heard-but-below-threshold flow)
         assert name in guest_names
 

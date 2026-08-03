@@ -90,7 +90,7 @@ async def test_non_journal_write_unchanged(tmp_path):
 def _runner() -> crons.CronRunner:
     return crons.CronRunner(
         db_path=":memory:",
-        deep=object(),
+        household=object(),
         skills_dir="",
         context_window=32768,
     )

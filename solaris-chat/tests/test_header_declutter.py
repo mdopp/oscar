@@ -154,11 +154,9 @@ def test_admin_persona_choice_selects_admin_gateway():
     assert "function loadWhoami()" in _HTML
 
 
-def test_standalone_deep_dropdown_option_is_removed():
-    # The separate "Solaris Gründlich (12b)" persona option is gone: the 12b thorough
-    # model is now governed by the admin Model setting (Schnell/Gründlich), and
-    # "Solaris · Thinking" with Model = Gründlich reaches the solaris-deep gateway. One
-    # control for the model, one for persona × speed.
+def test_standalone_thorough_dropdown_option_is_removed():
+    # The separate "Solaris Gründlich" persona option is gone (#1121): there is
+    # one everyday profile, and per-turn reasoning is the persona × speed cross.
     assert "function addDeepOption" not in _HTML
     assert "addDeepOption();" not in _HTML
     assert "Solaris Gründlich (12b)" not in _HTML

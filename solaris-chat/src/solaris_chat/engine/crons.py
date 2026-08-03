@@ -3,8 +3,8 @@
 The three background jobs (daily-chronicle, problem-summarizer,
 chat-compactor) used to be registered into Hermes' jobs.json by the
 post-deploy, which de-duped badly across upgrades (#332 follow-up). Here
-they are defined in code — idempotent by construction — and run on the deep
-profile (e4b, thinks by default — 12b retired 2026-07-13).
+they are defined in code — idempotent by construction — and run on the
+household profile, asking for `reasoning_effort="high"` per call.
 
 Schedules are evaluated in local time (the household clock the prompts talk
 about). A durable last-run stamp in solaris.db (`engine_cron_runs`) keys on
@@ -368,7 +368,7 @@ class CronRunner:
         self,
         *,
         db_path: str,
-        deep: EngineClient,
+        household: EngineClient,
         skills_dir: str,
         context_window: int,
         jobs: tuple[CronJob, ...] | None = None,
@@ -377,7 +377,7 @@ class CronRunner:
         extractor_model: str = "gemma4:12b",
     ):
         self._db_path = db_path
-        self._deep = deep
+        self._household = household
         self._skills_dir = skills_dir
         self._context_window = context_window
         self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
@@ -428,18 +428,18 @@ class CronRunner:
                 await self._compact_stale()
 
     async def _run_agent_job(self, job: CronJob) -> None:
-        """One unattended agent turn on the deep profile, in an ephemeral
+        """One unattended agent turn on the household profile, in an ephemeral
         session (the run's durable output is its tool effects, not the chat)."""
         prompt = job.prompt
         body = _skill_body(self._skills_dir, job.skill) if job.skill else ""
         if body:
             prompt = f"{body}\n\n---\n\n{prompt}"
-        session_id = await self._deep.create_session(_CRON_UID, ephemeral=True)
+        session_id = await self._household.create_session(_CRON_UID, ephemeral=True)
         try:
-            reply = await self._deep.chat(session_id, prompt, None, "high")
+            reply = await self._household.chat(session_id, prompt, None, "high")
             log.info("engine.cron.done", job=job.name, reply_len=len(reply))
         finally:
-            await self._deep.delete_session(session_id, _CRON_UID)
+            await self._household.delete_session(session_id, _CRON_UID)
 
     async def _knowledge_night_run(self) -> None:
         """The nightly knowledge pipeline (#652): re-ingest every source, run
@@ -455,8 +455,8 @@ class CronRunner:
             return
         settings = self._ingest_settings
 
-        # The Stenograph runs LIVE deep-client turns, so it stays on the chat
-        # loop; the sqlite-heavy ingest pipeline below moves to a worker thread.
+        # The Stenograph runs LIVE engine turns, so it stays on the chat loop;
+        # the sqlite-heavy ingest pipeline below moves to a worker thread.
         try:
             await self._stenograph()
         except Exception as e:  # noqa: BLE001 — one step must not kill the rest.
@@ -886,7 +886,7 @@ class CronRunner:
         extraction turn to that session's durable history and mirror it to open
         tabs — unacceptable on the active household chat. So each session's new
         turns are rendered into the prompt and run through one extraction turn in
-        an EPHEMERAL deep session owned by the source session's owner; the deep
+        an EPHEMERAL session owned by the source session's owner; the household
         client sets `current_uid` from the session owner, so `fact_store` writes
         land under that resident's facts exactly as if they'd said "merk dir das".
 
@@ -929,11 +929,11 @@ class CronRunner:
             self._music_affinities(slice_msgs, row["owner_uid"])
             transcript = _render_transcript(slice_msgs)
             prompt = compaction.STENOGRAPH_PREFIX + transcript
-            session_id = await self._deep.create_session(
+            session_id = await self._household.create_session(
                 row["owner_uid"], ephemeral=True
             )
             try:
-                reply = await self._deep.chat(session_id, prompt, None, "high")
+                reply = await self._household.chat(session_id, prompt, None, "high")
                 log.info(
                     "engine.stenograph.session",
                     source=row["id"],
@@ -941,7 +941,7 @@ class CronRunner:
                     reply_len=len(reply),
                 )
             finally:
-                await self._deep.delete_session(session_id, row["owner_uid"])
+                await self._household.delete_session(session_id, row["owner_uid"])
 
         log.info(
             "engine.stenograph.done", distilled=len(rows) - skipped, skipped=skipped
@@ -1014,7 +1014,7 @@ class CronRunner:
             if usage is None or usage < _STALE_MIN_USAGE:
                 continue
             new_id = await compaction.compact_session(
-                self._deep,
+                self._household,
                 row["owner_uid"],
                 row["id"],
                 context_window=self._context_window,

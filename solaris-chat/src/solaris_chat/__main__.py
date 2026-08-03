@@ -27,7 +27,7 @@ async def _run() -> None:
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
-    household, deep, admin, guest, librarian, enrollment, recorder, bus = (
+    household, admin, guest, librarian, enrollment, recorder, bus = (
         build_engine_clients(
             db_path=settings.solaris_db_path,
             ollama_url=settings.ollama_url,
@@ -133,7 +133,7 @@ async def _run() -> None:
     sb_event_bridge.start()
     crons = CronRunner(
         db_path=settings.solaris_db_path,
-        deep=deep,
+        household=household,
         skills_dir=settings.skills_dir,
         context_window=context_window.value,
         ingest_settings=settings,
@@ -176,7 +176,6 @@ async def _run() -> None:
         settings.port,
         engine=household,
         engine_admin=admin,
-        engine_deep=deep,
         engine_guest=guest,
         engine_enrollment=enrollment,
         remote_user_header=settings.remote_user_header,

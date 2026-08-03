@@ -1987,14 +1987,7 @@
       <div class="pane">
         <div class="doc">
           <h2>Model</h2>
-          <p class="lead">How everyday chats run by default (admin only). <strong>Schnell</strong> answers directly; <strong>Gründlich</strong> reasons first for harder questions — both on the same e4b model. The household ("Zuhause") chat runs its own model — fast by default — set below. Applies to the next turn — no restart.</p>
-          <div class="model-row">
-            <label for="model-select">Everyday chats</label>
-            <select id="model-select"></select>
-            <button id="model-apply" class="btn-primary" type="button">Apply</button>
-          </div>
-          <p class="model-current" id="model-current"></p>
-          <span class="editor-status" id="model-status"></span>
+          <p class="lead">Which model the household ("Zuhause") chat runs (admin only) — fast by default. Applies to the next turn — no restart.</p>
           <div class="model-row">
             <label for="household-model-select">Household ("Zuhause")</label>
             <select id="household-model-select"></select>
@@ -4574,7 +4567,7 @@
         ["/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"],
         ["/thinking", "Show, collapse, or hide thinking blocks"],
         ["/voice", "Solaris's spoken voice (admins)", true],
-        ["/model", "Everyday-chat model — Schnell/Gründlich (admins)", true]
+        ["/model", "Household model & VRAM (admins)", true]
       ];
       // Punkt-Befehle (#dotcmd): mobile-freundliche Kurzbefehle, die eine
       // Live-Karte im Chat-Verlauf öffnen und beim Tippen mitfüllen. Wachsen pro
@@ -9905,7 +9898,7 @@
       // every setting is reachable both by typing the command and by clicking.
       // 4th element = admin-only (hidden from non-admins, like availableCommands).
       var SETTINGS_ENTRIES = [
-        ["model", "/model", "Everyday-chat model & VRAM (admins)", true],
+        ["model", "/model", "Household model & VRAM (admins)", true],
         ["voice", "/voice", "Solaris's spoken voice (admins)", true],
         ["wakeword", "/wakeword", "Das Wakeword „Solaris“ mit deiner Stimme aufnehmen"],
         ["skills", "/skills", "Skills Solaris draws on"],
@@ -10819,10 +10812,6 @@
       });
 
       // ---- Model (admin) ----
-      var modelSelect = document.getElementById("model-select");
-      var modelApply = document.getElementById("model-apply");
-      var modelCurrent = document.getElementById("model-current");
-      var modelStatus = document.getElementById("model-status");
       var hhSelect = document.getElementById("household-model-select");
       var hhApply = document.getElementById("household-model-apply");
       var hhCurrent = document.getElementById("household-model-current");
@@ -10830,31 +10819,15 @@
       var hhStatus = document.getElementById("household-model-status");
       var hhDefault = "";
 
-      function labelFor(opt) {
-        // "Gründlich (gemma4:12b)" — the tag in parens when the server knows it.
-        return opt.model ? opt.label + " (" + opt.model + ")" : opt.label;
-      }
       // The household chat is fast by default; anything other than the default
       // (fast) tag is a slow model on the latency-sensitive hot path (#366).
       function hhWarnFor(value) { hhWarn.hidden = !value || value === hhDefault; }
       function loadModel() {
-        modelStatus.className = "editor-status"; modelStatus.textContent = "";
+        hhStatus.className = "editor-status"; hhStatus.textContent = "";
         return fetch("/api/model")
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
-            if (!j || !j.options) { modelCurrent.textContent = "Could not load the model setting."; return; }
-            var current = j.current || "thorough";
-            var opts = j.options || [];
-            var cur = opts.find(function (o) { return o.value === current; });
-            modelCurrent.textContent = cur ? "Current: " + labelFor(cur) : "Current setting unknown.";
-            modelSelect.textContent = "";
-            opts.forEach(function (o) {
-              var opt = document.createElement("option");
-              opt.value = o.value; opt.textContent = labelFor(o);
-              if (o.value === current) opt.selected = true;
-              modelSelect.appendChild(opt);
-            });
-            modelApply.disabled = opts.length < 2;
+            if (!j) { hhCurrent.textContent = "Could not load the model setting."; return; }
             // The household-profile model picker (#366): the offered tags, the
             // persisted selection, and the slow-on-hot-path warning.
             hhDefault = j.household_default || "";
@@ -10872,7 +10845,7 @@
             hhWarnFor(hhCur);
             hhApply.disabled = hhOpts.length < 2;
           })
-          .catch(function () { modelCurrent.textContent = "Could not load the model setting."; });
+          .catch(function () { hhCurrent.textContent = "Could not load the model setting."; });
       }
 
       hhSelect.addEventListener("change", function () { hhWarnFor(hhSelect.value); });
@@ -10894,26 +10867,6 @@
             hhStatus.textContent = e.message === "forbidden" ? "Only admins can change the model." : "Could not change the model. Please try again.";
           })
           .finally(function () { hhApply.disabled = false; });
-      });
-
-      modelApply.addEventListener("click", function () {
-        var value = modelSelect.value;
-        if (!value) return;
-        var label = modelSelect.options[modelSelect.selectedIndex].textContent;
-        modelApply.disabled = true;
-        modelStatus.className = "editor-status"; modelStatus.textContent = "Applying…";
-        fetch("/api/model", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: value }) })
-          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("failed"); return r.json(); })
-          .then(function () {
-            modelStatus.className = "editor-status";
-            modelStatus.textContent = "Everyday chats now use " + label + ".";
-            modelCurrent.textContent = "Current: " + label;
-          })
-          .catch(function (e) {
-            modelStatus.className = "editor-status err";
-            modelStatus.textContent = e.message === "forbidden" ? "Only admins can change the model." : "Could not change the model. Please try again.";
-          })
-          .finally(function () { modelApply.disabled = false; });
       });
 
       // ---- Wakeword-Recorder (#1081) ----

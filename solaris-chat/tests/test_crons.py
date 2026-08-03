@@ -1,5 +1,5 @@
 """Tests for the engine night jobs (Phase 3) — code-defined crons with
-durable last-run stamps, run on the deep profile."""
+durable last-run stamps, run on the household profile."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def db(tmp_path) -> str:
     return path
 
 
-class _FakeDeep:
+class _FakeEngine:
     def __init__(self):
         self.turns = []
         self.created = []
@@ -55,9 +55,13 @@ class _FakeDeep:
         return "done"
 
 
-def _runner(db, deep, skills_dir="", jobs=crons.JOBS):
+def _runner(db, household, skills_dir="", jobs=crons.JOBS):
     return crons.CronRunner(
-        db_path=db, deep=deep, skills_dir=skills_dir, context_window=32768, jobs=jobs
+        db_path=db,
+        household=household,
+        skills_dir=skills_dir,
+        context_window=32768,
+        jobs=jobs,
     )
 
 
@@ -146,18 +150,18 @@ def test_load_jobs_falls_back_to_hardcoded_when_no_scheduler_def(tmp_path):
 async def test_cron_fires_from_loaded_registry(db, tmp_path):
     skills_dir = tmp_path / "skills"
     _write_scheduler(skills_dir, "daily-chronicle", "59 23 * * *", "Schreibe.")
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     _baseline(db, "daily-chronicle")
     # No explicit jobs => CronRunner loads from the scheduler registry.
     runner = crons.CronRunner(
         db_path=db,
-        deep=deep,
+        household=engine,
         skills_dir=str(skills_dir),
         context_window=32768,
     )
     await runner.tick(datetime(2026, 6, 12, 0, 5, tzinfo=_TZ))
-    assert len(deep.turns) == 1
-    _, text, _ = deep.turns[0]
+    assert len(engine.turns) == 1
+    _, text, _ = engine.turns[0]
     assert text.endswith("Schreibe.")
 
 
@@ -187,43 +191,43 @@ def test_slot_daily_and_weekly():
 
 
 async def test_due_job_fires_once_per_slot(db):
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     job = crons.CronJob(name="daily-chronicle", minute=59, hour=23, prompt="Schreibe.")
     _baseline(db, "daily-chronicle")
-    runner = _runner(db, deep, jobs=(job,))
+    runner = _runner(db, engine, jobs=(job,))
     now = datetime(2026, 6, 12, 0, 5, tzinfo=_TZ)
     await runner.tick(now)
     await runner.tick(now)  # same slot — must not double-run
-    assert len(deep.turns) == 1
-    sid, text, effort = deep.turns[0]
+    assert len(engine.turns) == 1
+    sid, text, effort = engine.turns[0]
     assert text.endswith("Schreibe.")
     assert effort == "high"
     # Ephemeral cron session is cleaned up after the run.
-    assert deep.created[0][1]["ephemeral"] is True
-    assert deep.deleted == [(sid, "system")]
+    assert engine.created[0][1]["ephemeral"] is True
+    assert engine.deleted == [(sid, "system")]
 
 
 async def test_restart_after_slot_fires_late_not_skipped(db):
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     job = crons.CronJob(name="daily-chronicle", minute=59, hour=23, prompt="Schreibe.")
     _baseline(db, "daily-chronicle")
-    runner = _runner(db, deep, jobs=(job,))
+    runner = _runner(db, engine, jobs=(job,))
     # The tick happens hours after the slot (e.g. the box was down at 23:59).
     now = datetime(2026, 6, 12, 7, 0, tzinfo=_TZ)
     await runner.tick(now)
-    assert len(deep.turns) == 1
+    assert len(engine.turns) == 1
 
 
 async def test_first_boot_baselines_without_running(db):
     # A fresh install must not back-run last night's job mid-day: the first
     # tick stamps the current slot and runs nothing; the NEXT slot fires.
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     job = crons.CronJob(name="daily-chronicle", minute=59, hour=23, prompt="Schreibe.")
-    runner = _runner(db, deep, jobs=(job,))
+    runner = _runner(db, engine, jobs=(job,))
     await runner.tick(datetime(2026, 6, 12, 12, 0, tzinfo=_TZ))
-    assert deep.turns == []
+    assert engine.turns == []
     await runner.tick(datetime(2026, 6, 13, 0, 5, tzinfo=_TZ))
-    assert len(deep.turns) == 1
+    assert len(engine.turns) == 1
 
 
 async def test_skill_body_prepended(db, tmp_path):
@@ -234,7 +238,7 @@ async def test_skill_body_prepended(db, tmp_path):
         "---\nname: daily-chronicle\n---\n# Chronik\nSo geht das.",
         encoding="utf-8",
     )
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     job = crons.CronJob(
         name="daily-chronicle",
         minute=59,
@@ -243,9 +247,9 @@ async def test_skill_body_prepended(db, tmp_path):
         skill="daily-chronicle",
     )
     _baseline(db, "daily-chronicle")
-    runner = _runner(db, deep, skills_dir=str(skills_dir), jobs=(job,))
+    runner = _runner(db, engine, skills_dir=str(skills_dir), jobs=(job,))
     await runner.tick(datetime(2026, 6, 12, 0, 5, tzinfo=_TZ))
-    _, text, _ = deep.turns[0]
+    _, text, _ = engine.turns[0]
     assert text.startswith("# Chronik")
     assert "So geht das." in text
     assert text.endswith("Schreibe.")
@@ -288,7 +292,7 @@ async def test_knowledge_night_run_calls_all_steps(db, monkeypatch, tmp_path):
     _baseline(db, "knowledge-night-run")
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         jobs=(job,),
@@ -328,7 +332,7 @@ async def test_knowledge_night_run_one_failing_step_does_not_abort_rest(
     _baseline(db, "knowledge-night-run")
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         jobs=(job,),
@@ -362,7 +366,7 @@ def _seed_msg(db, sid, seq, role, content, created_at):
 
 
 async def test_stenograph_distills_active_sessions_via_ephemeral_owner_turns(db):
-    # An active resident session with a fresh conversation → one ephemeral deep
+    # An active resident session with a fresh conversation → one ephemeral engine
     # extraction turn owned by that resident, with the transcript inlined.
     _seed_session(db, "anna-chat", "anna", last_activity="2026-07-06 20:00:00")
     _seed_msg(
@@ -375,18 +379,18 @@ async def test_stenograph_distills_active_sessions_via_ephemeral_owner_turns(db)
     )
     _seed_msg(db, "anna-chat", 2, "assistant", "schoen!", "2026-07-06 19:00:01")
     _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
-    deep = _FakeDeep()
-    runner = _runner(db, deep)
+    engine = _FakeEngine()
+    runner = _runner(db, engine)
     await runner._stenograph()
-    assert len(deep.turns) == 1
-    sid, text, effort = deep.turns[0]
+    assert len(engine.turns) == 1
+    sid, text, effort = engine.turns[0]
     assert effort == "high"
     assert "wir fahren im August nach Rom" in text
     assert text.startswith(crons.compaction.STENOGRAPH_PREFIX[:20])
     # Ephemeral session owned by the resident, cleaned up.
-    assert deep.created[0][0] == "anna"
-    assert deep.created[0][1]["ephemeral"] is True
-    assert deep.deleted == [(sid, "anna")]
+    assert engine.created[0][0] == "anna"
+    assert engine.created[0][1]["ephemeral"] is True
+    assert engine.deleted == [(sid, "anna")]
 
 
 async def test_stenograph_excludes_ephemeral_maintenance_and_stale(db):
@@ -399,9 +403,9 @@ async def test_stenograph_excludes_ephemeral_maintenance_and_stale(db):
         _seed_msg(db, sid, 1, "user", "etwas merkbares hier", "2026-07-06 19:00:00")
         _seed_msg(db, sid, 2, "assistant", "ok", "2026-07-06 19:00:01")
     _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
-    deep = _FakeDeep()
-    await _runner(db, deep)._stenograph()
-    assert deep.turns == []
+    engine = _FakeEngine()
+    await _runner(db, engine)._stenograph()
+    assert engine.turns == []
 
 
 async def test_stenograph_skips_trivially_short_slices(db):
@@ -409,14 +413,14 @@ async def test_stenograph_skips_trivially_short_slices(db):
     _seed_session(db, "quiet", "anna", last_activity="2026-07-06 20:00:00")
     _seed_msg(db, "quiet", 1, "user", "hi", "2026-07-06 19:00:00")
     _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
-    deep = _FakeDeep()
-    await _runner(db, deep)._stenograph()
-    assert deep.turns == []
+    engine = _FakeEngine()
+    await _runner(db, engine)._stenograph()
+    assert engine.turns == []
 
 
 async def test_stenograph_advances_watermark_in_utc(db):
     _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
-    await _runner(db, _FakeDeep())._stenograph()
+    await _runner(db, _FakeEngine())._stenograph()
     mark = crons._last_run(db, "stenograph-watermark")
     # Advanced to a fresh UTC stamp (no timezone offset), not the old baseline.
     assert mark != "2026-07-06 00:00:00"
@@ -429,9 +433,9 @@ async def test_stenograph_first_run_baselines_to_last_24h(db):
     _seed_session(db, "old", "anna", last_activity="2020-01-01 00:00:00")
     _seed_msg(db, "old", 1, "user", "uralt", "2020-01-01 00:00:00")
     _seed_msg(db, "old", 2, "assistant", "auch uralt", "2020-01-01 00:00:01")
-    deep = _FakeDeep()
-    await _runner(db, deep)._stenograph()
-    assert deep.turns == []  # the ancient session predates the 24h baseline
+    engine = _FakeEngine()
+    await _runner(db, engine)._stenograph()
+    assert engine.turns == []  # the ancient session predates the 24h baseline
     assert crons._last_run(db, "stenograph-watermark")
 
 
@@ -468,7 +472,7 @@ async def test_stenograph_routes_music_affinity_per_session(db, monkeypatch, tmp
 
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         ingest_settings=_Settings(),
@@ -491,10 +495,10 @@ async def test_stenograph_music_affinity_noop_without_ingest_settings(db):
     )
     _seed_msg(db, "anna-chat", 2, "assistant", "schön!", "2026-07-06 19:00:01")
     _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
-    deep = _FakeDeep()
-    await _runner(db, deep)._stenograph()
+    engine = _FakeEngine()
+    await _runner(db, engine)._stenograph()
     # The LLM extraction turn still ran (no crash from the missing writer target).
-    assert len(deep.turns) == 1
+    assert len(engine.turns) == 1
 
 
 def test_render_transcript_head_truncates_to_cap(monkeypatch):
@@ -537,10 +541,10 @@ async def test_compactor_picks_stale_long_sessions(db, monkeypatch):
         return "continuation-1"
 
     monkeypatch.setattr(crons.compaction, "compact_session", fake_compact)
-    deep = _FakeDeep()
+    engine = _FakeEngine()
     job = crons.CronJob(name="chat-compactor", minute=15, hour=4)
     _baseline(db, "chat-compactor")
-    runner = _runner(db, deep, jobs=(job,))
+    runner = _runner(db, engine, jobs=(job,))
     await runner.tick(datetime(2026, 6, 12, 4, 20, tzinfo=_TZ))
     assert compacted == [("old-long", True)]
 
@@ -587,7 +591,7 @@ def test_bibliothekar_scopes_lists_household_then_users(db, tmp_path):
     (tmp_path / "users" / "lena").mkdir(parents=True)
     (tmp_path / "users" / "mdopp").mkdir(parents=True)
     (tmp_path / "okf").mkdir()  # not a user dir → ignored
-    runner = _runner(db, _FakeDeep())
+    runner = _runner(db, _FakeEngine())
     assert runner._bibliothekar_scopes(str(tmp_path)) == ["household", "lena", "mdopp"]
 
 
@@ -609,7 +613,7 @@ def test_bibliothekar_candidates_filters_by_scope_and_staleness(db, tmp_path):
         "facts/2099-01-01-fresh.md",
         "---\ndate: 2099-01-01\n---\nz",
     )
-    runner = _runner(db, _FakeDeep())
+    runner = _runner(db, _FakeEngine())
     cands = runner._bibliothekar_candidates(str(tmp_path), "household", since)
     assert "okf/people/anna.md" in cands
     assert "facts/2020-01-01-stale.md" in cands
@@ -626,7 +630,7 @@ def test_bibliothekar_candidates_capped(db, tmp_path):
     conn.close()
     for i in range(60):
         _seed_concept(db, f"okf/e{i}.md", "2026-07-05 00:00:00")
-    runner = _runner(db, _FakeDeep())
+    runner = _runner(db, _FakeEngine())
     cands = runner._bibliothekar_candidates(str(tmp_path), "household", "")
     assert len(cands) == crons._BIBLIOTHEKAR_MAX_PATHS
 
@@ -645,7 +649,7 @@ def test_document_extractor_candidates_marker_gated(db, tmp_path):
     priv.mkdir(parents=True)
     (priv / "p.md").write_text("<!-- extracted -->\n", encoding="utf-8")
 
-    runner = _runner(db, _FakeDeep())
+    runner = _runner(db, _FakeEngine())
     # Shared scope sees only the shared uploads dir; only extracted-not-classified.
     assert runner._document_extractor_candidates(str(tmp_path), "household") == [
         "uploads/extracted.md"
@@ -672,10 +676,10 @@ async def test_bibliothekar_runs_one_librarian_turn_per_nonempty_scope(db, tmp_p
         ollama_url = "http://x"
         default_uid = "household"
 
-    librarian = _FakeDeep()
+    librarian = _FakeEngine()
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         jobs=(),
@@ -703,7 +707,7 @@ async def test_bibliothekar_skipped_without_librarian(db, tmp_path):
 
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         jobs=(),
@@ -728,7 +732,7 @@ async def test_bibliothekar_one_bad_scope_does_not_abort_others(db, tmp_path):
         ollama_url = "http://x"
         default_uid = "household"
 
-    class _FlakyLibrarian(_FakeDeep):
+    class _FlakyLibrarian(_FakeEngine):
         async def chat(self, session_id, text, images=None, reasoning_effort="none"):
             if not self.turns:
                 self.turns.append((session_id, text, reasoning_effort))
@@ -738,7 +742,7 @@ async def test_bibliothekar_one_bad_scope_does_not_abort_others(db, tmp_path):
     librarian = _FlakyLibrarian()
     runner = crons.CronRunner(
         db_path=db,
-        deep=_FakeDeep(),
+        household=_FakeEngine(),
         skills_dir="",
         context_window=32768,
         jobs=(),
@@ -776,6 +780,6 @@ async def test_compactor_never_forks_the_durable_household_session(db, monkeypat
     monkeypatch.setattr(crons.compaction, "compact_session", fake_compact)
     job = crons.CronJob(name="chat-compactor", minute=15, hour=4)
     _baseline(db, "chat-compactor")
-    runner = _runner(db, _FakeDeep(), jobs=(job,))
+    runner = _runner(db, _FakeEngine(), jobs=(job,))
     await runner.tick(datetime(2026, 6, 12, 4, 20, tzinfo=_TZ))
     assert compacted == []

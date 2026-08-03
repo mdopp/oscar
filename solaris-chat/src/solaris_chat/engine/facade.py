@@ -9,9 +9,9 @@ a minimal Ollama surface under `/ollama` on the chat port:
   GET  /ollama/api/version  — cheap liveness some ollama clients ping
   POST /ollama/api/chat     — the conversation call, NDJSON-streamed or single
 
-"Models" are engine profiles: `solaris` (household, fast) and `solaris-deep`
-(same e4b, thinks by default — the voice "Gründlich" path; 12b retired
-2026-07-13). HA resends its conversation history per turn; the engine runs its
+"Models" are engine profiles: `solaris` (household, fast), plus the guest and
+enrolment profiles when they are wired. HA resends its conversation history
+per turn; the engine runs its
 own tool loop server-side and streams only content deltas back — HA never
 sees tool_calls, so its MAX_TOOL_ITERATIONS loop runs exactly once. The
 voice-gatekeeper speaks the same surface (stream=false) for wyoming-satellite

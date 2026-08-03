@@ -77,12 +77,11 @@ def _app(household, admin):
     )
 
 
-def _deep_app(household, deep, tmp_path, *, pref="thorough"):
+def _pref_app(household, tmp_path, *, pref="thorough"):
     db = _db(tmp_path)
     settings_store.set_other_model_pref(db, pref)
     return build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -370,7 +369,7 @@ async def test_falls_back_to_household_when_no_admin_gateway(aiohttp_client):
 
 # ---- everyday-chat reasoning preference (#332-followup / #809) ----
 # 12b retired 2026-07-13: fast+thorough both run the e4b household gateway; the
-# preference sets the per-turn reasoning effort, not a separate deep gateway.
+# preference sets the per-turn reasoning effort, not a separate gateway.
 
 
 async def test_household_topic_chat_routes_to_household_even_when_thorough(
@@ -378,8 +377,8 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
 ):
     # The pinned "Zuhause" chat (primary topic = household) is ALWAYS the fast
     # e4b household gateway, even though the everyday-chat preference is thorough.
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path, pref="thorough"))
 
     resp = await client.post(
         "/api/chat",
@@ -391,7 +390,6 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
     # not a freshly minted `sess-1` — so it never forks per click.
     durable = store.household_session_id("household")
     assert household.turns and household.turns[0][0] == durable
-    assert deep.turns == []
     # Household turns are fast-only regardless of any selector.
     assert household.efforts == ["none"]
 
@@ -489,13 +487,12 @@ async def test_household_followup_reads_persisted_primary_topic(
 ):
     # A follow-up turn (different in-memory app state) routes to household by the
     # persisted primary topic, not just the first-turn topic hint.
-    household, deep = _FakeEngine(), _FakeEngine()
+    household = _FakeEngine()
     db = _db(tmp_path)
     settings_store.set_other_model_pref(db, "thorough")
     topics_store.set_primary(db, "sess-42", "household", "cdopp")
     app = build_app(
         engine=household,
-        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -510,37 +507,35 @@ async def test_household_followup_reads_persisted_primary_topic(
     )
     assert resp.status == 200
     assert household.turns and household.turns[0][0] == "sess-42"
-    assert deep.turns == []
 
 
 async def test_other_chat_thorough_reasons_on_household(aiohttp_client, tmp_path):
     # A normal (non-household) chat with the thorough preference stays on the e4b
-    # household gateway (no 12b/deep switch) but runs WITH reasoning — thorough is
+    # household gateway (no second profile) but runs WITH reasoning — thorough is
     # the effort knob, not a bigger model (#809). A plain turn (no selector, no
     # cue) escalates to "high" purely from the pref.
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path, pref="thorough"))
 
     resp = await client.post(
         "/api/chat", json={"input": "erklär mir das"}, headers=RESIDENT_HDRS
     )
     assert resp.status == 200
     assert household.turns and household.turns[0][0] == "sess-1"
-    assert deep.turns == []
     assert household.efforts == ["high"]
 
 
 async def test_other_chat_fast_runs_none_but_escalates_on_cue(aiohttp_client, tmp_path):
     # The same normal chat with the fast preference runs "none" on the household
     # gateway, but an explicit "think harder" cue still escalates it to "high".
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="fast"))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path, pref="fast"))
 
     resp = await client.post(
         "/api/chat", json={"input": "erklär mir das"}, headers=RESIDENT_HDRS
     )
     assert resp.status == 200
-    assert household.turns and deep.turns == []
+    assert household.turns
     assert household.efforts == ["none"]
 
     resp = await client.post(
@@ -548,15 +543,14 @@ async def test_other_chat_fast_runs_none_but_escalates_on_cue(aiohttp_client, tm
     )
     assert resp.status == 200
     assert household.efforts == ["none", "high"]
-    assert deep.turns == []
 
 
 async def test_model_put_toggles_effort_not_gateway(aiohttp_client, tmp_path):
     # The admin Model setting is a live effort toggle: after switching to fast, a
     # fresh normal plain turn runs "none" instead of the thorough "high" — both on
     # the household gateway, no restart.
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path, pref="thorough"))
 
     resp = await client.put("/api/model", json={"value": "fast"}, headers=ADMIN_HDRS)
     assert resp.status == 200
@@ -566,13 +560,13 @@ async def test_model_put_toggles_effort_not_gateway(aiohttp_client, tmp_path):
         "/api/chat", json={"input": "noch eine frage"}, headers=RESIDENT_HDRS
     )
     assert resp.status == 200
-    assert household.turns and deep.turns == []
+    assert household.turns
     assert household.efforts == ["none"]
 
 
 async def test_model_get_returns_options_and_current(aiohttp_client, tmp_path):
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="fast"))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path, pref="fast"))
 
     resp = await client.get("/api/model", headers=ADMIN_HDRS)
     assert resp.status == 200
@@ -582,16 +576,16 @@ async def test_model_get_returns_options_and_current(aiohttp_client, tmp_path):
 
 
 async def test_model_put_rejects_unknown_value(aiohttp_client, tmp_path):
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path))
 
     resp = await client.put("/api/model", json={"value": "12b"}, headers=ADMIN_HDRS)
     assert resp.status == 400
 
 
 async def test_model_get_forbidden_for_non_admin(aiohttp_client, tmp_path):
-    household, deep = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_deep_app(household, deep, tmp_path))
+    household = _FakeEngine()
+    client = await aiohttp_client(_pref_app(household, tmp_path))
 
     resp = await client.get("/api/model", headers=RESIDENT_HDRS)
     assert resp.status == 403
