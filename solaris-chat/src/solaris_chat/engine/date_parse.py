@@ -280,6 +280,40 @@ def resolve(expression: str, *, now: datetime | None = None) -> Resolution:
     return Resolution(day=day, at=at)
 
 
+def find_dates(text: str, *, today: date | None = None) -> list[tuple[int, int, date]]:
+    """Every date literal in `text` as ``(start, end, day)``, left to right.
+
+    The same ISO / dotted / month-name grammar `resolve` uses, so "06.08.2026",
+    "6. August 2026" and "2026-08-06" all resolve to the one day — which is what
+    lets the grounding check (#1129) hold a spoken date against a record's ISO
+    field. Overlapping matches keep the first, longest one; a day/month with no
+    year completes exactly as `resolve` completes it.
+    """
+    today = today or datetime.now(LOCAL_TZ).date()
+    lowered = text.lower()
+    found: list[tuple[int, int, date]] = []
+    for pattern in (_ISO_RE, _DOTTED_RE, _MONTHNAME_RE):
+        for m in pattern.finditer(lowered):
+            raw_month = m.group("mo")
+            month = _MONTHS.get(raw_month) or int(raw_month)
+            day_of = int(m.group("d"))
+            if m.group("y"):
+                try:
+                    resolved: date | None = date(int(m.group("y")), month, day_of)
+                except ValueError:
+                    continue
+            else:
+                resolved = _year_completed(day_of, month, today)
+            if resolved is not None:
+                found.append((m.start(), m.end(), resolved))
+    kept: list[tuple[int, int, date]] = []
+    for span in sorted(found, key=lambda s: (s[0], s[0] - s[1])):
+        if kept and span[0] < kept[-1][1]:
+            continue
+        kept.append(span)
+    return kept
+
+
 def format_de(day: date, at: time | None) -> str:
     """The German label the confirmation reads back ("Donnerstag, 06.08. um 15:00")."""
     label = f"{WEEKDAYS_DE[day.weekday()]}, {day.strftime('%d.%m.')}"
