@@ -687,6 +687,22 @@ niemand in den Vault* wäre aber falsch.
 **Und er hängt an `solaris-deep`.** Die LLM-Hälfte läuft über den `deep`-Client
 (`crons.py`: *The Stenograph runs LIVE deep-client turns*). A01 entfernt genau dieses
 Profil — siehe die Korrektur an ZA-04.
+
+Er ist dabei nicht der einzige. **Vier Dinge hängen an diesem Anschluss**, drei davon
+unsichtbar: der Stenograph, die skill-gesteuerten Cron-Jobs (`daily-chronicle`,
+`problem-summarizer`, `chat-compactor`), die nächtliche Kompaktierung alter Sessions —
+und der Chat-Modus *Gründlich* als einziges sichtbares Element. Ersatzloses Löschen
+legt die ersten drei **still** still: kein Fehler, kein Log, sie laufen nur nie wieder
+durch. Nicht betroffen ist die Kompaktierung im laufenden Turn (`server.py`), die den
+Client des aufrufenden Profils bekommt.
+
+**Entschieden (2026-08-03): umziehen.** Die vier Nutzer wechseln auf `household`. Das
+kostet nichts, weil das Denken nicht am Profil hängt: `client.py` setzt
+`think = think_default or reasoning_effort not in ("", "none")`, und jeder Nacht-Job
+übergibt ohnehin `"high"`. Gleiches Modell, gleiche Toolbox — ein Wortwechsel an vier
+Stellen. *Gründlich* verschwindet ersatzlos aus der Oberfläche; die Lücke bis zur
+Auftragsschicht (Spalte C) wird bewusst in Kauf genommen, weil der Modus heute
+dasselbe Modell fährt wie der normale Chat.
 ### Geklärt
 
 - Radicale kann Kalender und Todo — beides läuft über eine Instanz, sie läuft
@@ -765,7 +781,7 @@ weißt du bei keiner Antwort sicher, wer sie erzeugt hat.
 
 | # | Aufgabe | Ergebnis | Abhängig von |
 | :--- | :--- | :--- | :--- |
-| A01 | `solaris-deep`-**Profil** entfernen (kein 6-Pass-Loop, siehe ZA-04). **Der Stenograph läuft darauf** — er muss vorher auf das `household`-Profil umziehen oder mit D3 abgeschaltet werden, sonst nimmt A01 ihn still mit | ZA-04 | — |
+| A01 | `solaris-deep`-**Profil** entfernen (kein 6-Pass-Loop, siehe ZA-04). **Entschieden:** die vier Nutzer des Profils ziehen auf `household` um — Stenograph, skill-gesteuerte Cron-Jobs, nächtliche Stale-Session-Kompaktierung, der `CronRunner`-Parameter. Verhalten identisch, weil die Aufrufe `reasoning_effort="high"` selbst übergeben. „Gründlich" verschwindet **ersatzlos** aus der UI | ZA-04 | — |
 | A02 | `web_search` / `web_extract` entfernen | ZA-04 | — |
 | A03 | Toter Code aus dem Prompt entfernen, Prefill neu messen | Kleinerer Prompt, schnellere Antwort | — (läuft parallel zu A05) |
 
