@@ -845,6 +845,43 @@ async def test_household_uid_prompt_unchanged(db, soul):
     assert system == "Du bist Solaris."
 
 
+async def test_prefill_composition_logged_per_shape(db, soul, capsys):
+    """The prefill is attributable to its parts at assembly time (#1138), and
+    a stable prompt logs the breakdown once, not once per turn."""
+
+    async def handler(_args):
+        return "{}"
+
+    tool = Tool(
+        name="ha_call_service",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    client, _ = _client(
+        db, soul, [ChatResult(content="ok"), ChatResult(content="ok")], tools=[tool]
+    )
+    sid = await client.create_session("anna")
+    await client.chat(sid, "Hallo")
+    await client.chat(sid, "Nochmal")
+
+    lines = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if "engine.prompt.composition" in line
+    ]
+    assert len(lines) == 1
+    args = lines[0]["args"]
+    assert args["profile"] == "household"
+    assert args["tool_count"] == 1
+    assert args["tools"] > 0
+    assert args["soul"] > 0
+    assert args["registry"] == 0  # no HA registry on this profile
+    assert args["scaffold"] > 0  # identity block + tool discipline
+    parts = args["tools"] + args["soul"] + args["registry"] + args["scaffold"]
+    assert abs(args["total"] - parts) <= 3  # per-part rounding only
+
+
 def test_identity_block_only_for_real_residents():
     from solaris_chat.engine.residents import identity_block
 

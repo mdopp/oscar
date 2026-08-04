@@ -318,10 +318,16 @@ def v_batch(c: Cache, a) -> None:
 
 def v_verify_set(c: Cache, a) -> None:
     d = c.load()
+    prev = d.get("verify") or {}
+    # An omitted --detail must not blank the checklist the seal recorded: the
+    # owed->verifying hop carries it to the Verify agent. Only an explicit
+    # --detail replaces it, and only for the same sha (a new sha's detail is
+    # about different changes).
+    detail = a.detail or (prev.get("detail", "") if prev.get("sha") == a.sha else "")
     d["verify"] = {
         "sha": a.sha,
         "status": a.status,
-        "detail": a.detail or "",
+        "detail": detail,
         "since": int(time.time()),
     }
     c.save(d)
@@ -366,9 +372,25 @@ def v_note(c: Cache, a) -> None:
     print(f"noted ({len(d['notes'])}/{NOTES_CAP})")
 
 
+def _park_units(d: dict, issue: int) -> list[str]:
+    """Take every not-yet-built unit that contains this issue out of `next`'s rotation."""
+    parked = []
+    for uid, u in (d.get("units") or {}).items():
+        if str(issue) not in [str(x) for x in u.get("issues", [])]:
+            continue
+        if u.get("status") in ("planned", "building"):
+            u["status"] = "parked"
+            parked.append(uid)
+    return parked
+
+
 def v_park(c: Cache, a) -> None:
     """Park an issue durably in GitHub: a label + (optional) a comment with the reason."""
     label = PARK_LABELS[a.state]
+    d = c.load()
+    parked_units = _park_units(d, a.issue)
+    if parked_units:
+        c.save(d)
     if not a.offline:
         gh(
             _repo_args(a.repo)
@@ -389,7 +411,8 @@ def v_park(c: Cache, a) -> None:
                 + ["issue", "comment", str(a.issue), "--body", a.comment],
                 check=False,
             )
-    print(f"parked #{a.issue} -> {label}")
+    units = f"; units out of rotation: {','.join(parked_units)}" if parked_units else ""
+    print(f"parked #{a.issue} -> {label}{units}")
 
 
 def v_mirror(c: Cache, a) -> None:
@@ -466,6 +489,8 @@ def v_unlock(c: Cache, a) -> None:
 # --------------------------------------------------------------------- selftest
 def v_selftest(c: Cache, a) -> None:
     """Offline coverage of the cache-backed logic (no gh)."""
+    import contextlib
+    import io
     import tempfile
     import unittest
 
@@ -473,6 +498,18 @@ def v_selftest(c: Cache, a) -> None:
         def setUp(self):
             self.d = tempfile.mkdtemp()
             self.c = Cache(os.path.join(self.d, "cache.json"))
+
+        def _run(self, fn, **kw):
+            """Call a verb offline, swallowing its stdout, and return the parsed print."""
+            kw.setdefault("offline", True)
+            kw.setdefault("repo", None)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fn(self.c, argparse.Namespace(**kw))
+            return buf.getvalue()
+
+        def _next(self):
+            return json.loads(self._run(v_next))
 
         def test_fresh_and_roundtrip(self):
             d = self.c.load()
@@ -506,6 +543,44 @@ def v_selftest(c: Cache, a) -> None:
             back = self.c.load()
             self.assertIsNone(back["batch"])
             self.assertNotIn("u1", back["units"])
+
+        def test_park_takes_the_units_unit_out_of_next(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[99999],"gate":"normal"}',
+            )
+            self.assertEqual(self._next()["id"], "z1")
+            self._run(v_park, issue=99999, state="blocked", comment="")
+            self.assertIsNone(self._next())
+            self.assertEqual(self.c.load()["units"]["z1"]["status"], "parked")
+
+        def test_park_leaves_other_units_alone(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[99999],"gate":"normal"}',
+            )
+            self._run(
+                v_plan,
+                unit='{"id":"z2","kind":"issue","issues":[88888],"gate":"normal"}',
+            )
+            self._run(v_park, issue=99999, state="review", comment="")
+            self.assertEqual(self._next()["id"], "z2")
+
+        def test_verify_set_without_detail_keeps_the_checklist(self):
+            self._run(
+                v_verify_set, sha="abc", status="owed", detail="pod healthy", pr=None
+            )
+            self._run(v_verify_set, sha="abc", status="verifying", detail="", pr=None)
+            self.assertEqual(self.c.load()["verify"]["detail"], "pod healthy")
+            self._run(v_verify_set, sha="abc", status="red", detail="new list", pr=None)
+            self.assertEqual(self.c.load()["verify"]["detail"], "new list")
+
+        def test_verify_set_drops_a_stale_detail_on_a_new_sha(self):
+            self._run(
+                v_verify_set, sha="abc", status="owed", detail="pod healthy", pr=None
+            )
+            self._run(v_verify_set, sha="def", status="owed", detail="", pr=None)
+            self.assertEqual(self.c.load()["verify"]["detail"], "")
 
         def test_verify_labels(self):
             self.assertEqual(

@@ -74,6 +74,15 @@ A full-suite/coverage failure the fast gate missed → identify the culprit comm
 `gh pr create` with a real body (no `--fill`): **What** (the batch's themes), **Why** (one `Closes #<N>` per issue), **Risk**, **Rollback**, **Verification** checklist (full gates + real-box `/verify` if path-mandated).
 
 ### 3. Merge gate (`main` is unprotected → `--auto` no-ops; gate manually)
+**Operator authorisation, recorded 2026-08-03.** The repository owner has explicitly
+authorised the seal step to merge the batch PR itself, without a per-batch human
+approval. This is the pipeline working as designed, not an oversight — but it is worth
+writing down, because an agent merging a PR it authored is otherwise indistinguishable
+from an accident. The authorisation covers **the batch PR only**; the two standing
+exceptions below are unchanged and are not the operator's to waive per batch:
+a `security:true` unit ships as a **draft** and a human merges it, and the
+**release-please PR is never merged by any stage**.
+
 **CI applies only to the paths in `ci.yml`** (`**/*.py`, `**/pyproject.toml`, `ruff.toml`, `.pre-commit-config.yaml`, `ci.yml`) — a **template-only / skill-only / docs-only** batch triggers **no CI**, so for those the gate is the full gate above + real-box `/verify`. If the batch touched any CI path: `gh pr checks <PR#> --watch`. Green → `gh pr merge <PR#> --merge --delete-branch`, then `git checkout main && git pull --ff-only`. Red twice on the same SHA → post the failing-job link, leave open, return (orchestrator hard-exit #1).
 
 ### 4. Hand off to Verify

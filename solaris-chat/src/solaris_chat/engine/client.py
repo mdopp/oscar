@@ -35,7 +35,7 @@ from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
-from solaris_chat.engine.tools import Toolbox
+from solaris_chat.engine.tools import Toolbox, estimate_tokens
 from solaris_chat.engine.tools import choices as choice_tools
 from solaris_chat.engine.tools import ha as ha_tools
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -342,6 +342,9 @@ class EngineClient:
         self._context_window = context_window
         self._bus = bus
         self._soul_cache: tuple[float, str] = (0.0, "")
+        # Last logged prefill shape, so the composition line fires on change
+        # rather than on every turn (#1138).
+        self._prefill_shape: tuple[int, ...] = ()
         # Per-session stash of a sensitive action held for ja/nein confirmation
         # (#570). In-memory on the client (one per profile) — survives the turn
         # boundary for both the durable session and the stateless facade source.
@@ -1223,7 +1226,8 @@ class EngineClient:
     # -- prompt assembly -----------------------------------------------------
 
     async def _system_prompt(self, session_id: str) -> str:
-        parts = [self._soul()]
+        soul = self._soul()
+        parts = [soul]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
         resident = identity_block(current_uid.get(), self._profile.default_uid)
@@ -1232,29 +1236,59 @@ class EngineClient:
         overlay = store.get_overlay(self._db_path, session_id)
         if overlay:
             parts.append(overlay)
+        block = ""
         if self._profile.registry is not None:
             block = await self._profile.registry.prompt_block()
             if block:
                 parts.append(block)
         if self._profile.toolbox.names():
             parts.append(_TOOL_DISCIPLINE)
-        return "\n\n".join(p for p in parts if p.strip())
+        prompt = "\n\n".join(p for p in parts if p.strip())
+        self._log_prefill(prompt, soul, block)
+        return prompt
 
     async def _system_prompt_stateless(self) -> str:
         """Profile prompt without a session overlay (the facade path). The
         tool-discipline tail is appended by respond() AFTER the caller's
         system prompt — recency is load-bearing."""
-        parts = [self._soul()]
+        soul = self._soul()
+        parts = [soul]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
         resident = identity_block(current_uid.get(), self._profile.default_uid)
         if resident:
             parts.append(resident)
+        block = ""
         if self._profile.registry is not None:
             block = await self._profile.registry.prompt_block()
             if block:
                 parts.append(block)
-        return "\n\n".join(p for p in parts if p.strip())
+        prompt = "\n\n".join(p for p in parts if p.strip())
+        self._log_prefill(prompt, soul, block)
+        return prompt
+
+    def _log_prefill(self, prompt: str, soul: str, registry: str) -> None:
+        """Attribute the prefill to its parts (#1138).
+
+        The prefill is the latency budget — every voice and chat turn
+        re-processes it — so G-2 needs to see *which* block a regression came
+        from, not just that the total moved. Logged only when the shape
+        changes, in the idiom of `engine.registry.refreshed`."""
+        tool_chars = self._profile.toolbox.schema_chars()
+        shape = (tool_chars, len(prompt), len(soul), len(registry))
+        if shape == self._prefill_shape:
+            return
+        self._prefill_shape = shape
+        log.info(
+            "engine.prompt.composition",
+            profile=self._profile.name,
+            total=estimate_tokens(tool_chars + len(prompt)),
+            tools=estimate_tokens(tool_chars),
+            tool_count=len(self._profile.toolbox.names()),
+            soul=estimate_tokens(len(soul)),
+            registry=estimate_tokens(len(registry)),
+            scaffold=estimate_tokens(len(prompt) - len(soul) - len(registry)),
+        )
 
     def _mirror(
         self, session_id: str, uid: str, kind: str, event: dict[str, Any]

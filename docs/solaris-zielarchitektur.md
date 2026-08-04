@@ -150,8 +150,9 @@ flowchart TD
 ## 5. Zone 1 — Schnellpfad
 
 Die Solaris Engine bleibt unverändert das, was sie ist: ein schlanker Ein-Pass-Loop mit
-injizierter HA-Registry, ~2,1k Prompt, `think=false`. Sie beantwortet alles, was eine
-feste Antwortform hat.
+injizierter HA-Registry, `think=false`. Der Prompt lag am 2026-08-03 bei ~7,8k Token
+— auf dieser Box gemessen, ein Haushalts-Turn gegen die Live-HA-Registry mit 34 Tools
+und 51 injizierten Entitäten. Sie beantwortet alles, was eine feste Antwortform hat.
 
 **Bestand — Dialog:** Haussteuerung mit Confirmation Gates · Musik & Radio über
 Jellyfin · Timer/Wecker mit Speaker-Rückmeldung · lesende Vault-Suche · Chat-UI ·
