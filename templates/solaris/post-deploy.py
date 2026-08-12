@@ -168,6 +168,68 @@ WAKEWORD_TRAINER_IMAGE = "ghcr.io/mdopp/solaris-wakeword-trainer:latest"
 # paths (one knob, no GPU-specific knob).
 WHISPER_CPU_DEFAULT_MODEL = "base-int8"
 WHISPER_GPU_DEFAULT_MODEL = "medium-int8"
+
+# Whisper's initial prompt (#1142): device/room/scene names are self-chosen
+# proper nouns no general model has in its vocabulary, so whisper guesses them
+# by sound. faster-whisper takes an `initial_prompt` that primes the decoder on
+# the words to expect; we assemble it at deploy time from Home Assistant's
+# friendly names. Whisper keeps only the LAST 224 tokens of the prompt, so the
+# list is cut to a conservative character budget (~3 chars/token for German
+# proper nouns) — an over-long prompt silently drops its own lead-in, and every
+# extra rare word raises the odds whisper hallucinates it instead of hearing it.
+WHISPER_PROMPT_FILE = "whisper-prompt.txt"
+WHISPER_PROMPT_MAX_CHARS = 600
+WHISPER_PROMPT_LEAD = {
+    "de": "Sprachbefehle im Haushalt. Die Geräte, Räume und Szenen heißen: ",
+    "en": "Smart home voice commands. The devices, rooms and scenes are: ",
+}
+# Entity domains worth priming on, in the order they get the budget: the things
+# a resident names out loud. Sensors/automations/etc. are excluded — hundreds of
+# machine-generated names would eat the budget and invite hallucinations.
+WHISPER_PROMPT_DOMAINS = (
+    "light",
+    "switch",
+    "cover",
+    "climate",
+    "media_player",
+    "fan",
+    "scene",
+    "script",
+    "lock",
+    "vacuum",
+)
+# Characters that would break out of the systemd `Environment="…"` value or of
+# the run script's double-quoted expansion; `%` is a systemd specifier.
+_WHISPER_PROMPT_UNSAFE = str.maketrans({c: " " for c in '"\\$%`\n\r\t'})
+
+# The linuxserver faster-whisper image builds the server command line in
+# /etc/s6-overlay/s6-rc.d/svc-whisper/run and wires NO env var to
+# `--initial-prompt` (#1142), so the only way to reach the flag is to mount our
+# own copy of that script over it. Everything but the prompt args is a
+# line-for-line copy of upstream's run script — upstream flag drift has to be
+# mirrored here by hand.
+WHISPER_RUN_SCRIPT = """#!/command/with-contenv bash
+# shellcheck shell=bash
+# Managed by the Solaris post-deploy (#1142).
+
+prompt_args=()
+if [ -n "${WHISPER_PROMPT:-}" ]; then
+    prompt_args=(--initial-prompt "${WHISPER_PROMPT}")
+fi
+
+exec \\
+    s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
+        s6-setuidgid abc python3 -m wyoming_faster_whisper \\
+        --uri 'tcp://0.0.0.0:10300' \\
+        --model "${WHISPER_MODEL:-auto}" \\
+        --beam-size "${WHISPER_BEAM:-1}" \\
+        --language "${WHISPER_LANG:-auto}" \\
+        --data-dir /config \\
+        --download-dir /config \\
+        "${prompt_args[@]}" \\
+        ${DEBUG:+--debug} \\
+        ${LOCAL_ONLY:+--local-files-only}
+"""
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
 VOICE_PROMPT = "Antworte kurz, gesprochen und ohne Markdown."
@@ -468,11 +530,115 @@ if __name__ == "__main__":
 """
 
 
-def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> str:
+def build_whisper_prompt(names: list[str], language: str) -> str:
+    """Assemble whisper's `initial_prompt` from HA friendly names (#1142, pure).
+
+    Names arrive already ordered by how likely they are to be spoken; the list
+    is cut at WHISPER_PROMPT_MAX_CHARS so the whole prompt stays inside
+    whisper's 224-token window instead of being truncated from the front."""
+    lead = WHISPER_PROMPT_LEAD.get(language, WHISPER_PROMPT_LEAD["en"])
+    budget = WHISPER_PROMPT_MAX_CHARS - len(lead) - 1
+    picked: list[str] = []
+    used = 0
+    for name in names:
+        cost = len(name) + (2 if picked else 0)
+        if used + cost > budget:
+            break
+        picked.append(name)
+        used += cost
+    if not picked:
+        return ""
+    return lead + ", ".join(picked) + "."
+
+
+def whisper_prompt_names(token: str) -> list[str]:
+    """Home Assistant's spoken-about entity names, deduped and ordered by domain
+    priority then alphabetically (#1142) — a stable order, so a deploy that
+    changes nothing renders the same prompt and restarts nothing."""
+    status, states = _ha_get("/api/states", token)
+    if status != 200 or not isinstance(states, list):
+        jlog("warn", "voice-unit", "whisper prompt: could not read HA states")
+        return []
+    by_domain: dict[str, set[str]] = {}
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        domain = str(state.get("entity_id") or "").split(".", 1)[0]
+        if domain not in WHISPER_PROMPT_DOMAINS:
+            continue
+        friendly = str((state.get("attributes") or {}).get("friendly_name") or "")
+        name = " ".join(friendly.translate(_WHISPER_PROMPT_UNSAFE).split())
+        if name:
+            by_domain.setdefault(domain, set()).add(name)
+    names: list[str] = []
+    seen: set[str] = set()
+    for domain in WHISPER_PROMPT_DOMAINS:
+        for name in sorted(by_domain.get(domain, ())):
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            names.append(name)
+    return names
+
+
+def read_whisper_prompt(data_dir: str) -> str:
+    """The prompt the last deploy persisted, so whisper starts primed before
+    this run has an HA token (install_whisper_unit runs first in main)."""
+    try:
+        with open(
+            os.path.join(data_dir, "voice", WHISPER_PROMPT_FILE), encoding="utf-8"
+        ) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def converge_whisper_prompt(token: str, data_dir: str) -> str:
+    """Refresh whisper's initial prompt from HA's live entity names (#1142).
+
+    Re-installs the whisper unit only when the household's names actually
+    changed — the prompt is read once at process start, so a change means a
+    container restart, and an unconditional one would churn STT every deploy."""
+    if not token:
+        return ""
+    prompt = build_whisper_prompt(
+        whisper_prompt_names(token), env("WHISPER_LANGUAGE", system_language())
+    )
+    previous = read_whisper_prompt(data_dir)
+    if not prompt or prompt == previous:
+        jlog(
+            "info",
+            "voice-unit",
+            "whisper prompt: unchanged",
+            chars=len(previous),
+            names_found=bool(prompt),
+        )
+        return previous
+    try:
+        with open(
+            os.path.join(data_dir, "voice", WHISPER_PROMPT_FILE), "w", encoding="utf-8"
+        ) as f:
+            f.write(prompt + "\n")
+    except OSError as e:
+        jlog("warn", "voice-unit", "whisper prompt: could not persist", error=str(e))
+        return previous
+    jlog("info", "voice-unit", "whisper prompt refreshed from HA", chars=len(prompt))
+    install_whisper_unit(data_dir)
+    return prompt
+
+
+def render_whisper_unit(
+    data_dir: str, model: str, language: str, gpu: bool, prompt: str = ""
+) -> str:
     """Render the voice-whisper `.container` Quadlet (pure). GPU path uses the
     linuxserver faster-whisper:gpu image with the CDI device + SELinux
     relaxation (#1026); CPU path the rhasspy wyoming-whisper image. Same
-    Wyoming endpoint (tcp://0.0.0.0:10300) either way."""
+    Wyoming endpoint (tcp://0.0.0.0:10300) either way.
+
+    `prompt` is whisper's `initial_prompt` (#1142). The CPU image takes CLI args
+    directly; the GPU image's s6 run script has to be overridden to reach the
+    flag, so the GPU path hands the prompt in as an env var the mounted run
+    script picks up."""
     if gpu:
         return (
             "[Unit]\n"
@@ -488,7 +654,10 @@ def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> 
             f"Environment=WHISPER_LANG={language}\n"
             "# Beam 1: greedy decode — GPU headroom goes into the bigger model.\n"
             "Environment=WHISPER_BEAM=1\n"
-            "# CDI device — podman kube play silently drops this when expressed\n"
+            # Device/room/scene names primed into the decoder (#1142). Read by
+            # the run script mounted below — the stock image ignores it.
+            + (f'Environment="WHISPER_PROMPT={prompt}"\n' if prompt else "")
+            + "# CDI device — podman kube play silently drops this when expressed\n"
             "# as resources.limits (#1026), which is why whisper is a Quadlet.\n"
             "AddDevice=nvidia.com/gpu=all\n"
             "# SELinux relaxation for NVML/CUDA init on FCoS (same fixup as\n"
@@ -497,6 +666,10 @@ def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> 
             "# linuxserver image keeps its model cache under /config.\n"
             f"Volume={data_dir}/voice/whisper-gpu:/config:Z\n"
             f"Volume={data_dir}/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z\n"
+            # The image's own run script hardcodes its flags and has no hook for
+            # --initial-prompt (#1142), so mount ours over it.
+            f"Volume={data_dir}/voice/whisper-run:"
+            "/etc/s6-overlay/s6-rc.d/svc-whisper/run:ro,Z\n"
             "AutoUpdate=registry\n"
             "# STT health probe (#610): a wedged CUDA context leaves the\n"
             "# container Up while every transcription throws invalid-device, so\n"
@@ -528,7 +701,9 @@ def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> 
         f"ContainerName={WHISPER_UNIT}\n"
         "Network=host\n"
         f"Exec=--model {model} --language {language}"
-        " --data-dir /data --uri tcp://0.0.0.0:10300\n"
+        # This image takes CLI args, so the prompt needs no run-script override.
+        + (f' --initial-prompt "{prompt}"' if prompt else "")
+        + " --data-dir /data --uri tcp://0.0.0.0:10300\n"
         f"Volume={data_dir}/voice/whisper:/data:Z\n"
         f"Volume={data_dir}/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z\n"
         "AutoUpdate=registry\n"
@@ -890,15 +1065,31 @@ def install_whisper_unit(data_dir: str) -> bool:
         os.chmod(probe_path, 0o644)
     except OSError as e:
         jlog("warn", "voice-unit", "whisper: could not write STT probe", error=str(e))
+    if gpu:
+        run_path = os.path.join(data_dir, "voice", "whisper-run")
+        try:
+            with open(run_path, "w", encoding="utf-8") as f:
+                f.write(WHISPER_RUN_SCRIPT)
+            os.chmod(run_path, 0o755)
+        except OSError as e:
+            jlog(
+                "warn",
+                "voice-unit",
+                "whisper: could not write run script",
+                error=str(e),
+            )
+            return False
+    prompt = read_whisper_prompt(data_dir)
     jlog(
         "info",
         "voice-unit",
         "whisper path selected",
         gpu=gpu,
         model=model,
+        prompt_chars=len(prompt),
     )
     return install_unit(
-        WHISPER_UNIT, render_whisper_unit(data_dir, model, language, gpu)
+        WHISPER_UNIT, render_whisper_unit(data_dir, model, language, gpu, prompt)
     )
 
 
@@ -3405,6 +3596,10 @@ def main() -> int:
             env("JELLYFIN_USERNAME") or JELLYFIN_SOLARIS_USER,
             jellyfin_password,
         )
+        # Prime whisper on the household's own device/room/scene names (#1142).
+        # Before the wiring, so the Assist registration below meets the
+        # restarted container rather than racing its restart.
+        converge_whisper_prompt(ha_token, data_dir)
         wire_voice_pipeline(ha_token, chat_port, api_key, data_dir)
 
     # ── 3. admin MCP token ───────────────────────────────────────────────────

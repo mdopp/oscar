@@ -80,7 +80,7 @@ def test_install_whisper_unit_picks_gpu_model_default_on_cdi(pd, monkeypatch, tm
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu: (
+        lambda data_dir, model, language, gpu, prompt="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -106,7 +106,7 @@ def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_p
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu: (
+        lambda data_dir, model, language, gpu, prompt="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -114,6 +114,188 @@ def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_p
     assert pd.install_whisper_unit(str(tmp_path)) is True
     assert rendered == {"model": "small-int8", "gpu": False}
     assert (tmp_path / "voice" / "whisper").is_dir()
+
+
+# -- whisper initial prompt (#1142) ------------------------------------------
+#
+# Device, room and scene names are self-chosen proper nouns, so whisper guesses
+# them by sound ("Lichterkette Balkon" → anything). faster-whisper takes an
+# `initial_prompt`, but the linuxserver GPU image's s6 run script hardcodes its
+# flags and wires no env var to it — hence the run-script override below.
+
+
+def test_whisper_gpu_unit_mounts_the_run_script_and_passes_the_prompt(pd):
+    unit = pd.render_whisper_unit(
+        "/mnt/data", "medium-int8", "de", gpu=True, prompt="Namen: Leselicht."
+    )
+    assert (
+        "Volume=/mnt/data/voice/whisper-run:"
+        "/etc/s6-overlay/s6-rc.d/svc-whisper/run:ro,Z" in unit
+    )
+    # Quoted: the value carries spaces, and systemd would otherwise read only
+    # the first word as the variable and the rest as further assignments.
+    assert 'Environment="WHISPER_PROMPT=Namen: Leselicht."' in unit
+
+
+def test_whisper_unit_without_a_prompt_declares_no_prompt_env(pd):
+    # First deploy of a box: no HA names yet ⇒ no empty prompt handed to whisper.
+    unit = pd.render_whisper_unit("/mnt/data", "medium-int8", "de", gpu=True)
+    assert "WHISPER_PROMPT" not in unit
+    cpu = pd.render_whisper_unit("/mnt/data", "base-int8", "de", gpu=False)
+    assert "--initial-prompt" not in cpu
+
+
+def test_whisper_cpu_unit_takes_the_prompt_as_a_cli_flag(pd):
+    # The rhasspy image runs the server directly, so no run-script override.
+    cpu = pd.render_whisper_unit(
+        "/mnt/data", "base-int8", "de", gpu=False, prompt="Namen: Leselicht."
+    )
+    assert '--initial-prompt "Namen: Leselicht."' in cpu
+    assert "svc-whisper" not in cpu
+
+
+def test_whisper_run_script_keeps_upstreams_flags_and_adds_the_prompt(pd):
+    # It REPLACES the image's own run script, so dropping one of upstream's
+    # flags would silently change how whisper runs (wrong model, wrong cache).
+    script = pd.WHISPER_RUN_SCRIPT
+    for flag in ("--uri", "--model", "--beam-size", "--language", "--data-dir"):
+        assert flag in script
+    assert "wyoming_faster_whisper" in script
+    # Quoted array expansion: an unquoted "$WHISPER_PROMPT" would word-split the
+    # names into separate argv entries and the server would reject them.
+    assert 'prompt_args=(--initial-prompt "${WHISPER_PROMPT}")' in script
+    assert '"${prompt_args[@]}"' in script
+
+
+def test_whisper_prompt_stays_inside_whispers_224_token_window(pd):
+    # Whisper keeps only the LAST 224 tokens: an over-long prompt drops its own
+    # lead-in, and every surplus rare word is one more hallucination candidate.
+    names = [f"Lichterkette Balkon Nummer {i}" for i in range(200)]
+    prompt = pd.build_whisper_prompt(names, "de")
+    assert len(prompt) <= pd.WHISPER_PROMPT_MAX_CHARS
+    assert prompt.startswith(pd.WHISPER_PROMPT_LEAD["de"])
+    assert prompt.endswith(".")
+    # Truncation drops names off the END, it never mangles one.
+    assert "Nummer 0," in prompt
+
+
+def test_whisper_prompt_is_empty_without_names(pd):
+    assert pd.build_whisper_prompt([], "de") == ""
+
+
+def test_whisper_prompt_falls_back_to_english_for_other_languages(pd):
+    assert pd.build_whisper_prompt(["Reading Light"], "fr").startswith(
+        pd.WHISPER_PROMPT_LEAD["en"]
+    )
+
+
+def _states(*entities):
+    return [
+        {"entity_id": eid, "attributes": {"friendly_name": name}}
+        for eid, name in entities
+    ]
+
+
+def test_whisper_prompt_names_only_takes_spoken_about_domains(pd, monkeypatch):
+    monkeypatch.setattr(
+        pd,
+        "_ha_get",
+        lambda path, token: (
+            200,
+            _states(
+                ("light.a", "Leselicht"),
+                ("scene.b", "Guten Morgen"),
+                # Machine-generated names: hundreds of them would eat the whole
+                # budget and prime whisper on words nobody says.
+                ("sensor.c", "Xiaomi Temperatur Batterie"),
+                ("automation.d", "Rollos runter um 22 Uhr"),
+            ),
+        ),
+    )
+    assert pd.whisper_prompt_names("t") == ["Leselicht", "Guten Morgen"]
+
+
+def test_whisper_prompt_names_dedupe_and_strip_quoting_hazards(pd, monkeypatch):
+    # The names land inside a systemd `Environment="…"` value: a stray quote or
+    # a `%` specifier there breaks the unit, not just the prompt.
+    monkeypatch.setattr(
+        pd,
+        "_ha_get",
+        lambda path, token: (
+            200,
+            _states(
+                ("light.a", 'Bad "100%" Licht'),
+                ("switch.b", "Leselicht"),
+                ("light.c", "Leselicht"),
+                ("light.d", ""),
+            ),
+        ),
+    )
+    assert pd.whisper_prompt_names("t") == ["Bad 100 Licht", "Leselicht"]
+
+
+def test_converge_whisper_prompt_reinstalls_only_on_change(pd, monkeypatch, tmp_path):
+    (tmp_path / "voice").mkdir()
+    installs = []
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(pd, "whisper_prompt_names", lambda token: ["Leselicht"])
+    monkeypatch.setattr(pd, "install_whisper_unit", lambda d: installs.append(d))
+    prompt = pd.converge_whisper_prompt("t", str(tmp_path))
+    assert "Leselicht" in prompt
+    assert installs == [str(tmp_path)]
+    # Persisted, so the next deploy starts whisper primed before HA answers.
+    assert pd.read_whisper_prompt(str(tmp_path)) == prompt
+    # Same household names on the next deploy ⇒ no STT restart.
+    assert pd.converge_whisper_prompt("t", str(tmp_path)) == prompt
+    assert installs == [str(tmp_path)]
+
+
+def test_converge_whisper_prompt_keeps_the_old_prompt_when_ha_is_unreadable(
+    pd, monkeypatch, tmp_path
+):
+    (tmp_path / "voice").mkdir()
+    (tmp_path / "voice" / pd.WHISPER_PROMPT_FILE).write_text("Namen: Leselicht.\n")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(pd, "whisper_prompt_names", lambda token: [])
+    monkeypatch.setattr(
+        pd,
+        "install_whisper_unit",
+        lambda d: pytest.fail("an unreadable HA must not restart STT"),
+    )
+    assert pd.converge_whisper_prompt("t", str(tmp_path)) == "Namen: Leselicht."
+
+
+def test_install_whisper_unit_drops_the_run_script_next_to_the_cache(
+    pd, monkeypatch, tmp_path
+):
+    """Without the file on disk podman bind-mounts a fresh empty DIRECTORY over
+    the image's s6 run script and whisper never starts — so the unit must not be
+    installed when the script could not be written."""
+    monkeypatch.setattr(pd, "cdi_available", lambda: True)
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(pd, "install_unit", lambda unit, content: True)
+    assert pd.install_whisper_unit(str(tmp_path)) is True
+    run = tmp_path / "voice" / "whisper-run"
+    assert run.read_text() == pd.WHISPER_RUN_SCRIPT
+    assert run.stat().st_mode & 0o111, "s6 will not exec a non-executable run script"
+
+
+def test_install_whisper_unit_passes_the_persisted_prompt(pd, monkeypatch, tmp_path):
+    (tmp_path / "voice").mkdir()
+    (tmp_path / "voice" / pd.WHISPER_PROMPT_FILE).write_text("Namen: Leselicht.\n")
+    seen = {}
+    monkeypatch.setattr(pd, "cdi_available", lambda: True)
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd,
+        "render_whisper_unit",
+        lambda data_dir, model, language, gpu, prompt="": (
+            seen.update(prompt=prompt) or "UNIT"
+        ),
+    )
+    monkeypatch.setattr(pd, "install_unit", lambda unit, content: True)
+    assert pd.install_whisper_unit(str(tmp_path)) is True
+    assert seen == {"prompt": "Namen: Leselicht."}
 
 
 def test_stt_healthcheck_probe_is_valid_python(pd):
