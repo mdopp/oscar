@@ -454,9 +454,14 @@ def install_unit(unit: str, content: str) -> bool:
 # comes back; the unit's HealthCmd runs it and HealthOnFailure=kill kills the
 # container on repeated failure so systemd restarts it fresh (re-injecting
 # CDI). Stdlib-only so it runs unchanged in either whisper image.
+#
+# It executes in the whisper container, NOT in this script's process: nothing
+# from this module's namespace is reachable from it, so every value it needs is
+# a literal or a __PLACEHOLDER__ filled by render_stt_healthcheck (#1144).
 STT_HEALTHCHECK = """import socket, json, struct, math, sys, time
 
 HOST, PORT = "127.0.0.1", 10300
+LANGUAGE = "__LANGUAGE__"
 _NL = chr(10)
 
 
@@ -483,7 +488,7 @@ def main():
         return 1
     sock.settimeout(30)
     try:
-        _send(sock, "transcribe", {"language": system_language()})
+        _send(sock, "transcribe", {"language": LANGUAGE})
         _send(
             sock,
             "audio-start",
@@ -528,6 +533,11 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 """
+
+
+def render_stt_healthcheck(language: str) -> str:
+    """The probe as it is written to disk — the only form fit to execute."""
+    return STT_HEALTHCHECK.replace("__LANGUAGE__", language)
 
 
 def build_whisper_prompt(names: list[str], language: str) -> str:
@@ -1061,7 +1071,7 @@ def install_whisper_unit(data_dir: str) -> bool:
     probe_path = os.path.join(data_dir, "voice", "stt_healthcheck.py")
     try:
         with open(probe_path, "w", encoding="utf-8") as f:
-            f.write(STT_HEALTHCHECK)
+            f.write(render_stt_healthcheck(language))
         os.chmod(probe_path, 0o644)
     except OSError as e:
         jlog("warn", "voice-unit", "whisper: could not write STT probe", error=str(e))
