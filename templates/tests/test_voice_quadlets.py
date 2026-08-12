@@ -11,9 +11,12 @@ ServiceBay voice template's own quadlet-render tests)."""
 from __future__ import annotations
 
 import ast
+import builtins
 import importlib.util
 import json
 import pathlib
+import re
+import symtable
 import sys
 
 import pytest
@@ -304,6 +307,64 @@ def test_stt_healthcheck_probe_is_valid_python(pd):
     compile(pd.STT_HEALTHCHECK, "stt_healthcheck.py", "exec")
     assert "transcript" in pd.STT_HEALTHCHECK
     assert "10300" in pd.STT_HEALTHCHECK
+
+
+def _undefined_globals(source: str) -> set[str]:
+    """Names the script reads but never defines — i.e. everything it would have
+    to borrow from the namespace of whatever generated it."""
+    top = symtable.symtable(source, "embedded.py", "exec")
+    defined = set(top.get_identifiers()) | set(dir(builtins))
+    leaked: set[str] = set()
+    tables = list(top.get_children())
+    while tables:
+        table = tables.pop()
+        tables.extend(table.get_children())
+        leaked |= {
+            sym.get_name()
+            for sym in table.get_symbols()
+            if sym.is_global() and sym.get_name() not in defined
+        }
+    return leaked
+
+
+@pytest.mark.parametrize(
+    "attr", ["WAKEWORD_QUEUE_PROBE", "STT_HEALTHCHECK"], ids=lambda a: a.lower()
+)
+def test_embedded_probes_borrow_nothing_from_post_deploy_s_namespace(pd, attr):
+    """#1144: the STT probe called post-deploy's own `system_language()`.
+
+    It compiled, so the sibling syntax check passed — but it runs in the whisper
+    container as its own process, where that name does not exist, and the
+    HealthCmd had been dying with NameError since #611 while the box reported no
+    STT health signal at all. Every embedded script must stand alone."""
+    assert not _undefined_globals(getattr(pd, attr))
+
+
+def test_the_written_stt_probe_has_no_unfilled_placeholder(pd):
+    # A shipped `__LANGUAGE__` would ask whisper to transcribe in a language
+    # that does not exist — the failure the raw constant invites.
+    rendered = pd.render_stt_healthcheck("nl")
+    assert '"language": LANGUAGE' in rendered
+    assert 'LANGUAGE = "nl"' in rendered
+    assert not re.search(r"__[A-Z]+__", rendered)
+
+
+def test_the_probe_asks_for_the_language_whisper_actually_runs(
+    pd, monkeypatch, tmp_path
+):
+    # WHISPER_LANGUAGE overrides system_language() for the container, so the
+    # probe has to follow it or it transcribes against a different model config.
+    monkeypatch.setattr(pd, "cdi_available", lambda: False)
+    monkeypatch.setattr(
+        pd,
+        "env",
+        lambda key, default="": "nl" if key == "WHISPER_LANGUAGE" else default,
+    )
+    monkeypatch.setattr(pd, "install_unit", lambda unit, content: True)
+    assert pd.install_whisper_unit(str(tmp_path)) is True
+    probe = (tmp_path / "voice" / "stt_healthcheck.py").read_text()
+    assert 'LANGUAGE = "nl"' in probe
+    assert not _undefined_globals(probe)
 
 
 # -- Kokoro-Martin TTS + bridge ----------------------------------------------
