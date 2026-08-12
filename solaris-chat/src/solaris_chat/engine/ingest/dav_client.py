@@ -375,16 +375,18 @@ class HttpDavClient:
     async def ensure_calendar(self, collection_url: str) -> None:
         """MKCALENDAR the collection so a following PUT lands (RFC 4791 §5.3.1).
 
-        Radicale answers 405 (Method Not Allowed) when the collection already
-        exists — expected on every re-sync, so it's not an error. Any other
-        non-2xx raises. Uses the CalDAV credentials.
+        An existing collection answers 405 (Method Not Allowed) or 409
+        (Conflict, observed against docker.io/tomsquest/docker-radicale on the
+        household box) — both mean "already there", so neither is an error,
+        matching `ensure_addressbook` below. Any other non-2xx raises. Uses
+        the CalDAV credentials.
         """
         url = collection_url if collection_url.endswith("/") else collection_url + "/"
         async with aiohttp.ClientSession(
             timeout=self._timeout, auth=self._caldav_auth
         ) as session:
             async with session.request("MKCALENDAR", url) as resp:
-                if resp.status != 405:
+                if resp.status not in (405, 409):
                     resp.raise_for_status()
 
     async def ensure_addressbook(self, collection_url: str, displayname: str) -> None:

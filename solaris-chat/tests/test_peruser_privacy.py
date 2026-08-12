@@ -1,8 +1,7 @@
 """Per-user privacy slice 1 (#576): uid-filtered retrieval, default-deny.
 
 Asserts the access-control core on EVERY model-facing retrieval path — the
-notes_search tool, the research tool (which fans out to notes), and the
-projection structured reads. The invariant under test: a query returns only
+notes_search tool and the projection structured reads. The invariant under test: a query returns only
 items where `resident_uid IN (caller_uid, 'household')`. A personal item owned
 by one resident never surfaces for another, and an unknown/voice caller
 (`household`) sees only shared items — never anyone's personal data.
@@ -18,7 +17,6 @@ import sqlite3
 
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools.notes import build_notes_tools
-from solaris_chat.engine.tools.research import build_research_tools
 
 
 def _note(root, name: str, owner: str | None) -> None:
@@ -353,29 +351,6 @@ def test_obsidian_ingest_scopes_private_note_to_resident(tmp_path):
         assert fact_owners <= {"cdopp"}
     finally:
         conn.close()
-
-
-# ---- research tool (fans out to the filtered notes path) ---------------------
-
-
-async def _research_note_refs(vault, caller_uid: str) -> set[str]:
-    tools = build_research_tools(notes_dir=vault, uid_getter=lambda: caller_uid)
-    research = next(t for t in tools if t.name == "research").handler
-    out = json.loads(await research({"query": "Wintergarten"}))
-    return {s["ref"] for s in out["sources"] if s["kind"] == "notes"}
-
-
-async def test_research_notes_source_is_uid_filtered_mdopp(tmp_path):
-    refs = await _research_note_refs(_vault(tmp_path), "mdopp")
-    assert refs == {"mdopp_secret.md", "shared.md", "legacy.md"}
-    assert "cdopp_secret.md" not in refs
-
-
-async def test_research_notes_source_household_only_shared(tmp_path):
-    refs = await _research_note_refs(_vault(tmp_path), "household")
-    assert refs == {"shared.md", "legacy.md"}
-    assert "mdopp_secret.md" not in refs
-    assert "cdopp_secret.md" not in refs
 
 
 # ---- projection structured reads ---------------------------------------------

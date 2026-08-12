@@ -20,8 +20,11 @@ flowchart LR
 ```
 
 A spoken command answers in ≈1.3 s after speech end (whisper GPU 0.38 s +
-engine ≤1 s); the household prompt is ~2.1k tokens with the HA entity
-registry injected.
+engine ≤1 s). The household prompt measured ~7.8k tokens on this box on
+2026-08-03 — one household turn against the live HA registry, 34 tools and
+51 injected entities. Its composition is logged per prompt assembly as
+`engine.prompt.composition` (tools/soul/registry/scaffold), so the number can
+be re-measured rather than guessed.
 
 ## Features
 

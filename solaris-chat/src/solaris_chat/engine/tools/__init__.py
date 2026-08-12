@@ -21,6 +21,21 @@ from typing import Any
 
 Handler = Callable[[dict[str, Any]], Awaitable[str]]
 
+# Calibrated against the box measurement of 2026-08-03: a household turn whose
+# system prompt + tool schemas came to ~28.5k characters reported 7810
+# prompt_eval_count tokens from Ollama (gemma4:e4b, German prose + JSON
+# schemas). Good enough to attribute a prefill to its parts; the authoritative
+# total is always Ollama's own prompt_eval_count.
+_CHARS_PER_TOKEN = 3.65
+
+
+def estimate_tokens(chars: int) -> int:
+    """Rough token count for a character count — cheap enough for the hot path.
+
+    Takes characters rather than text so a caller can attribute a part it only
+    knows as a length difference (e.g. the prompt minus its named blocks)."""
+    return round(chars / _CHARS_PER_TOKEN)
+
 
 class Visibility(str, Enum):
     """What a tool's result may reveal on the speaker (ADR-12 / G-6).
@@ -148,6 +163,11 @@ class Toolbox:
 
     def definitions(self) -> list[dict[str, Any]]:
         return [t.definition() for t in self._tools.values()]
+
+    def schema_chars(self) -> int:
+        """Characters this toolbox contributes to the prefill — the serialized
+        `tools` payload, which every turn re-processes."""
+        return len(json.dumps(self.definitions(), ensure_ascii=False))
 
     async def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         tool = self._tools.get(name)

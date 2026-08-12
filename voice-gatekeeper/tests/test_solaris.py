@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import httpx
-from gatekeeper.solaris import FAST_MODEL, THOROUGH_MODEL, SolarisClient, _extract_reply
+from gatekeeper.solaris import MODEL, SolarisClient, _extract_reply
 
 
 class _FakeEngine:
@@ -46,12 +46,15 @@ async def test_fast_turn_runs_on_sol():
         text="schalte das licht an", uid="michael", endpoint="e", trace_id="t"
     )
     assert reply == "Licht ist an."
-    assert fake.bodies[0]["model"] == FAST_MODEL
+    assert fake.bodies[0]["model"] == MODEL
     assert fake.bodies[0]["stream"] is False
     assert fake.bodies[0]["user"] == "michael"
 
 
-async def test_thorough_cue_routes_to_sol_deep():
+async def test_thorough_cue_stays_on_the_one_model():
+    # `solaris-deep` is gone (#1121): a "think harder" cue no longer routes to a
+    # second facade model — that model name would 404 and the voice turn would
+    # answer with silence.
     fake = _FakeEngine(["Lass mich nachdenken …"])
     client = _client(fake)
     await client.converse(
@@ -60,7 +63,7 @@ async def test_thorough_cue_routes_to_sol_deep():
         endpoint="e",
         trace_id="t",
     )
-    assert fake.bodies[0]["model"] == THOROUGH_MODEL
+    assert fake.bodies[0]["model"] == MODEL
 
 
 async def test_room_hint_prefixes_turn():

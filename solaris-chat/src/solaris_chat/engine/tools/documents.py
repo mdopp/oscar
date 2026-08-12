@@ -45,7 +45,7 @@ CATEGORIES = [
 
 # The typed fields the model may fill (all optional strings). Kept explicit so the
 # model has a concrete schema; dates are ISO YYYY-MM-DD by instruction.
-_FIELDS: dict[str, str] = {
+FIELDS: dict[str, str] = {
     "provider": "Anbieter/Firma",
     "policy_number": "Policen-/Vertragsnummer",
     "policyholder": "Versicherungsnehmer/Inhaber",
@@ -108,7 +108,7 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
             return json.dumps({"ok": False, "error": "path outside vault"})
         fm = f"---\ntype: document\ntitle: {title}\ncategory: {category}\n"
         fm += _fm_line("source_document", src)
-        for key in _FIELDS:
+        for key in FIELDS:
             val = str(args.get(key) or "").strip()
             if val:
                 fm += _fm_line(key, val)
@@ -150,7 +150,7 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
                 "type": "string",
                 "description": "kurzer sprechender Titel, z.B. 'ERGO Rechtsschutz'",
             },
-            **{k: {"type": "string", "description": v} for k, v in _FIELDS.items()},
+            **{k: {"type": "string", "description": v} for k, v in FIELDS.items()},
         },
         "required": ["source_document", "category", "title"],
     }

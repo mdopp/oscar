@@ -31,6 +31,7 @@ from solaris_chat.engine.tools import (
     current_speaker_id_enabled,
     current_speaker_matched,
 )
+from solaris_chat.engine.tools.calendar_tools import build_calendar_tools
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.documents import build_document_tools
 from solaris_chat.engine.tools.favorites import build_favorites_tools
@@ -43,12 +44,10 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
-from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
-from solaris_chat.engine.tools.web import build_web_tools
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.server import build_app
 
@@ -99,10 +98,7 @@ def _uid() -> str:
 def _registered_tools() -> dict[str, list[Tool]]:
     return {
         "build_ha_tools": build_ha_tools("http://ha", "tok"),
-        "build_web_tools": build_web_tools("key"),
-        "build_research_tools": build_research_tools(
-            notes_dir="/tmp/notes", uid_getter=_uid, tavily_api_key="key"
-        ),
+        "build_calendar_tools": build_calendar_tools(_uid),
         "build_choice_tools": build_choice_tools(),
         "build_timer_tools": build_timer_tools("/tmp/db.sqlite", _uid),
         "build_wakeword_tools": build_wakeword_tools("/tmp/db.sqlite", _uid),
@@ -169,7 +165,7 @@ def test_the_confidential_tools_are_the_documents_and_approval_paths():
         "check_skill_approval",
     }
     # The vault is a resident's own material: speaker match required, never free.
-    for name in ("notes_search", "notes_read", "research"):
+    for name in ("notes_search", "notes_read"):
         assert by_name[name].visibility is Visibility.PERSONAL
 
 
@@ -297,7 +293,6 @@ def _voice_app(db, soul, results, tools, speaker_id_enabled: bool = True):
     return (
         build_app(
             engine=engine("household", fake),
-            engine_deep=engine("solaris-deep", FakeOllama([])),
             remote_user_header="Remote-User",
             default_uid="household",
             solaris_db_path=db,

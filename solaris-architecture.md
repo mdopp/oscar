@@ -74,11 +74,19 @@ The engine is a module inside `solaris-chat`
   markdown + the **HA entity registry** (controllable domains,
   `entity_id | name | area`, NO live state — HA Assist's own approach,
   saves the list-entities pass) + per-session overlay. Household prefill:
-  ~2.1k tokens (was 12.7k, −84%, box-verified).
+  ~7.8k tokens, box-measured 2026-08-03 on a household turn against the live
+  HA registry (34 tools, 51 injected entities; was 12.7k Hermes-era).
+  Every prompt assembly attributes it to tools/soul/registry/scaffold in an
+  `engine.prompt.composition` log line (#1138), so a regression is traceable
+  to the block that caused it.
 - **Tools** are hand-written and token-lean: `ha_call_service` /
   `ha_get_state` / `ha_list_entities`, `timer_set/list/cancel`,
-  `web_search`/`web_extract` (ddgs, Tavily optional), `notes_search` /
-  `notes_read` / `note_write` / `fact_store`. The notes tools are the
+  `notes_search` / `notes_read` / `note_write` / `fact_store`, and
+  `calendar_create`, which writes the VEVENT straight to Radicale through the
+  engine's own `dav_client` rather than through HA — HA is the way to devices,
+  but for a data store Solaris already speaks to, its own client is the way
+  (ADR-09, #1125). Web search is
+  NOT one of them — it moves to Hermes (ADR-09, #1122). The notes tools are the
   retrieval seam future Immich/CalDAV retrievers plug into (§3).
 - **Sessions** live in `solaris.db` (`engine_sessions`/`engine_messages`,
   ownership a plain column — the `[uid:]` title-marker era is over).

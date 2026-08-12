@@ -81,7 +81,6 @@ Wired by `templates/solaris/post-deploy.py` at install; the engine reads:
 | `OLLAMA_URL` | local Ollama endpoint (GPU) |
 | `HASS_URL` / `HASS_TOKEN` | Home Assistant API + long-lived token |
 | `SOLARIS_API_KEY` | Bearer for the `/ollama` facade + `/api/chat` |
-| `TAVILY_API_KEY` | optional web-search upgrade (ddgs is the default) |
 
 Models are managed by the `ollama` template: `gemma4:e2b`, `gemma4:12b`,
 `nomic-embed-text` stay resident on the GPU (`OLLAMA_MAX_LOADED_MODELS=3`).

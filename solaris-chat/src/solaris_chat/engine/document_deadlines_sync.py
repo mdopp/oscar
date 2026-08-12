@@ -95,7 +95,7 @@ def _facts(conn, entity_id: str) -> dict[str, str]:
     return out
 
 
-def _collection_url(base_url: str, resident_uid: str) -> str:
+def calendar_collection_url(base_url: str, resident_uid: str) -> str:
     """The resident's Solaris calendar collection — `{base}/{uid}/solaris/`.
 
     Under the RESIDENT's own principal (option A / #1011): the resident owns their
@@ -105,7 +105,7 @@ def _collection_url(base_url: str, resident_uid: str) -> str:
     return f"{base_url.rstrip('/')}/{resident_uid}/{_CALENDAR}/"
 
 
-def _task_target(owner_uid: str, household_uid: str) -> str:
+def calendar_target_uid(owner_uid: str, household_uid: str) -> str:
     """Which resident's calendar a task lands in: its own owner, except a
     household task (`SHARED_UID`) which routes to the primary resident when set."""
     if owner_uid == projection.SHARED_UID:
@@ -187,14 +187,14 @@ async def sync_deadlines(
             summary = f"Aufgabe: {facts.get('title_text', task['canonical_name'])}"
             # A private task lands in its owner's calendar; a household task
             # (SHARED_UID) is routed to the primary resident like the deadlines.
-            owner = _task_target(task["resident_uid"], shared_target)
+            owner = calendar_target_uid(task["resident_uid"], shared_target)
             per_resident.setdefault(owner, []).append(
                 (uid, _build_event(uid, summary, "", day))
             )
     finally:
         conn.close()
     for resident_uid, events in per_resident.items():
-        collection_url = _collection_url(base_url, resident_uid)
+        collection_url = calendar_collection_url(base_url, resident_uid)
         try:
             await client.ensure_calendar(collection_url)
         except Exception as e:  # noqa: BLE001 — a missing collection fails its PUTs below.
@@ -255,11 +255,11 @@ async def cascade_task_event(
     day = None
     if row is not None and facts.get("status", "open") == "open":
         day = _parse_iso(facts.get("due", ""))
-    target = _task_target(
+    target = calendar_target_uid(
         row["resident_uid"] if row is not None else projection.SHARED_UID,
         household_uid,
     )
-    collection_url = _collection_url(base_url, target)
+    collection_url = calendar_collection_url(base_url, target)
     try:
         if day is None:
             await client.delete_item(collection_url, uid, suffix=".ics")

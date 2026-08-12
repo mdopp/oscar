@@ -188,6 +188,12 @@ The **Needs refinement** line is the point of the pipeline.
 - Ship/merge a path-mandated change without a green real-box `/verify`.
 - Auto-merge a `security:true` change — those open as draft and wait for human review.
 
+**What the pipeline IS authorised to merge** (operator decision, 2026-08-03): the
+**batch PR**, by the seal step, once its gates and CI are green — no per-batch human
+approval. Recorded here because an agent merging a PR it authored looks like a policy
+breach unless the authorisation is written down. It does not extend to the two lines
+above it: a `security:true` unit and the release-please PR still wait for a human.
+
 ## Reference
 - Stages: `stages/planner.md`, `stages/builder.md`, `stages/verify.md` (this dir; Verify runs in the background and writes `.claude/state/verify-result.json`). State broker: `queue.py` (verbs + `selftest`). How to run: `USAGE.md`.
 - Repo: `mdopp/solarisbay`. Upstream platform: `mdopp/servicebay` (cross-repo routing — see `stages/{planner,verify}.md`).

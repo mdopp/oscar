@@ -110,18 +110,6 @@ TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Sucht im Web nach aktuellen Informationen.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    },
 ]
 
 # (user message, expected tool name or None, expected entity_id substring or None)
@@ -140,7 +128,6 @@ TASKS = [
     ),
     ("Ist das Garagentor zu?", "ha_get_state", "cover.garagentor"),
     ("Stell einen Timer auf 10 Minuten für die Pizza.", "timer_set", None),
-    ("Wie wird das Wetter morgen in Hamburg?", "web_search", None),
 ]
 
 
@@ -205,6 +192,7 @@ def _rate(final: dict, count_key: str, dur_key: str) -> float:
 def run_model(url: str, model: str, runs: int, think: bool) -> dict:
     system = build_system()
     turn_walls, ttfts, tool_ok, tool_total = [], [], 0, 0
+    prefills: list[int] = []
     samples = []
     for _ in range(runs):
         messages = [{"role": "system", "content": system}]
@@ -213,6 +201,7 @@ def run_model(url: str, model: str, runs: int, think: bool) -> dict:
             r = chat(url, model, messages, think)
             turn_walls.append(r["wall"])
             ttfts.append(r["ttft"])
+            prefills.append(r["prompt_tokens"])
             if want_tool:
                 tool_total += 1
                 got = r["tool_calls"][0]["function"] if r["tool_calls"] else None
@@ -238,7 +227,9 @@ def run_model(url: str, model: str, runs: int, think: bool) -> dict:
         "wall_p50": round(statistics.median(turn_walls), 2),
         "wall_p95": round(sorted(turn_walls)[int(len(turn_walls) * 0.95) - 1], 2),
         "ttft_p50": round(statistics.median(ttfts), 2),
-        "prompt_tokens": None,
+        # The first turn of each run: system prompt + tools, no history yet —
+        # the prefill the engine pays every turn, straight from Ollama.
+        "prompt_tokens": min(prefills) if prefills else 0,
         "tool_acc": f"{tool_ok}/{tool_total}",
         "samples": samples,
     }

@@ -6,11 +6,10 @@ per conversation (keyed by the uid or the originating satellite) so a
 follow-up like "und im Schlafzimmer?" still has its context, without any
 server-side session bookkeeping.
 
-Model routing follows the #222 reasoning effort: a FAST turn (the household-
-control default) runs on `solaris` (the engine's fast household profile); an
-explicit "think harder" cue (Gründlich) runs on `solaris-deep` (the same e4b,
-thinks by default — 12b retired 2026-07-13). The engine does its own tool
-dispatch server-side — the reply is plain text, ready for TTS.
+Every turn runs on `solaris`, the engine's household profile — the facade's
+only conversational model since `solaris-deep` was retired (#1121). The engine
+does its own tool dispatch server-side — the reply is plain text, ready for
+TTS.
 """
 
 from __future__ import annotations
@@ -19,11 +18,9 @@ from collections import deque
 from typing import Any
 
 import httpx
-from gatekeeper import reasoning
 from gatekeeper.logging import log
 
-FAST_MODEL = "solaris"
-THOROUGH_MODEL = "solaris-deep"
+MODEL = "solaris"
 
 # Per-conversation rolling history: enough for short voice follow-ups, small
 # enough that the facade's prefill stays lean.
@@ -65,15 +62,10 @@ class SolarisClient:
         # doesn't speak.
         if location:
             text = f"[room: {location}]\n{text}"
-        effort = reasoning.choose_effort(text)
-        model = FAST_MODEL if effort == reasoning.FAST else THOROUGH_MODEL
-        if model != FAST_MODEL:
-            log.info("gatekeeper.solaris.reasoning", trace_id=trace_id, effort=effort)
-
         history = self._history.setdefault(conv_key, deque(maxlen=_MAX_HISTORY))
         messages = [*history, {"role": "user", "content": text}]
         body: dict[str, Any] = {
-            "model": model,
+            "model": MODEL,
             "messages": messages,
             "stream": False,
             "user": uid,
