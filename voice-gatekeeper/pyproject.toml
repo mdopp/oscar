@@ -36,7 +36,7 @@ dependencies = [
   # server. Its CI is green only because those imports are function-local.
   # Lifting this cap alone would put a 2.x server behind a client that
   # cannot be built on 2.x, so the two move together or not at all (#1102).
-  "mcp>=1.2,<2",
+  "mcp>=1.2,<3",
   "uvicorn>=0.27",
 ]
 
