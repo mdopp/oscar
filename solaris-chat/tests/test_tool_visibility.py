@@ -169,6 +169,15 @@ def test_the_confidential_tools_are_the_documents_and_approval_paths():
         assert by_name[name].visibility is Visibility.PERSONAL
 
 
+def test_the_personal_tools_are_the_vault_and_the_calendar_write():
+    """Writing to the family calendar is not household business: with speaker-ID
+    on, a visitor at the kitchen table must not be able to dictate appointments
+    into it. Reading the calendar stays household — there is no read tool yet."""
+    by_name = {t.name: t for g in _registered_tools().values() for t in g}
+    personal = {n for n, t in by_name.items() if t.visibility is Visibility.PERSONAL}
+    assert personal == {"notes_search", "notes_read", "calendar_create"}
+
+
 # -- G-6: no class means confidential ---------------------------------------
 
 
@@ -234,6 +243,34 @@ async def test_voice_personal_content_needs_a_speaker_match():
 
     current_speaker_matched.set(True)
     assert await _dispatch(_tool("notiz", Visibility.PERSONAL)) == '{"leaked": true}'
+
+
+async def test_voice_withholds_the_real_calendar_create_without_a_speaker_match():
+    # The registered tool, not a stand-in: an unrecognised voice never reaches
+    # the CalDAV write.
+    current_channel.set(CHANNEL_VOICE)
+    tool = next(t for t in build_calendar_tools(_uid) if t.name == "calendar_create")
+    out = json.loads(
+        await Toolbox([tool]).dispatch(
+            "calendar_create", {"title": "Zahnarzt", "when": "morgen"}
+        )
+    )
+    assert out["ok"] is False
+    assert out["reason"] == "visibility_withheld_on_voice"
+    assert out["visibility"] == "persoenlich"
+
+
+async def test_calendar_create_still_answers_on_voice_when_speaker_id_is_off():
+    # Today's box: nothing can match, so Persönlich falls back to Haushalt and
+    # the tool runs as before this classification change.
+    current_channel.set(CHANNEL_VOICE)
+    current_speaker_id_enabled.set(False)
+    tool = next(t for t in build_calendar_tools(_uid) if t.name == "calendar_create")
+    assert tool.visibility_class is Visibility.PERSONAL
+    out = json.loads(
+        await Toolbox([_tool(tool.name, tool.visibility)]).dispatch(tool.name, {})
+    )
+    assert out == {"leaked": True}
 
 
 async def test_undeclared_tool_is_withheld_on_voice():

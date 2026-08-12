@@ -146,6 +146,8 @@ def build_calendar_tools(uid_getter) -> list[Tool]:
                 "required": ["title", "when"],
             },
             handler=calendar_create,
-            visibility=Visibility.HOUSEHOLD,
+            # A visitor must not be able to dictate appointments into the
+            # household calendar once speaker-ID runs.
+            visibility=Visibility.PERSONAL,
         ),
     ]
