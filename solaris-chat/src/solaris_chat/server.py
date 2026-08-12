@@ -1313,6 +1313,7 @@ def build_app(
     immich_base_url: str = "",
     immich_api_key: str = "",
     paperless_ui_url: str = "",
+    speaker_id_enabled: bool = False,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -6091,6 +6092,7 @@ def build_app(
             api_key=api_key,
             default_uid=default_uid,
             solaris_db_path=solaris_db_path,
+            speaker_id_enabled=speaker_id_enabled,
             event_bus=event_bus,
             notifier=notifier,
         )
@@ -6373,6 +6375,7 @@ async def serve(
     immich_base_url: str = "",
     immich_api_key: str = "",
     paperless_ui_url: str = "",
+    speaker_id_enabled: bool = False,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -6404,6 +6407,7 @@ async def serve(
         thorough_model=thorough_model,
         tts_voices=tts_voices,
         solaris_db_path=solaris_db_path,
+        speaker_id_enabled=speaker_id_enabled,
         notes_dir=notes_dir,
         ollama_url=ollama_url,
         trace_recorder=trace_recorder,

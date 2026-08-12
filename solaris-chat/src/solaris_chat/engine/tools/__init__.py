@@ -59,6 +59,15 @@ current_speaker_matched: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "engine_speaker_matched", default=False
 )
 
+# Whether speaker-ID runs on this install at all (SOLARIS_SPEAKER_ID_ENABLED).
+# With it off nothing can ever match, so gating PERSONAL would withhold a
+# resident's own notes from every spoken turn forever: the class then collapses
+# to HOUSEHOLD, i.e. the gate only bites where speaker recognition can satisfy
+# it. CONFIDENTIAL is unaffected — it is never spoken, on or off.
+current_speaker_id_enabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "engine_speaker_id_enabled", default=True
+)
+
 _POINTER_PERSONAL = (
     "Ich bin mir nicht sicher, wer gerade spricht — persönliche Sachen lese ich"
     " dann nicht laut vor. In der Solaris-App findest du es."
@@ -99,8 +108,9 @@ class Tool:
 def voice_pointer(tool: Tool) -> str | None:
     """The pointer a voice turn gets instead of this tool's content (#1130).
 
-    `None` when the tool may answer normally: off the voice path, or a HOUSEHOLD
-    tool, or a PERSONAL one on an utterance speaker-ID actually matched. A
+    `None` when the tool may answer normally: off the voice path, a HOUSEHOLD
+    tool, or a PERSONAL one either on an utterance speaker-ID actually matched
+    or on an install where speaker-ID is off (it then counts as HOUSEHOLD). A
     CONFIDENTIAL tool never answers with content on a speaker, whoever is heard.
     """
     if current_channel.get() != CHANNEL_VOICE:
@@ -108,7 +118,9 @@ def voice_pointer(tool: Tool) -> str | None:
     visibility = tool.visibility_class
     if visibility is Visibility.HOUSEHOLD:
         return None
-    if visibility is Visibility.PERSONAL and current_speaker_matched.get():
+    if visibility is Visibility.PERSONAL and (
+        current_speaker_matched.get() or not current_speaker_id_enabled.get()
+    ):
         return None
     say = (
         _POINTER_PERSONAL

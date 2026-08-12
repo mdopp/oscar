@@ -219,6 +219,12 @@ class Settings:
     vapid_subject: str
     android_package: str
     android_cert_fingerprints: tuple[str, ...]
+    # Does speaker-ID run on this install (#1130)? The same pod flag the
+    # gatekeeper reads. The voice visibility gate needs it: with speaker-ID off
+    # no utterance can ever be matched to a resident, so the Persönlich class
+    # would withhold a resident's own notes from every spoken turn forever — it
+    # collapses to Haushalt instead. Vertraulich is never spoken either way.
+    speaker_id_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -439,6 +445,16 @@ class Settings:
             android_cert_fingerprints=_parse_cert_fingerprints(
                 os.environ.get("ANDROID_CERT_FINGERPRINTS", "")
             ),
+            # Positive evidence only — unlike the gatekeeper's own predicate,
+            # which assumes on when unset because it merely decides whether to
+            # *try* loading the extractor. Here an absent flag (a pod spec that
+            # predates this var) must not silently gate a resident's notes off
+            # the speaker, so the engine withholds Persönlich only where the
+            # install says speaker-ID actually runs.
+            speaker_id_enabled=os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "")
+            .strip()
+            .lower()
+            in ("1", "true", "yes", "on"),
         )
 
 

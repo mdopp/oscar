@@ -28,6 +28,7 @@ from solaris_chat.engine.tools import (
     Toolbox,
     Visibility,
     current_channel,
+    current_speaker_id_enabled,
     current_speaker_matched,
 )
 from solaris_chat.engine.tools.choices import build_choice_tools
@@ -73,12 +74,16 @@ def soul(tmp_path) -> str:
 
 @pytest.fixture(autouse=True)
 def clean_channel():
-    """Each test starts off the voice path — the browser/API default."""
+    """Each test starts off the voice path — the browser/API default — on an
+    install where speaker-ID runs, so a test that wants the fallback has to ask
+    for it."""
     channel = current_channel.set("")
     matched = current_speaker_matched.set(False)
+    enabled = current_speaker_id_enabled.set(True)
     yield
     current_channel.reset(channel)
     current_speaker_matched.reset(matched)
+    current_speaker_id_enabled.reset(enabled)
 
 
 # -- the registry lint ------------------------------------------------------
@@ -242,10 +247,37 @@ async def test_undeclared_tool_is_withheld_on_voice():
     assert out["visibility"] == "vertraulich"
 
 
+# -- speaker-ID off: Persönlich collapses to Haushalt -----------------------
+
+
+async def test_personal_answers_on_voice_when_speaker_id_is_off():
+    # Nothing can ever match on this install, so gating Persönlich would mute a
+    # resident's own notes on every spoken turn. It counts as Haushalt instead.
+    current_channel.set(CHANNEL_VOICE)
+    current_speaker_id_enabled.set(False)
+    assert await _dispatch(_tool("notiz", Visibility.PERSONAL)) == '{"leaked": true}'
+
+
+async def test_confidential_stays_withheld_when_speaker_id_is_off():
+    current_channel.set(CHANNEL_VOICE)
+    current_speaker_id_enabled.set(False)
+    out = json.loads(await _dispatch(_tool("vertrag", Visibility.CONFIDENTIAL)))
+    assert out["reason"] == "visibility_withheld_on_voice"
+    assert out["visibility"] == "vertraulich"
+
+
+async def test_undeclared_tool_is_withheld_when_speaker_id_is_off():
+    # The fallback moves Persönlich only — a forgotten class is still confidential.
+    current_channel.set(CHANNEL_VOICE)
+    current_speaker_id_enabled.set(False)
+    out = json.loads(await _dispatch(_tool("mystery")))
+    assert out["visibility"] == "vertraulich"
+
+
 # -- the facade actually flips the channel ----------------------------------
 
 
-def _voice_app(db, soul, results, tools):
+def _voice_app(db, soul, results, tools, speaker_id_enabled: bool = True):
     def engine(name: str, fake: FakeOllama) -> EngineClient:
         return EngineClient(
             EngineProfile(
@@ -269,6 +301,7 @@ def _voice_app(db, soul, results, tools):
             remote_user_header="Remote-User",
             default_uid="household",
             solaris_db_path=db,
+            speaker_id_enabled=speaker_id_enabled,
             api_key="",
             bus=SessionBus(),
         ),
@@ -391,3 +424,98 @@ async def test_facade_turn_unlocks_personal_on_a_speaker_hit(aiohttp_client, db,
     )
     await _voice_turn(aiohttp_client, app, "lies meine Notiz")
     assert ran == [{}]
+
+
+async def test_facade_turn_speaks_personal_when_speaker_id_is_off(
+    aiohttp_client, db, soul
+):
+    """The box runs with SOLARIS_SPEAKER_ID_ENABLED=false: no stash row can ever
+    appear, so the personal tool answers instead of pointing at the app."""
+    ran = []
+
+    async def handler(args):
+        ran.append(args)
+        return '{"notiz": "Zahnarzt am Freitag"}'
+
+    tool = Tool(
+        name="notiz_lesen",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        visibility=Visibility.PERSONAL,
+    )
+    app, fake = _voice_app(
+        db,
+        soul,
+        [_call("notiz_lesen"), ChatResult(content="Zahnarzt am Freitag.")],
+        [tool],
+        speaker_id_enabled=False,
+    )
+    await _voice_turn(aiohttp_client, app, "was steht in meiner Notiz")
+    assert ran == [{}]
+    fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
+    assert "Zahnarzt am Freitag" in fed_back
+    assert "visibility_withheld_on_voice" not in fed_back
+
+
+async def test_facade_turn_withholds_confidential_when_speaker_id_is_off(
+    aiohttp_client, db, soul
+):
+    """The fallback moves Persönlich only — Vertraulich is never spoken."""
+    ran = []
+
+    async def handler(args):
+        ran.append(args)
+        return '{"betrag": "412,50 EUR"}'
+
+    tool = Tool(
+        name="vertrag_lesen",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        visibility=Visibility.CONFIDENTIAL,
+    )
+    app, fake = _voice_app(
+        db,
+        soul,
+        [_call("vertrag_lesen"), ChatResult(content="Schau in die App.")],
+        [tool],
+        speaker_id_enabled=False,
+    )
+    await _voice_turn(aiohttp_client, app, "was kostet meine Versicherung")
+    assert ran == [], "speaker-ID off must not unlock a confidential tool"
+    fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
+    assert "visibility_withheld_on_voice" in fed_back
+    assert "412,50" not in fed_back
+
+
+async def test_facade_turn_withholds_personal_when_speaker_id_is_on_and_unmatched(
+    aiohttp_client, db, soul
+):
+    """The other direction: with speaker-ID on and no match the gate still bites,
+    and the note never reaches the model."""
+    ran = []
+
+    async def handler(args):
+        ran.append(args)
+        return '{"notiz": "Zahnarzt am Freitag"}'
+
+    tool = Tool(
+        name="notiz_lesen",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        visibility=Visibility.PERSONAL,
+    )
+    app, fake = _voice_app(
+        db,
+        soul,
+        [_call("notiz_lesen"), ChatResult(content="Schau in die App.")],
+        [tool],
+        speaker_id_enabled=True,
+    )
+    await _voice_turn(aiohttp_client, app, "was steht in meiner Notiz")
+    assert ran == []
+    fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
+    assert "visibility_withheld_on_voice" in fed_back
+    assert "Zahnarzt" not in fed_back
