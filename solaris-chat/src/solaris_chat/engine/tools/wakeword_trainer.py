@@ -22,7 +22,7 @@ from solaris_chat import (
     wakeword_samples_store,
     wakeword_training_store,
 )
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 _ACCEPTED_PHONETICS = re.compile(
     r"(solaris|so\s*la\s*ris|solar|so-la-ris|solaries|1live)", re.I
@@ -433,6 +433,7 @@ def build_wakeword_tools(
                 },
             },
             handler=_handle_start,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="record_wakeword_sample",
@@ -454,6 +455,7 @@ def build_wakeword_tools(
                 },
             },
             handler=_handle_sample,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="audit_wakeword_samples",
@@ -463,6 +465,7 @@ def build_wakeword_tools(
             ),
             parameters={"type": "object", "properties": {}},
             handler=_handle_audit,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="list_wakeword_samples",
@@ -471,6 +474,7 @@ def build_wakeword_tools(
             ),
             parameters={"type": "object", "properties": {}},
             handler=_handle_list,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="delete_wakeword_sample",
@@ -487,6 +491,7 @@ def build_wakeword_tools(
                 },
             },
             handler=_handle_delete,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="trigger_wakeword_training",
@@ -503,5 +508,6 @@ def build_wakeword_tools(
                 },
             },
             handler=_handle_trigger,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

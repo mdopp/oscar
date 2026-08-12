@@ -29,7 +29,7 @@ from solaris_chat.engine.document_deadlines_sync import (
 )
 from solaris_chat.engine.ingest.dav_client import HttpDavClient
 from solaris_chat.engine.knowledge import projection
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.logging import log
 
 _UID_PREFIX = "solaris-event-"
@@ -146,5 +146,8 @@ def build_calendar_tools(uid_getter) -> list[Tool]:
                 "required": ["title", "when"],
             },
             handler=calendar_create,
+            # A visitor must not be able to dictate appointments into the
+            # household calendar once speaker-ID runs.
+            visibility=Visibility.PERSONAL,
         ),
     ]

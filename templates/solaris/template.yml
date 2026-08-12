@@ -116,6 +116,13 @@ spec:
       value: "admins"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
+    # The same speaker-ID flag the gatekeeper runs on (#1130). The engine's
+    # voice visibility gate needs it: with speaker-ID off no spoken turn can
+    # ever be attributed to a resident, so the Persönlich class collapses to
+    # Haushalt instead of withholding a resident's own notes forever. Vertraulich
+    # is never spoken either way.
+    - name: SOLARIS_SPEAKER_ID_ENABLED
+      value: "{{SOLARIS_SPEAKER_ID_ENABLED}}"
     # Read-write mount of the household skill pack: the panel edits it, the
     # engine reads cron-job skill bodies from it.
     - name: SKILLS_DIR

@@ -13,7 +13,7 @@ import contextvars
 import json
 from typing import Any
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 # The turn's offered quick-reply options. The engine sets this per turn and
 # drains it at turn end into the `quick_replies` event.
@@ -73,5 +73,6 @@ def build_choice_tools() -> list[Tool]:
                 "required": ["options"],
             },
             handler=offer_choices,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]

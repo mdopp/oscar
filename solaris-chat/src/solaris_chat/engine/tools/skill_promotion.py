@@ -33,7 +33,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.mcp_tools import call_sb_tool
 
 # Lowercase letters/digits/dashes; no path separators, no leading dot — the same
@@ -180,6 +180,7 @@ def build_skill_promotion_tools(
                 "required": ["slug"],
             },
             handler=file_approval,
+            visibility=Visibility.CONFIDENTIAL,
         ),
         Tool(
             name="check_skill_approval",
@@ -195,5 +196,6 @@ def build_skill_promotion_tools(
                 "required": ["slug"],
             },
             handler=check_approval,
+            visibility=Visibility.CONFIDENTIAL,
         ),
     ]

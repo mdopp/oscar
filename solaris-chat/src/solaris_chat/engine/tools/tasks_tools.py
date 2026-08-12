@@ -15,7 +15,7 @@ from typing import Any
 from solaris_chat.engine import tasks
 from solaris_chat.engine.document_deadlines_sync import cascade_task_event_configured
 from solaris_chat.engine.knowledge import projection
-from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools import Tool, Visibility
 
 
 def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]:
@@ -102,6 +102,7 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
                 "required": ["title"],
             },
             handler=task_add,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="task_list",
@@ -117,6 +118,7 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
                 "properties": {"include_done": {"type": "boolean"}},
             },
             handler=task_list,
+            visibility=Visibility.HOUSEHOLD,
         ),
         Tool(
             name="task_done",
@@ -133,5 +135,6 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
                 },
             },
             handler=task_done,
+            visibility=Visibility.HOUSEHOLD,
         ),
     ]
