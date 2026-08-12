@@ -1437,6 +1437,88 @@ def stamp_jellyfin_cast_url(data_dir: str) -> str | None:
     return cast_url
 
 
+# The EC P-256 maths needs `cryptography`, which the host python this hook runs
+# on does not have (box-checked). The chat container does, and the engine already
+# owns the one derivation (config._derive_vapid_public_key, #801), so ask it.
+VAPID_DERIVE_PROBE = (
+    "import os;"
+    "from solaris_chat.config import _derive_vapid_public_key as d;"
+    "print(d(os.environ.get('VAPID_PRIVATE_KEY', '')))"
+)
+# base64url of the uncompressed P-256 point — what `web-push generate-vapid-keys`
+# emits. Anything else out of the probe is an error line, never a key to stamp.
+VAPID_PUBLIC_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{80,90}$")
+
+
+def derive_vapid_public_key() -> str:
+    """The public half of the pod's own VAPID_PRIVATE_KEY, base64url, no padding.
+
+    Returns "" when the chat container is down, the private key is absent, or it
+    can't be read as an EC key — the caller then leaves VAPID_PUBLIC_KEY alone."""
+    out = _podman_out(["exec", CHAT_CONTAINER, "python", "-c", VAPID_DERIVE_PROBE])
+    return out if VAPID_PUBLIC_KEY_RE.match(out) else ""
+
+
+def stamp_vapid_public_key() -> str | None:
+    """Re-derive VAPID_PUBLIC_KEY into the deployed solaris.yml when the render
+    left it empty (#1147).
+
+    A plain template reinstall resets this non-secret text var to its blank
+    default while the secret VAPID_PRIVATE_KEY survives (servicebay#2531), so the
+    pod loses the key the browser needs to subscribe to Web Push. Same re-assert
+    shape as JELLYFIN_CAST_URL/HASS_TOKEN, but with no external state to keep: the
+    value is the public half of the private key that is still there. An already-set
+    value is left untouched, and an unreadable private key skips the stamp — a
+    freshly generated keypair would silently unsubscribe every registered device.
+    Returns the stamped key, or None when nothing was changed."""
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "web-push", "solaris.yml not found at expected path", path=pod_yml)
+        return None
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "web-push", "could not read solaris.yml", error=str(e))
+        return None
+    current = re.search(r"- name: VAPID_PUBLIC_KEY\n\s+value: ([^\n]*)", src)
+    if current is None:
+        jlog(
+            "warn",
+            "web-push",
+            "VAPID_PUBLIC_KEY env entry not found in solaris.yml — not stamped",
+            path=pod_yml,
+        )
+        return None
+    if current.group(1).strip().strip('"'):
+        return None
+    public_key = derive_vapid_public_key()
+    if not public_key:
+        jlog(
+            "warn",
+            "web-push",
+            "VAPID_PUBLIC_KEY is empty and its private half could not be read — "
+            "left empty; Web Push stays off until the operator restores the keypair",
+        )
+        return None
+    new, n = _patch_env_value(src, "VAPID_PUBLIC_KEY", public_key)
+    if n == 0 or new == src:
+        return None
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "web-push", "could not write patched solaris.yml", error=str(e))
+        return None
+    jlog(
+        "info",
+        "web-push",
+        "stamped VAPID_PUBLIC_KEY derived from VAPID_PRIVATE_KEY",
+        public_key=public_key,
+    )
+    return public_key
+
+
 def _ha_get(path: str, token: str, timeout: float = 10.0) -> tuple[int, object]:
     """GET against HA's API with the long-lived token. 0 on connection failure."""
     req = urllib.request.Request(
@@ -3624,6 +3706,13 @@ def main() -> int:
     # the chat container, and step 0 runs while ServiceBay's own "Pod spec
     # changed — restarting solaris" still has that container down.
     refresh_wakeword_trainer_image(chat_port)
+
+    # ── 3c. Web Push key (#1147) ─────────────────────────────────────────────
+    # A reinstall blanks the non-secret VAPID_PUBLIC_KEY while the secret private
+    # half survives, so re-derive it from that private half and stamp it back;
+    # the restart below picks it up. Here, not in step 2: the derivation runs
+    # inside the chat container, which step 0 still has down.
+    stamp_vapid_public_key()
 
     # ── 4. restart ───────────────────────────────────────────────────────────
     time.sleep(3)
