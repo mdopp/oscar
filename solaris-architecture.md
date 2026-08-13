@@ -19,8 +19,7 @@ night-cron eviction of the fast model is structurally impossible.
 | `nomic-embed-text` | Embeddings (own runner, never competes for the gen slot) |
 
 `gemma4:e4b` is deliberately NOT in the map. Box bench 2026-06-12
-(`solaris-chat/scripts/bench_models.py`, engine-shaped ~2.5k-token prompt with
-the injected entity registry, think=false, 3 runs):
+(`solaris-chat/scripts/bench_models.py`, think=false, 3 runs):
 
 | Model | wall p50 | wall p95 | TTFT p50 | tool accuracy |
 |---|---|---|---|---|
@@ -31,6 +30,14 @@ the injected entity registry, think=false, 3 runs):
 With the lean prompt all three pick entities perfectly, so e4b buys no
 measurable accuracy for +25% latency. Revisit only if e2b shows quality
 failures in trace data — e4b is the designated next candidate then.
+
+**Those latencies, and the 2026-08-03 baseline in #1120, were measured with the
+bench's old hand-written prompt: 1355 tokens, a household that does not exist.**
+The bench now derives its prompt from the production assembly instead — the real
+household toolbox, the shipped soul, the real registry renderer over a 51-entity
+house — which comes to ~7.5k estimated tokens, in the band of the ~7.8k measured
+below (#1149). Read new numbers against that; the older tables are optimistic
+and want re-measuring before they carry a decision.
 
 **Model and thinking are per-turn parameters** of the Solaris Engine (the
 in-process agent core that replaced the Hermes gateways): household/voice
