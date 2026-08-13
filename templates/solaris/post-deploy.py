@@ -207,12 +207,10 @@ _WHISPER_PROMPT_UNSAFE = str.maketrans({c: " " for c in '"\\$%`\n\r\t'})
 # `--initial-prompt` (#1142), so the only way to reach the flag is to mount our
 # own copy of that script over it. Everything but the prompt args is a
 # line-for-line copy of upstream's run script — upstream flag drift has to be
-# mirrored here by hand. Since #1157 the script launches the hint wrapper below
-# instead of `python3 -m wyoming_faster_whisper`; the wrapper runs the stock
-# server, so every flag still means what upstream says it means.
+# mirrored here by hand.
 WHISPER_RUN_SCRIPT = """#!/command/with-contenv bash
 # shellcheck shell=bash
-# Managed by the Solaris post-deploy (#1142, #1157).
+# Managed by the Solaris post-deploy (#1142).
 
 prompt_args=()
 if [ -n "${WHISPER_PROMPT:-}" ]; then
@@ -221,7 +219,7 @@ fi
 
 exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
-        s6-setuidgid abc python3 /solaris_whisper_hints.py \\
+        s6-setuidgid abc python3 -m wyoming_faster_whisper \\
         --uri 'tcp://0.0.0.0:10300' \\
         --model "${WHISPER_MODEL:-auto}" \\
         --beam-size "${WHISPER_BEAM:-1}" \\
@@ -232,323 +230,6 @@ exec \\
         ${DEBUG:+--debug} \\
         ${LOCAL_ONLY:+--local-files-only}
 """
-
-# Per-request word hints (#1157). #1142's prompt is static: it primes whisper on
-# the whole household at deploy time. What a caller actually needs is the words
-# that matter for THIS utterance. `wyoming` 1.10.0 already carries them on
-# `Transcribe` as `transcript_names`/`transcript_terms` — the stock server reads
-# only `language` and drops them.
-#
-# This wrapper launches the stock server with one patch: a request's words are
-# appended to that connection's `initial_prompt`, BEHIND the static household
-# lead-in. Whisper keeps only the LAST 224 tokens, so the request's own words sit
-# where they survive truncation, the static lead-in is not evicted, and a request
-# that carries none leaves the loader untouched — byte-identical to #1142.
-# (For the Wyoming path `hotwords` would mean patching a second file for no gain
-# on a 3-second command; the segment endpoint below does use it.)
-#
-# The wrapper also serves the segment endpoint (#1157, foundry-chronicle#141):
-# POST a path to a recording under WHISPER_SEGMENTS_ROOT, get back timestamped
-# segments. It takes a path, not an upload, because one 4h session track is
-# 2.57 GB and five are 12.9 GB. The mount is read-only and the endpoint copies
-# nothing to disk — those recordings are personal data their owner deletes after
-# 7 days, and nothing of ours may outlive that.
-#
-# It sits two files deep in a third-party image carrying AutoUpdate=registry, so
-# it asserts its interception points at startup and REFUSES TO START when the
-# shape moved: a container systemd shows as failed is noticed; a server that
-# looks healthy while silently dropping the words is not — and since #1157 that
-# silence would break a second project, not just a household prompt.
-WHISPER_HINTS_FILE = "whisper_hints.py"
-# foundry-chronicle's session tracks live here on the shared box. Mounted
-# read-only, and ONLY when the directory actually exists — a box without it
-# never gets the mount, the env vars, or the endpoint.
-WHISPER_SEGMENTS_ROOT = "/mnt/data/stacks/daggerheart-aufnahmen"
-WHISPER_SEGMENTS_PORT = "10301"
-WHISPER_HINTS_MODULE = '''"""Per-request word hints for wyoming-faster-whisper (Solaris, #1157)."""
-
-import contextlib
-import dataclasses
-import inspect
-import json
-import os
-import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-import faster_whisper
-from wyoming.asr import Transcribe
-from wyoming_faster_whisper import __main__ as stock
-from wyoming_faster_whisper import __version__
-from wyoming_faster_whisper.dispatch_handler import DispatchEventHandler
-from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
-
-PROMPT_SITE = "initial_prompt=self._loader.initial_prompt"
-MODEL_CALL = "self.model.transcribe("
-
-SEGMENT_ROOT = os.environ.get("WHISPER_SEGMENTS_ROOT", "")
-SEGMENT_PORT = int(os.environ.get("WHISPER_SEGMENTS_PORT") or 0)
-BEAM_SIZE = int(os.environ.get("WHISPER_BEAM") or 1)
-
-_stock_handle_event = DispatchEventHandler.handle_event
-_stock_transcribe = FasterWhisperTranscriber.transcribe
-_stock_transcriber_init = FasterWhisperTranscriber.__init__
-
-# The one loaded transcriber, captured as the server builds it. The segment
-# endpoint borrows it rather than loading a second copy of the model.
-_loaded = {}
-
-
-def shape_problem():
-    """Why this patch no longer applies to the installed server, or ''."""
-    fields = {f.name for f in dataclasses.fields(Transcribe)}
-    if not {"transcript_names", "transcript_terms"} <= fields:
-        return "wyoming Transcribe carries no transcript_names/transcript_terms"
-    seen = inspect.getsource(DispatchEventHandler).count(PROMPT_SITE)
-    if seen != 2:
-        return f"DispatchEventHandler reads {PROMPT_SITE} {seen}x, expected 2"
-    # Wrapping FasterWhisperTranscriber.transcribe only serialises the model if
-    # that is still where the model is called.
-    if MODEL_CALL not in inspect.getsource(FasterWhisperTranscriber.transcribe):
-        return f"FasterWhisperTranscriber.transcribe no longer calls {MODEL_CALL}"
-    model_source = inspect.getsource(faster_whisper.WhisperModel)
-    params = inspect.signature(faster_whisper.WhisperModel.transcribe).parameters
-    for needed, where in (
-        ("hotwords", params),
-        ("self.max_length", model_source),
-        ("self.hf_tokenizer", model_source),
-    ):
-        if needed not in where:
-            return f"faster_whisper.WhisperModel has no {needed}"
-    return ""
-
-
-class ModelGate:
-    """Serialises the one WhisperModel, household first.
-
-    A session track is hours long; a voice command is three seconds. The batch
-    run takes the gate per generator step and gives it up in between, so a
-    household request waits for at most one encoder window instead of a whole
-    job, and batch steps stand aside while one is waiting. No preemption, no
-    queue: just a lock that opens between windows."""
-
-    def __init__(self):
-        self._cond = threading.Condition()
-        self._busy = False
-        self._household_waiting = 0
-
-    @contextlib.contextmanager
-    def hold(self, household=False):
-        with self._cond:
-            if household:
-                self._household_waiting += 1
-            while self._busy or (self._household_waiting and not household):
-                self._cond.wait()
-            if household:
-                self._household_waiting -= 1
-            self._busy = True
-        try:
-            yield
-        finally:
-            with self._cond:
-                self._busy = False
-                self._cond.notify_all()
-
-
-GATE = ModelGate()
-
-
-def transcriber_init(self, *args, **kwargs):
-    _stock_transcriber_init(self, *args, **kwargs)
-    _loaded["transcriber"] = self
-
-
-def household_transcribe(self, *args, **kwargs):
-    with GATE.hold(household=True):
-        return _stock_transcribe(self, *args, **kwargs)
-
-
-def fit_hotwords(model, words):
-    """Split `words` into the ones that fit faster-whisper's hotword budget and
-    the ones that do not.
-
-    faster-whisper truncates the encoded TOKEN list, which cuts a name in half
-    and reports nothing; 52 names measure 415 tokens against a budget of 223, so
-    that silence would eat half of them. Drop whole names instead and hand the
-    rest back so the caller can be told (foundry-chronicle#141)."""
-    budget = model.max_length // 2 - 1
-    kept = []
-    for index, word in enumerate(words):
-        candidate = " " + ", ".join(kept + [word])
-        if len(model.hf_tokenizer.encode(candidate, add_special_tokens=False).ids) > budget:
-            return kept, list(words[index:])
-        kept.append(word)
-    return kept, []
-
-
-def resolve_path(candidate):
-    """The requested recording, or '' if it is not a real file inside the mount.
-
-    realpath first: it is what makes `../` and symlinks land outside the root
-    and get refused rather than followed."""
-    if not SEGMENT_ROOT or not candidate:
-        return ""
-    root = os.path.realpath(SEGMENT_ROOT)
-    full = os.path.realpath(os.path.join(root, candidate))
-    if full != root and not full.startswith(root + os.sep):
-        return ""
-    return full if os.path.isfile(full) else ""
-
-
-def transcribe_file(transcriber, path, language, hotwords):
-    """Segments for a whole recording, giving the model up between windows.
-
-    faster-whisper's transcribe() is lazy — it returns a generator and does the
-    work on iteration, one encoder window at a time (box-measured: 0.28s to
-    return the generator for 75s of audio, then ~1.6s on the step that decodes
-    a window). So the gate is taken per step and released in between."""
-    segments, _info = transcriber.model.transcribe(
-        path,
-        language=language,
-        beam_size=BEAM_SIZE,
-        hotwords=", ".join(hotwords) or None,
-        vad_filter=transcriber.vad_filter,
-        vad_parameters=transcriber.vad_parameters,
-    )
-    out = []
-    while True:
-        with GATE.hold():
-            segment = next(segments, None)
-        if segment is None:
-            return out
-        out.append({"start": segment.start, "end": segment.end, "text": segment.text})
-
-
-class SegmentHandler(BaseHTTPRequestHandler):
-    """POST /transcribe {"path": ..., "language": ..., "hotwords": [...]}.
-
-    Nothing here writes to disk: the recording is read in place through a
-    read-only mount, the segments live in memory until the response is written,
-    and the request log line carries the method and endpoint but never the
-    path or the transcript."""
-
-    protocol_version = "HTTP/1.1"
-
-    def do_POST(self):
-        if self.path != "/transcribe":
-            self._json(404, {"error": "unknown endpoint, expected /transcribe"})
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            request = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            self._json(400, {"error": "body must be JSON"})
-            return
-        path = resolve_path(str(request.get("path") or ""))
-        if not path:
-            self._json(403, {"error": f"path must be a file under {SEGMENT_ROOT}"})
-            return
-        transcriber = _loaded.get("transcriber")
-        if transcriber is None:
-            self._json(503, {"error": "faster-whisper model not loaded yet"})
-            return
-        words = [w for w in (str(x).strip() for x in request.get("hotwords") or []) if w]
-        kept, dropped = fit_hotwords(transcriber.model, words)
-        try:
-            segments = transcribe_file(
-                transcriber, path, request.get("language"), kept
-            )
-        except Exception as e:  # a bad file must not take the household's STT down
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
-            return
-        self._json(
-            200,
-            {
-                "segments": segments,
-                "hotwords_dropped_count": len(dropped),
-                "hotwords_dropped": dropped,
-            },
-        )
-
-    def log_message(self, fmt, *args):
-        sys.stderr.write(f"solaris-hints: {self.command} {self.path}\\n")
-
-    def _json(self, code, payload):
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def serve_segments():
-    """Start the segment endpoint; None when this box has no recordings mount."""
-    if not (SEGMENT_ROOT and SEGMENT_PORT):
-        return None
-    server = ThreadingHTTPServer(("0.0.0.0", SEGMENT_PORT), SegmentHandler)
-    server.daemon_threads = True
-    _loaded["server"] = server
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    sys.stderr.write(
-        f"solaris-hints: segment endpoint on :{server.server_address[1]} "
-        f"POST /transcribe, reading {SEGMENT_ROOT} read-only\\n"
-    )
-    return server
-
-
-class HintedLoader:
-    """The shared loader as ONE connection sees it, with that request's words
-    appended to the static prompt. Wyoming gives every connection its own
-    handler and every request its own connection, so this cannot leak."""
-
-    def __init__(self, loader, words):
-        self._solaris_wrapped = loader
-        lead = (getattr(loader, "initial_prompt", None) or "").strip()
-        self.initial_prompt = (lead + " " + ", ".join(words) + ".").strip()
-
-    def __getattr__(self, name):
-        return getattr(self._solaris_wrapped, name)
-
-
-async def handle_event(self, event):
-    if Transcribe.is_type(event.type):
-        transcribe = Transcribe.from_event(event)
-        raw = list(transcribe.transcript_names or []) + list(
-            transcribe.transcript_terms or []
-        )
-        words = [w for w in (str(x).strip() for x in raw) if w]
-        if words:
-            loader = getattr(self._loader, "_solaris_wrapped", self._loader)
-            self._loader = HintedLoader(loader, words)
-    return await _stock_handle_event(self, event)
-
-
-def main():
-    problem = shape_problem()
-    if problem:
-        sys.stderr.write(
-            f"solaris-hints: NOT APPLIED to wyoming-faster-whisper {__version__} "
-            f"- {problem}. Refusing to start: the mounted run script and hint "
-            "wrapper no longer match this image (solarisbay#1157).\\n"
-        )
-        return 1
-    DispatchEventHandler.handle_event = handle_event
-    FasterWhisperTranscriber.transcribe = household_transcribe
-    FasterWhisperTranscriber.__init__ = transcriber_init
-    sys.stderr.write(
-        f"solaris-hints: active on wyoming-faster-whisper {__version__} - "
-        "per-request transcript_names/transcript_terms append to initial_prompt\\n"
-    )
-    serve_segments()
-    sys.stderr.flush()
-    stock.run()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-'''
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
 VOICE_PROMPT = "Antworte kurz, gesprochen und ohne Markdown."
@@ -957,12 +638,7 @@ def converge_whisper_prompt(token: str, data_dir: str) -> str:
 
 
 def render_whisper_unit(
-    data_dir: str,
-    model: str,
-    language: str,
-    gpu: bool,
-    prompt: str = "",
-    segments_root: str = "",
+    data_dir: str, model: str, language: str, gpu: bool, prompt: str = ""
 ) -> str:
     """Render the voice-whisper `.container` Quadlet (pure). GPU path uses the
     linuxserver faster-whisper:gpu image with the CDI device + SELinux
@@ -1004,23 +680,7 @@ def render_whisper_unit(
             # --initial-prompt (#1142), so mount ours over it.
             f"Volume={data_dir}/voice/whisper-run:"
             "/etc/s6-overlay/s6-rc.d/svc-whisper/run:ro,Z\n"
-            # …and the run script launches this wrapper instead of the stock
-            # module, so a request's own words reach the decoder (#1157).
-            f"Volume={data_dir}/voice/{WHISPER_HINTS_FILE}:"
-            "/solaris_whisper_hints.py:ro,Z\n"
-            # Segment endpoint (#1157): the recordings are mounted read-only at
-            # the SAME path they have on the host, so a caller sends the path it
-            # already knows. No :Z — relabelling another stack's data dir would
-            # break its owner's access, and SecurityLabelDisable above already
-            # lets this container read it.
-            + (
-                f"Environment=WHISPER_SEGMENTS_ROOT={segments_root}\n"
-                f"Environment=WHISPER_SEGMENTS_PORT={WHISPER_SEGMENTS_PORT}\n"
-                f"Volume={segments_root}:{segments_root}:ro\n"
-                if segments_root
-                else ""
-            )
-            + "AutoUpdate=registry\n"
+            "AutoUpdate=registry\n"
             "# STT health probe (#610): a wedged CUDA context leaves the\n"
             "# container Up while every transcription throws invalid-device, so\n"
             "# Restart= never fires. Run a real Wyoming transcription; on\n"
@@ -1417,16 +1077,10 @@ def install_whisper_unit(data_dir: str) -> bool:
         jlog("warn", "voice-unit", "whisper: could not write STT probe", error=str(e))
     if gpu:
         run_path = os.path.join(data_dir, "voice", "whisper-run")
-        hints_path = os.path.join(data_dir, "voice", WHISPER_HINTS_FILE)
         try:
             with open(run_path, "w", encoding="utf-8") as f:
                 f.write(WHISPER_RUN_SCRIPT)
             os.chmod(run_path, 0o755)
-            # The run script execs this, so a missing/stale copy is a startup
-            # failure, not a degraded feature — write it before the unit starts.
-            with open(hints_path, "w", encoding="utf-8") as f:
-                f.write(WHISPER_HINTS_MODULE)
-            os.chmod(hints_path, 0o644)
         except OSError as e:
             jlog(
                 "warn",
@@ -1436,12 +1090,6 @@ def install_whisper_unit(data_dir: str) -> bool:
             )
             return False
     prompt = read_whisper_prompt(data_dir)
-    # Only mount what is there: a box without foundry-chronicle's recordings
-    # gets no mount (Quadlet Volume= on a missing dir fails the unit) and no
-    # endpoint.
-    segments_root = env("WHISPER_SEGMENTS_ROOT", WHISPER_SEGMENTS_ROOT)
-    if not (gpu and os.path.isdir(segments_root)):
-        segments_root = ""
     jlog(
         "info",
         "voice-unit",
@@ -1449,11 +1097,9 @@ def install_whisper_unit(data_dir: str) -> bool:
         gpu=gpu,
         model=model,
         prompt_chars=len(prompt),
-        segments_root=segments_root,
     )
     return install_unit(
-        WHISPER_UNIT,
-        render_whisper_unit(data_dir, model, language, gpu, prompt, segments_root),
+        WHISPER_UNIT, render_whisper_unit(data_dir, model, language, gpu, prompt)
     )
 
 
