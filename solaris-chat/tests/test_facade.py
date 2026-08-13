@@ -775,7 +775,7 @@ async def test_guest_voice_turn_persists_no_trace(aiohttp_client, db, soul):
     app, _ = _app_with_guest(
         db, soul, [ChatResult(content="Gast.", prompt_tokens=5, completion_tokens=1)]
     )
-    _stash(db, "Wer bist du", "guest")
+    _stash(db, "Wer bist du", "guest", matched=False)
     http = await aiohttp_client(app)
     resp = await http.post(
         "/ollama/api/chat",
@@ -957,11 +957,14 @@ async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
 # -- #350: transcript-keyed uid side-channel (approach b) -------------------
 
 
-def _stash(db: str, transcript: str, uid: str) -> None:
+def _stash(db: str, transcript: str, uid: str, *, matched: bool) -> None:
+    """Write the row the gatekeeper would write. `matched` is keyword-only and
+    has no default: the recognition claim is always stated, never inherited
+    from the uid (#1152)."""
     conn = sqlite3.connect(db)
     conn.execute(
-        "INSERT INTO voice_uid_stash (transcript, uid) VALUES (?, ?)",
-        (transcript, uid),
+        "INSERT INTO voice_uid_stash (transcript, uid, matched) VALUES (?, ?, ?)",
+        (transcript, uid, 1 if matched else 0),
     )
     conn.commit()
     conn.close()
@@ -975,7 +978,7 @@ async def test_facade_resolves_uid_from_stash(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
     )
-    _stash(db, "Licht an", "anna")
+    _stash(db, "Licht an", "anna", matched=True)
     http = await aiohttp_client(app)
     resp = await http.post(
         "/ollama/api/chat",
@@ -1027,7 +1030,7 @@ async def test_facade_stash_is_consume_once(aiohttp_client, db, soul):
             ChatResult(content="Zwei.", prompt_tokens=5, completion_tokens=1),
         ],
     )
-    _stash(db, "Licht an", "anna")
+    _stash(db, "Licht an", "anna", matched=True)
     http = await aiohttp_client(app)
     for _ in range(2):
         resp = await http.post(
@@ -1091,7 +1094,7 @@ async def test_facade_speaker_match_is_the_stash_not_the_user_field(
     )
     http = await aiohttp_client(app)
 
-    _stash(db, "Licht an", "anna")
+    _stash(db, "Licht an", "anna", matched=True)
     for transcript in ("Licht an", "Wer bin ich"):
         resp = await http.post(
             "/ollama/api/chat",
@@ -1107,38 +1110,109 @@ async def test_facade_speaker_match_is_the_stash_not_the_user_field(
     assert seen == [True, False]
 
 
-def test_consume_uid_is_atomic_consume_once(db):
-    # A single consume returns the stashed uid; a second returns None because
-    # the read+delete happen in one statement under the write lock, so a
-    # concurrent duplicate turn can't re-read the same identity.
+def test_consume_speaker_is_atomic_consume_once(db):
+    # A single consume returns the stashed speaker; a second returns None
+    # because the read+delete happen in one statement under the write lock, so
+    # a concurrent duplicate turn can't re-read the same identity.
     from solaris_chat import voice_uid_stash
 
-    _stash(db, "Licht an", "anna")
-    assert voice_uid_stash.consume_uid(db, "Licht an") == "anna"
-    assert voice_uid_stash.consume_uid(db, "Licht an") is None
+    _stash(db, "Licht an", "anna", matched=True)
+    assert voice_uid_stash.consume_speaker(db, "Licht an") == (
+        voice_uid_stash.StashedSpeaker("anna", matched=True)
+    )
+    assert voice_uid_stash.consume_speaker(db, "Licht an") is None
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
     conn.close()
 
 
-def test_consume_uid_ignores_but_reaps_expired_row(db):
+def test_consume_speaker_ignores_but_reaps_expired_row(db):
     # A row past the TTL must not be consumed (no stale identity leaks into a
     # much-later identical utterance) but is still reaped from the table.
     from solaris_chat import voice_uid_stash
 
     conn = sqlite3.connect(db)
     conn.execute(
-        "INSERT INTO voice_uid_stash (transcript, uid, created_at) "
-        "VALUES (?, ?, datetime('now', ?))",
+        "INSERT INTO voice_uid_stash (transcript, uid, matched, created_at) "
+        "VALUES (?, ?, 1, datetime('now', ?))",
         ("Licht an", "anna", f"-{voice_uid_stash.STASH_TTL_SECONDS + 60} seconds"),
     )
     conn.commit()
     conn.close()
 
-    assert voice_uid_stash.consume_uid(db, "Licht an") is None
+    assert voice_uid_stash.consume_speaker(db, "Licht an") is None
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
     conn.close()
+
+
+# -- #1152: `matched` is the claim; nothing else may stand in for it ---------
+
+
+@pytest.mark.parametrize("uid", ["guest", "unknown", "anna"])
+def test_consume_speaker_reads_no_match_without_the_claim(db, uid):
+    # The row's existence and the uid it carries say nothing about
+    # recognition — only the flag does, for any uid a future gatekeeper picks.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", uid, matched=False)
+    speaker = voice_uid_stash.consume_speaker(db, "Licht an")
+    assert speaker == voice_uid_stash.StashedSpeaker(uid, matched=False)
+    assert speaker.matched is False
+
+
+@pytest.mark.parametrize("value", [None, 0, "true", "yes", 2, -1])
+def test_consume_speaker_only_accepts_an_exact_match_flag(db, value):
+    # Anything but the integer 1 is not a claim: a NULL left by an older
+    # writer, a stringly-typed value, a truthy-looking number. (`"1"` is
+    # absent on purpose — the column's INTEGER affinity stores it as 1, so it
+    # really is the claim.)
+    from solaris_chat import voice_uid_stash
+
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE voice_uid_stash")
+    # NOT NULL is dropped here so the NULL case is reachable at all.
+    conn.execute(
+        "CREATE TABLE voice_uid_stash (transcript TEXT PRIMARY KEY, uid TEXT NOT NULL,"
+        " matched INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid, matched) VALUES (?, ?, ?)",
+        ("Licht an", "anna", value),
+    )
+    conn.commit()
+    conn.close()
+
+    speaker = voice_uid_stash.consume_speaker(db, "Licht an")
+    assert speaker == voice_uid_stash.StashedSpeaker("anna", matched=False)
+
+
+def test_consume_speaker_on_a_premigration_table_attributes_but_claims_nothing(
+    tmp_path,
+):
+    # Independent deploys: a new engine can start against a DB the 0031
+    # migration hasn't reached. The uid still routes the turn; the missing
+    # column reads as "not matched" rather than raising or unlocking.
+    from solaris_chat import voice_uid_stash
+
+    path = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE voice_uid_stash (transcript TEXT PRIMARY KEY, uid TEXT NOT NULL,"
+        " created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid) VALUES (?, ?)",
+        ("Licht an", "anna"),
+    )
+    conn.commit()
+    conn.close()
+
+    assert voice_uid_stash.consume_speaker(path, "Licht an") == (
+        voice_uid_stash.StashedSpeaker("anna", matched=False)
+    )
+    # Still consume-once through the compat path.
+    assert voice_uid_stash.consume_speaker(path, "Licht an") is None
 
 
 # -- #351: unknown speaker routes to the guest profile ----------------------
@@ -1169,7 +1243,7 @@ async def test_unknown_speaker_routes_to_guest_profile(aiohttp_client, db, soul)
     app, guest_fake = _app_with_guest(
         db, soul, [ChatResult(content="Gast.", prompt_tokens=5, completion_tokens=1)]
     )
-    _stash(db, "Wer bist du", "guest")
+    _stash(db, "Wer bist du", "guest", matched=False)
     http = await aiohttp_client(app)
     resp = await http.post(
         "/ollama/api/chat",
@@ -1235,7 +1309,7 @@ async def test_identified_resident_runs_as_their_uid_not_guest(
         default_uid="household",
         solaris_db_path=db,
     )
-    _stash(db, "Licht an", "anna")
+    _stash(db, "Licht an", "anna", matched=True)
     http = await aiohttp_client(app)
     resp = await http.post(
         "/ollama/api/chat",

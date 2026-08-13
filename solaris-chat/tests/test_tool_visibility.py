@@ -341,6 +341,19 @@ def _voice_app(db, soul, results, tools, speaker_id_enabled: bool = True):
     )
 
 
+def _stash(db: str, transcript: str, uid: str, *, matched: bool) -> None:
+    """The row the gatekeeper writes. Two independent facts: `uid` routes the
+    turn, `matched` is the recognition claim — the only thing that may unlock
+    the Persönlich class (#1152)."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid, matched) VALUES (?, ?, ?)",
+        (transcript, uid, 1 if matched else 0),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _call(name: str) -> ChatResult:
     return ChatResult(
         content="",
@@ -440,14 +453,8 @@ async def test_facade_turn_unlocks_personal_on_a_speaker_hit(aiohttp_client, db,
     await _voice_turn(aiohttp_client, app, "was steht in meiner Notiz")
     assert ran == []
 
-    # The gatekeeper stashed {transcript -> anna}: a real speaker-ID match.
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "INSERT INTO voice_uid_stash (transcript, uid) VALUES (?, ?)",
-        ("lies meine Notiz", "anna"),
-    )
-    conn.commit()
-    conn.close()
+    # The gatekeeper stashed {transcript -> anna} AND asserted the match.
+    _stash(db, "lies meine Notiz", "anna", matched=True)
     app, _ = _voice_app(
         db,
         soul,
@@ -547,6 +554,84 @@ async def test_facade_turn_withholds_personal_when_speaker_id_is_on_and_unmatche
         speaker_id_enabled=True,
     )
     await _voice_turn(aiohttp_client, app, "was steht in meiner Notiz")
+    assert ran == []
+    fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
+    assert "visibility_withheld_on_voice" in fed_back
+    assert "Zahnarzt" not in fed_back
+
+
+# -- #1152: the claim unlocks Persönlich, never the row or the uid -----------
+
+
+@pytest.mark.parametrize("uid", ["guest", "unknown", "anna"])
+async def test_facade_turn_keeps_personal_shut_for_an_unmatched_row(
+    aiohttp_client, db, soul, uid
+):
+    """A stash row exists and names someone — but the gatekeeper asserted no
+    recognition. Persönlich stays shut for *every* uid: today's `guest`
+    sentinel, a renamed one, and even a real resident's name. Under the old
+    contract the last two both unlocked it."""
+    ran = []
+
+    async def handler(args):
+        ran.append(args)
+        return '{"notiz": "Zahnarzt am Freitag"}'
+
+    tool = Tool(
+        name="notiz_lesen",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        visibility=Visibility.PERSONAL,
+    )
+    _stash(db, "lies meine Notiz", uid, matched=False)
+    app, fake = _voice_app(
+        db,
+        soul,
+        [_call("notiz_lesen"), ChatResult(content="Schau in die App.")],
+        [tool],
+    )
+    await _voice_turn(aiohttp_client, app, "lies meine Notiz")
+    assert ran == []
+    fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
+    assert "visibility_withheld_on_voice" in fed_back
+    assert "Zahnarzt" not in fed_back
+
+
+async def test_facade_turn_keeps_personal_shut_for_a_legacy_shaped_row(
+    aiohttp_client, db, soul
+):
+    """A gatekeeper image that predates the `matched` column writes the old
+    two-column row. The column's DEFAULT 0 is what makes that window fail
+    closed: the turn is still attributed to anna for routing, and Persönlich
+    stays shut until the writer is upgraded."""
+    ran = []
+
+    async def handler(args):
+        ran.append(args)
+        return '{"notiz": "Zahnarzt am Freitag"}'
+
+    tool = Tool(
+        name="notiz_lesen",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+        visibility=Visibility.PERSONAL,
+    )
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid) VALUES (?, ?)",
+        ("lies meine Notiz", "anna"),
+    )
+    conn.commit()
+    conn.close()
+    app, fake = _voice_app(
+        db,
+        soul,
+        [_call("notiz_lesen"), ChatResult(content="Schau in die App.")],
+        [tool],
+    )
+    await _voice_turn(aiohttp_client, app, "lies meine Notiz")
     assert ran == []
     fed_back = json.dumps(fake.calls[1]["messages"], ensure_ascii=False)
     assert "visibility_withheld_on_voice" in fed_back

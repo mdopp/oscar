@@ -653,13 +653,17 @@ ihr Ergebnis.**
   Gatekeeper als **Wyoming-STT-Entity** und die Assist-Pipeline nimmt ihn statt des
   nackten Whisper (`ensure_assist_pipeline(prefer_gatekeeper_stt=…)`). Der Gatekeeper
   transkribiert intern über denselben Whisper — die STT-Ausgabe ist identisch —,
-  löst zusätzlich den Sprecher auf und legt `{Transkript → uid}` in `solaris.db` ab.
-  Die Engine-Facade liest diesen Stash auf dem Rohtranskript wieder aus
-  (`voice_uid_stash.consume_uid`).
-- **Fehlerfälle.** Erkannt, aber keinem Bewohner zuzuordnen → Gast-uid → Gast-Profil
-  (eingeschränkte Tools, ephemer, schreibt nichts). Stash-Miss, weil Sprecher-ID aus
-  ist oder nicht lief → `DEFAULT_UID`. Der Unterschied ist gewollt: *unbekannt
-  erkannt* ist etwas anderes als *nicht erkannt*.
+  löst zusätzlich den Sprecher auf und legt `{Transkript → uid, matched}` in
+  `solaris.db` ab. Die Engine-Facade liest diesen Stash auf dem Rohtranskript wieder
+  aus (`voice_uid_stash.consume_speaker`).
+- **Zwei getrennte Aussagen pro Zeile.** `uid` ist das *Routing* (wem gehört der Turn),
+  `matched` ist die *Erkennungsaussage* des Gatekeepers. Nur `matched=1` schaltet die
+  Klasse *Persönlich* frei — nicht die Existenz der Zeile und nicht der uid-Wert
+  (#1152).
+- **Fehlerfälle.** Erkannt, aber keinem Bewohner zuzuordnen → Gast-uid mit
+  `matched=0` → Gast-Profil (eingeschränkte Tools, ephemer, schreibt nichts).
+  Stash-Miss, weil Sprecher-ID aus ist oder nicht lief → `DEFAULT_UID`. Der
+  Unterschied ist gewollt: *unbekannt erkannt* ist etwas anderes als *nicht erkannt*.
 
 Für ZA-12 heißt das: Sprecher-ID ist **im Betrieb, nicht in Planung**. Der Satz
 *Kontext, nicht Autorisierung* beschreibt damit einen laufenden Mechanismus, und A7
