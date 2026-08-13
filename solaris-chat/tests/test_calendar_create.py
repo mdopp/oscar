@@ -8,13 +8,20 @@ sync defines. These tests capture the PUTs instead of issuing them.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
+from datetime import datetime
 
 import pytest
 
+from solaris_chat.engine import date_parse
 from solaris_chat.engine.tools import calendar_tools
 
 _BASE = "https://caldav.example/dav"
+# A fixed Monday. `date_parse` deliberately asks back for a bare weekday that IS
+# today ("Donnerstag" on a Thursday means either), so without a frozen clock
+# these cases would fail one day in seven.
+_NOW = datetime(2026, 8, 10, 9, 0, tzinfo=date_parse.LOCAL_TZ)
 
 
 class _FakeClient:
@@ -40,6 +47,13 @@ def _configure(monkeypatch, **overrides):
 
     monkeypatch.setattr(
         config, "settings", dataclasses.replace(config.settings, **overrides)
+    )
+
+
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch):
+    monkeypatch.setattr(
+        date_parse, "resolve", functools.partial(date_parse.resolve, now=_NOW)
     )
 
 
