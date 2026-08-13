@@ -566,8 +566,8 @@ async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
 
-    uid = await h._resolve_uid()
-    assert uid == "alice"
+    resolved = await h._resolve_speaker()
+    assert resolved == handler.SpeakerResolution("alice", attributed=True)
 
     # touch_last_seen must have stamped last_seen_at for the matched uid
     with sqlite3.connect(db) as conn:
@@ -611,7 +611,9 @@ async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
 
-    assert await h._resolve_uid() == handler.GUEST_UID
+    assert await h._resolve_speaker() == handler.SpeakerResolution(
+        handler.GUEST_UID, attributed=True
+    )
 
 
 async def test_resolve_uid_ambiguous_speaker_routes_to_guest(tmp_path, monkeypatch):
@@ -660,7 +662,9 @@ async def test_resolve_uid_ambiguous_speaker_routes_to_guest(tmp_path, monkeypat
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
 
-    assert await h._resolve_uid() == handler.GUEST_UID
+    assert await h._resolve_speaker() == handler.SpeakerResolution(
+        handler.GUEST_UID, attributed=True
+    )
     # A refused turn is not a sighting — nobody may be stamped as seen.
     with sqlite3.connect(db) as conn:
         stamps = conn.execute("SELECT last_seen_at FROM voice_embeddings").fetchall()
@@ -680,7 +684,9 @@ async def test_resolve_uid_disabled_stays_household_not_guest(tmp_path, monkeypa
         ),
     )
     h = handler.GatekeeperHandler(None, None, object())
-    assert await h._resolve_uid() == "household"
+    assert await h._resolve_speaker() == handler.SpeakerResolution(
+        "household", attributed=False
+    )
 
 
 async def test_resolve_uid_no_enrolments_stays_household_not_guest(
@@ -716,7 +722,9 @@ async def test_resolve_uid_no_enrolments_stays_household_not_guest(
     h._audio_buffer = [
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
-    assert await h._resolve_uid() == "household"
+    assert await h._resolve_speaker() == handler.SpeakerResolution(
+        "household", attributed=False
+    )
 
 
 def test_speaker_id_enabled_from_env_default_on(monkeypatch):
@@ -771,7 +779,179 @@ async def test_resolve_uid_enabled_but_no_extractor_falls_back_household(
     h._audio_buffer = [
         AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
     ]
-    assert await h._resolve_uid() == "household"
+    assert await h._resolve_speaker() == handler.SpeakerResolution(
+        "household", attributed=False
+    )
+
+
+# -- #1146: the stash is the privacy gate's evidence, so it must fail closed --
+
+
+def _add_stash_table(db: str) -> None:
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE voice_uid_stash (
+              transcript TEXT PRIMARY KEY,
+              uid        TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.commit()
+
+
+def _facade_speaker_matched(db: str, transcript: str) -> bool:
+    """The engine facade's verdict on this turn, as facade.py computes it: a
+    stash row that isn't the `guest` sentinel counts as a speaker-ID match and
+    unlocks the PERSONAL tool class on voice.
+
+    Mirrored here rather than imported because CI installs the two packages in
+    separate jobs; the engine half of the contract is asserted in
+    solaris-chat/tests/test_facade.py.
+    """
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT uid FROM voice_uid_stash WHERE transcript = ?", (transcript,)
+        ).fetchone()
+    uid = row[0] if row else None
+    return bool(uid) and uid != "guest"
+
+
+def _handler_for(monkeypatch, db: str, *, extractor, **overrides):
+    import gatekeeper.handler as handler
+    from unittest.mock import AsyncMock
+    from wyoming.audio import AudioChunk, AudioStart
+
+    fields = {
+        "speaker_id_enabled": True,
+        "default_uid": "household",
+        "speaker_id_threshold": 0.5,
+        "solaris_db_path": db,
+        **overrides,
+    }
+    monkeypatch.setattr(
+        handler, "settings", dataclasses.replace(handler.settings, **fields)
+    )
+    monkeypatch.setattr(handler, "get_extractor", lambda: extractor)
+    h = handler.GatekeeperHandler(None, None, object())
+    h.write_event = AsyncMock()
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+    return h
+
+
+async def test_inert_speaker_id_publishes_no_match(tmp_path, monkeypatch):
+    """SOLARIS_SPEAKER_ID_ENABLED=true on the base image (no SpeechBrain), so
+    get_extractor() is None and nothing is ever embedded. The turn still has to
+    work — but it must not leave a stash row, because the facade would read one
+    as "speaker-ID attributed this utterance" and unlock every PERSONAL tool
+    for whoever happened to speak."""
+    from unittest.mock import AsyncMock
+
+    db = _seed_db(tmp_path)
+    _add_stash_table(db)
+    insert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+
+    h = _handler_for(monkeypatch, db, extractor=None)
+    h._transcribe = AsyncMock(return_value="wie ist mein tag")
+    await h._process_stt_provider()
+
+    # HA still gets its transcript back, and the turn runs as household...
+    assert h.write_event.await_count == 1
+    # ...but nothing claims a speaker was recognised.
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
+    assert _facade_speaker_matched(db, "wie ist mein tag") is False
+
+
+async def test_extract_error_publishes_no_match(tmp_path, monkeypatch):
+    """The ML image is in place and the extractor blows up mid-turn. Degrading
+    to the household uid is fine; presenting that fallback to the facade as a
+    recognised resident is the fail-open."""
+    from unittest.mock import AsyncMock
+
+    db = _seed_db(tmp_path)
+    _add_stash_table(db)
+    insert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+
+    class _BrokenExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            raise RuntimeError("model not loaded")
+
+    h = _handler_for(monkeypatch, db, extractor=_BrokenExtractor())
+    h._transcribe = AsyncMock(return_value="wie ist mein tag")
+    await h._process_stt_provider()
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
+    assert _facade_speaker_matched(db, "wie ist mein tag") is False
+
+
+async def test_satellite_match_is_published_to_the_facade(tmp_path, monkeypatch):
+    """A wyoming-satellite turn (conversation mode) with a genuine, confident
+    match. The uid rides the facade POST as `user`, but that only routes the
+    conversation — the visibility gate reads the stash, so an unpublished match
+    locks PERSONAL out of satellite hardware forever."""
+    from unittest.mock import AsyncMock
+
+    db = _seed_db(tmp_path)
+    _add_stash_table(db)
+    alice = _emb(7)
+    insert_embedding(db, "alice", alice, sample_count=1, enrolled_via="test")
+
+    class _StubExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return alice
+
+    h = _handler_for(monkeypatch, db, extractor=_StubExtractor())
+    h._transcribe = AsyncMock(return_value="lies mir meine notizen vor")
+    h._resolve_location = AsyncMock(return_value=None)
+    h._solaris.converse = AsyncMock(return_value="Klar.")
+    h._synthesize_and_stream = AsyncMock()
+
+    await h._process_pipeline()
+
+    # The satellite turn ran as before, attributed to alice...
+    assert h._solaris.converse.await_args.kwargs["uid"] == "alice"
+    # ...and the match reached the facade, which now unlocks PERSONAL.
+    assert _facade_speaker_matched(db, "lies mir meine notizen vor") is True
+
+
+async def test_satellite_unknown_speaker_is_published_as_guest_not_a_match(
+    tmp_path, monkeypatch
+):
+    """Speaker-ID ran and refused: an unknown voice still has to reach the guest
+    profile, so the row is written — but as the `guest` sentinel, which the
+    facade explicitly does not count as a match."""
+    from unittest.mock import AsyncMock
+
+    db = _seed_db(tmp_path)
+    _add_stash_table(db)
+    insert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+
+    class _StrangerExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return _emb(99)
+
+    h = _handler_for(
+        monkeypatch, db, extractor=_StrangerExtractor(), speaker_id_threshold=0.99
+    )
+    h._transcribe = AsyncMock(return_value="wer bin ich")
+    h._resolve_location = AsyncMock(return_value=None)
+    h._solaris.converse = AsyncMock(return_value="Klar.")
+    h._synthesize_and_stream = AsyncMock()
+
+    await h._process_pipeline()
+
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT uid FROM voice_uid_stash WHERE transcript = ?", ("wer bin ich",)
+        ).fetchone()
+    assert row == ("guest",)
+    assert _facade_speaker_matched(db, "wer bin ich") is False
 
 
 def test_embedding_dim_matches_the_ecapa_model():

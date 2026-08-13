@@ -75,7 +75,9 @@ async def test_stt_mode_returns_transcript_and_stashes_uid(tmp_path, monkeypatch
     handler = GatekeeperHandler(None, None, _StubInfo())
     handler.write_event = AsyncMock()
     handler._transcribe = AsyncMock(return_value="mach das licht an")
-    handler._resolve_uid = AsyncMock(return_value="anna")
+    handler._resolve_speaker = AsyncMock(
+        return_value=handler_mod.SpeakerResolution("anna", attributed=True)
+    )
     # Guard rails: the STT path must touch neither the facade nor TTS.
     handler._solaris.converse = AsyncMock()
     handler._synthesize_and_stream = AsyncMock()
@@ -113,7 +115,9 @@ async def test_stt_mode_empty_transcript_returns_empty_no_stash(tmp_path, monkey
     handler = GatekeeperHandler(None, None, _StubInfo())
     handler.write_event = AsyncMock()
     handler._transcribe = AsyncMock(return_value="")
-    handler._resolve_uid = AsyncMock(return_value="anna")
+    handler._resolve_speaker = AsyncMock(
+        return_value=handler_mod.SpeakerResolution("anna", attributed=True)
+    )
 
     await _drive(handler, [Transcribe().event(), *_audio_events()])
 
@@ -123,7 +127,7 @@ async def test_stt_mode_empty_transcript_returns_empty_no_stash(tmp_path, monkey
     ]
     assert [t.text for t in written] == [""]
     # Nothing stashed (no resident resolution for an empty utterance).
-    handler._resolve_uid.assert_not_awaited()
+    handler._resolve_speaker.assert_not_awaited()
     conn = sqlite3.connect(db)
     n = conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0]
     conn.close()
@@ -143,7 +147,9 @@ async def test_satellite_path_unchanged_no_transcribe(tmp_path, monkeypatch):
     handler = GatekeeperHandler(None, None, _StubInfo())
     handler.write_event = AsyncMock()
     handler._transcribe = AsyncMock(return_value="hallo")
-    handler._resolve_uid = AsyncMock(return_value="michael")
+    handler._resolve_speaker = AsyncMock(
+        return_value=handler_mod.SpeakerResolution("michael", attributed=False)
+    )
     handler._resolve_location = AsyncMock(return_value=None)
     handler._solaris.converse = AsyncMock(return_value="Hallo zurück.")
     handler._synthesize_and_stream = AsyncMock()
@@ -153,7 +159,8 @@ async def test_satellite_path_unchanged_no_transcribe(tmp_path, monkeypatch):
     # Full turn ran.
     handler._solaris.converse.assert_awaited_once()
     handler._synthesize_and_stream.assert_awaited_once_with("Hallo zurück.")
-    # No Transcript was returned (satellite contract) and nothing stashed.
+    # No Transcript was returned (satellite contract), and an unattributed turn
+    # stashes nothing — see test_speaker.py for the attributed counterpart.
     for call in handler.write_event.await_args_list:
         assert not Transcript.is_type(call.args[0].type)
     conn = sqlite3.connect(db)

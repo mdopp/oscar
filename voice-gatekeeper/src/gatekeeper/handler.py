@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 
 from gatekeeper.logging import log
 from wyoming.asr import Transcribe, Transcript
@@ -69,6 +70,24 @@ from .uid_stash import stash_uid
 # The uid an unknown (attempted-but-unmatched) speaker is attributed to; the
 # engine facade routes this to the ephemeral guest profile (#351, #353).
 GUEST_UID = "guest"
+
+
+@dataclass(frozen=True)
+class SpeakerResolution:
+    """What speaker-ID concluded about one turn.
+
+    `attributed` is the fail-closed bit. It is True only when speaker-ID
+    actually ran and reached a verdict about *this voice*: a match that cleared
+    threshold and margin, or an explicit non-match routed to `guest`. Every gap
+    — feature off, no extractor in this image, extraction raised, nobody
+    enrolled — leaves it False, because the uid is then a fallback nobody
+    recognised. The engine facade reads the presence of a stash row as "this
+    utterance was attributed" and unlocks PERSONAL tools on it (#1146), so a
+    fallback must be distinguishable from a recognition all the way down.
+    """
+
+    uid: str
+    attributed: bool
 
 
 def client_id_from_peername(peer: object) -> str | None:
@@ -187,12 +206,17 @@ class GatekeeperHandler(AsyncEventHandler):
             return
         log.info("gatekeeper.transcript", trace_id=self.trace_id)
 
-        uid = await self._resolve_uid()
+        speaker = await self._resolve_speaker()
+        # A satellite turn carries its uid in the facade POST, but `user` only
+        # routes the conversation — the visibility gate reads the stash. Publish
+        # a genuine match here too, or PERSONAL can never unlock on satellite
+        # hardware however confident the match was (#1146).
+        await self._stash_speaker(transcript, speaker)
         endpoint = f"voice-pe:{self.client_id or 'unknown'}"
         location = await self._resolve_location()
         response = await self._solaris.converse(
             text=transcript,
-            uid=uid,
+            uid=speaker.uid,
             endpoint=endpoint,
             location=location,
             trace_id=self.trace_id,
@@ -214,7 +238,8 @@ class GatekeeperHandler(AsyncEventHandler):
         """STT-provider mode (#350): transcribe + resolve the speaking
         resident, return a Transcript to HA so its Assist pipeline continues
         to conversation.solaris as normal, and stash {transcript -> uid} for the
-        engine facade to read on that following turn. No facade POST, no TTS —
+        engine facade to read on that following turn — when, and only when,
+        speaker-ID attributed the turn. No facade POST, no TTS —
         HA owns the conversation + the spoken response."""
         if not self._audio_buffer or self._audio_start is None:
             log.warn("gatekeeper.audio.empty", trace_id=self.trace_id)
@@ -230,11 +255,8 @@ class GatekeeperHandler(AsyncEventHandler):
 
         log.info("gatekeeper.transcript", trace_id=self.trace_id)
         if transcript:
-            uid = await self._resolve_uid()
-            await asyncio.to_thread(
-                stash_uid, settings.solaris_db_path, transcript, uid
-            )
-            log.info("gatekeeper.stt_provider.stash", trace_id=self.trace_id, uid=uid)
+            speaker = await self._resolve_speaker()
+            await self._stash_speaker(transcript, speaker)
             await self._capture_enrollment()
             await self._capture_wakeword_sample()
 
@@ -458,12 +480,20 @@ class GatekeeperHandler(AsyncEventHandler):
         )
         log.info("gatekeeper.enroll.ok", trace_id=self.trace_id, samples=len(kept))
 
-    async def _resolve_uid(self) -> str:
+    def _unattributed(self) -> SpeakerResolution:
+        """The household fallback, marked as what it is: no verdict."""
+        return SpeakerResolution(settings.default_uid, attributed=False)
+
+    async def _resolve_speaker(self) -> SpeakerResolution:
         """Phase 2 speaker resolution. Falls back to default_uid on any
         gap (feature disabled, no enrolments, model not loaded, empty
         buffer, embedding extraction failure). The resolver itself is
         in `speaker.py`; this method orchestrates the pieces and keeps
         the conversation pipeline working when the ML path is absent.
+
+        Every one of those gaps comes back `attributed=False`, so the caller
+        can tell "nobody looked" from "we recognised this person" — the
+        distinction the visibility gate turns on.
 
         An attempted-but-unmatched speaker is distinct from those gaps:
         speaker-ID ran, embedded the audio, compared against enrolments,
@@ -472,10 +502,10 @@ class GatekeeperHandler(AsyncEventHandler):
         profile (#351); every other gap stays `default_uid` so the
         household hot path is unchanged."""
         if not settings.speaker_id_enabled:
-            return settings.default_uid
+            return self._unattributed()
         extractor = get_extractor()
         if extractor is None or self._audio_start is None or not self._audio_buffer:
-            return settings.default_uid
+            return self._unattributed()
         pcm = b"".join(c.audio for c in self._audio_buffer)
         rate = self._audio_start.rate
         width = self._audio_start.width
@@ -490,7 +520,7 @@ class GatekeeperHandler(AsyncEventHandler):
                 trace_id=self.trace_id,
                 error=str(exc),
             )
-            return settings.default_uid
+            return self._unattributed()
         candidates = await asyncio.to_thread(list_embeddings, settings.solaris_db_path)
         uid, match = resolve_speaker(
             query,
@@ -510,18 +540,42 @@ class GatekeeperHandler(AsyncEventHandler):
                 runner_up=round(match.runner_up_score, 4),
                 margin=round(match.margin, 4),
             )
+        # No-candidate / no-embedding gaps carry no match at all: speaker-ID
+        # reached no verdict about this voice, so it stays an unattributed
+        # household turn.
+        if match is None:
+            return self._unattributed()
         # A real attempt that matched no enrolled resident (a candidate existed,
         # but scored too low or too close to another resident to tell them
         # apart) is an unknown speaker, not the household — route it to the
-        # guest profile. No-candidate / no-embedding gaps carry no match at all
-        # and stay household.
-        if match is not None and not match.accepted(
-            margin=settings.speaker_match_margin
-        ):
-            return GUEST_UID
-        if uid != settings.default_uid:
-            await asyncio.to_thread(touch_last_seen, settings.solaris_db_path, uid)
-        return uid
+        # guest profile.
+        if not match.accepted(margin=settings.speaker_match_margin):
+            return SpeakerResolution(GUEST_UID, attributed=True)
+        await asyncio.to_thread(touch_last_seen, settings.solaris_db_path, uid)
+        return SpeakerResolution(uid, attributed=True)
+
+    async def _stash_speaker(self, transcript: str, speaker: SpeakerResolution) -> None:
+        """Publish this turn's speaker to the engine facade over the
+        transcript-keyed side-channel — and only when speaker-ID reached a
+        verdict.
+
+        The facade treats a stash row as proof that speaker-ID attributed the
+        utterance and unlocks the PERSONAL tool class on it. Writing the
+        household fallback here would therefore report every voice in the room
+        as a recognised resident on an install where speaker-ID is switched on
+        but inert (#1146) — so a gap leaves no row at all, and the facade's
+        miss path puts the turn back on the household default."""
+        if not speaker.attributed:
+            log.info(
+                "gatekeeper.speaker.unattributed",
+                trace_id=self.trace_id,
+                uid=speaker.uid,
+            )
+            return
+        await asyncio.to_thread(
+            stash_uid, settings.solaris_db_path, transcript, speaker.uid
+        )
+        log.info("gatekeeper.speaker.stash", trace_id=self.trace_id, uid=speaker.uid)
 
     async def _resolve_location(self) -> str | None:
         """Room of the originating satellite, or None when unknown. The engine

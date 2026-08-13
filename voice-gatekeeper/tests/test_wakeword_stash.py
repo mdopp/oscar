@@ -96,7 +96,9 @@ def _new_handler(db: str, monkeypatch, *, transcript: str = "Solaris"):
     h = GatekeeperHandler(None, None, _StubInfo())
     h.write_event = AsyncMock()
     h._transcribe = AsyncMock(return_value=transcript)
-    h._resolve_uid = AsyncMock(return_value="alex")
+    h._resolve_speaker = AsyncMock(
+        return_value=handler_mod.SpeakerResolution("alex", attributed=True)
+    )
     return h
 
 
