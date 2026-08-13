@@ -83,7 +83,7 @@ def test_install_whisper_unit_picks_gpu_model_default_on_cdi(pd, monkeypatch, tm
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -109,7 +109,7 @@ def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_p
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -294,7 +294,7 @@ def test_install_whisper_unit_passes_the_persisted_prompt(pd, monkeypatch, tmp_p
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             seen.update(prompt=prompt) or "UNIT"
         ),
     )

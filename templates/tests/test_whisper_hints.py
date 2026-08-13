@@ -11,15 +11,26 @@ already mounts (#1142) now launches a small wrapper module instead of
 patch — which means it lives or dies with upstream's shape, so it asserts that
 shape at startup and refuses to start when it moved. These tests exercise the
 wrapper against a stub of that shape (real files on disk: the assertion reads
-`inspect.getsource`)."""
+`inspect.getsource`).
+
+The same wrapper serves the segment endpoint (foundry-chronicle#141): POST the
+path of a recording under the read-only mount, get timestamped segments back.
+It shares the household's model, so the gate that keeps an hours-long batch run
+from sitting on a three-second voice command is tested here too."""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import pathlib
+import socket
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -27,12 +38,14 @@ TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
 
 STUB_MODULES = (
     "solaris_whisper_hints",
+    "faster_whisper",
     "wyoming",
     "wyoming.asr",
     "wyoming.event",
     "wyoming_faster_whisper",
     "wyoming_faster_whisper.__main__",
     "wyoming_faster_whisper.dispatch_handler",
+    "wyoming_faster_whisper.faster_whisper_handler",
 )
 
 
@@ -56,7 +69,7 @@ def _clean_stub_modules():
         sys.modules.pop(name, None)
 
 
-def _stub_tree(root, hint_fields=True, prompt_attr="initial_prompt"):
+def _stub_tree(root, hint_fields=True, prompt_attr="initial_prompt", model_call=True):
     """A minimal on-disk stand-in for the image's wyoming + server packages.
 
     On disk, not in memory: the wrapper's shape assertion reads the handler with
@@ -119,6 +132,49 @@ def _stub_tree(root, hint_fields=True, prompt_attr="initial_prompt"):
         "        return True\n\n"
         "    async def _commit_path(self):\n"
         f"        return dict(initial_prompt=self._loader.{prompt_attr})\n"
+    )
+    # The token budget mirrors the box: max_length 448 -> 223 tokens, and every
+    # whitespace-separated chunk costs 3, the measured cost of a fantasy name.
+    (root / "faster_whisper.py").write_text(
+        "STEP_HOOK = None\n"
+        "CALLS = []\n\n\n"
+        "class _Segment:\n"
+        "    def __init__(self, start, end, text):\n"
+        "        self.start = start\n"
+        "        self.end = end\n"
+        "        self.text = text\n\n\n"
+        "class _Encoding:\n"
+        "    def __init__(self, ids):\n"
+        "        self.ids = ids\n\n\n"
+        "class HfTokenizer:\n"
+        "    def encode(self, text, add_special_tokens=True):\n"
+        "        return _Encoding([0] * 3 * len(text.split()))\n\n\n"
+        "class WhisperModel:\n"
+        "    def __init__(self, *args, **kwargs):\n"
+        "        self.max_length = 448\n"
+        "        self.hf_tokenizer = HfTokenizer()\n\n"
+        "    def transcribe(self, audio, language=None, beam_size=1,\n"
+        "                   hotwords=None, vad_filter=False, vad_parameters=None):\n"
+        "        CALLS.append(dict(audio=audio, language=language,\n"
+        "                          beam_size=beam_size, hotwords=hotwords))\n\n"
+        "        def steps():\n"
+        "            for i in range(3):\n"
+        "                if STEP_HOOK is not None:\n"
+        "                    STEP_HOOK(i)\n"
+        "                yield _Segment(i * 30.0, i * 30.0 + 29.0, f'text {i}')\n\n"
+        "        return steps(), dict(duration=90.0)\n"
+    )
+    call = "self.model.transcribe(" if model_call else "self.model.run("
+    (root / "wyoming_faster_whisper" / "faster_whisper_handler.py").write_text(
+        "class FasterWhisperTranscriber:\n"
+        "    def __init__(self, model):\n"
+        "        self.model = model\n"
+        "        self.vad_filter = False\n"
+        "        self.vad_parameters = None\n\n"
+        "    def transcribe(self, wav_path, language, beam_size=1,\n"
+        "                   initial_prompt=None):\n"
+        f"        segments, _info = {call}wav_path, language=language)\n"
+        '        return " ".join(s.text for s in segments)\n'
     )
 
 
@@ -283,3 +339,169 @@ def test_it_refuses_to_start_when_transcribe_lost_the_hint_fields(
     from wyoming_faster_whisper.__main__ import RAN
 
     assert RAN == []
+
+
+def test_it_refuses_to_start_when_the_model_call_moved(
+    pd, tmp_path, monkeypatch, capsys
+):
+    # The gate serialises the model by wrapping FasterWhisperTranscriber.transcribe.
+    # If that is no longer where the model is called, the wrap guards nothing and
+    # a batch run could hold the GPU against the household unnoticed.
+    mod = _wrapper(pd, tmp_path, monkeypatch, model_call=False)
+    assert mod.main() == 1
+    assert "no longer calls self.model.transcribe(" in capsys.readouterr().err
+
+
+# -- the segment endpoint (#1157, foundry-chronicle#141) ----------------------
+
+
+def _serve(pd, tmp_path, monkeypatch):
+    """The wrapper with a recordings mount, its endpoint listening."""
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    (recordings / "kai.wav").write_bytes(b"RIFF....WAVE")
+    monkeypatch.setenv("WHISPER_SEGMENTS_ROOT", str(recordings))
+    # A real port, not 0: the caller needs a fixed one, so the wrapper treats
+    # port 0 as "no endpoint" rather than as an ephemeral bind.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        monkeypatch.setenv("WHISPER_SEGMENTS_PORT", str(probe.getsockname()[1]))
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    server = mod._loaded["server"]
+    return mod, recordings, server.server_address[1]
+
+
+def _post(port, payload):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/transcribe",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+def test_endpoint_returns_timestamped_segments(pd, tmp_path, monkeypatch):
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    import faster_whisper
+
+    model = faster_whisper.WhisperModel()
+    from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
+
+    FasterWhisperTranscriber(model)  # the patched __init__ registers it
+    status, body = _post(port, {"path": str(recordings / "kai.wav"), "language": "de"})
+    assert status == 200
+    # start, end, text — nothing else: foundry-chronicle stores exactly these
+    # three and converts the seconds to their own ms columns.
+    assert body["segments"] == [
+        {"start": 0.0, "end": 29.0, "text": "text 0"},
+        {"start": 30.0, "end": 59.0, "text": "text 1"},
+        {"start": 60.0, "end": 89.0, "text": "text 2"},
+    ]
+    assert faster_whisper.CALLS[-1]["language"] == "de"
+    mod._loaded["server"].shutdown()
+
+
+def test_endpoint_refuses_a_path_outside_the_mount(pd, tmp_path, monkeypatch):
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    outside = tmp_path / "secret.wav"
+    outside.write_bytes(b"x")
+    for candidate in ("../secret.wav", str(outside), "/etc/passwd", ""):
+        status, body = _post(port, {"path": candidate})
+        assert status == 403, candidate
+        assert "must be a file under" in body["error"]
+    mod._loaded["server"].shutdown()
+
+
+def test_over_budget_hints_are_reported_not_silently_dropped(pd, tmp_path, monkeypatch):
+    # The whole point: 52 real names measure 415 tokens against a budget of 223,
+    # and faster-whisper would cut the token list mid-name and say nothing. They
+    # only notice weeks later, by which time the recording is deleted.
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    import faster_whisper
+    from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
+
+    FasterWhisperTranscriber(faster_whisper.WhisperModel())
+    names = [f"Name{i}" for i in range(80)]
+    status, body = _post(port, {"path": str(recordings / "kai.wav"), "hotwords": names})
+    assert status == 200
+    # 3 tokens per comma-joined name, budget 223 -> 74 fit, the rest are named.
+    assert body["hotwords_dropped_count"] == 6
+    assert body["hotwords_dropped"] == names[74:]
+    used = faster_whisper.CALLS[-1]["hotwords"]
+    assert used.startswith("Name0, Name1")
+    assert "Name74" not in used
+    mod._loaded["server"].shutdown()
+
+
+def test_no_hints_leaves_the_hotwords_unset(pd, tmp_path, monkeypatch):
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    import faster_whisper
+    from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
+
+    FasterWhisperTranscriber(faster_whisper.WhisperModel())
+    status, body = _post(port, {"path": str(recordings / "kai.wav")})
+    assert status == 200
+    assert body["hotwords_dropped"] == []
+    assert faster_whisper.CALLS[-1]["hotwords"] is None
+    mod._loaded["server"].shutdown()
+
+
+def test_there_is_no_endpoint_without_a_recordings_mount(pd, tmp_path, monkeypatch):
+    # Every other box: no mount, no listener, no new surface.
+    monkeypatch.delenv("WHISPER_SEGMENTS_ROOT", raising=False)
+    monkeypatch.delenv("WHISPER_SEGMENTS_PORT", raising=False)
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    assert mod.serve_segments() is None
+    assert "server" not in mod._loaded
+
+
+def test_the_gate_opens_between_segments_and_the_household_goes_first(
+    pd, tmp_path, monkeypatch
+):
+    # An hours-long batch run must not hold the model against a 3s voice command.
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    import faster_whisper
+    from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
+
+    transcriber = FasterWhisperTranscriber(faster_whisper.WhisperModel())
+    order = []
+
+    def household():
+        with mod.GATE.hold(household=True):
+            order.append("household")
+
+    waiter = []
+
+    def hook(index):
+        order.append(f"segment{index}")
+        if index == 0:
+            thread = threading.Thread(target=household)
+            waiter.append(thread)
+            thread.start()
+            # Block until it is genuinely queued on the gate, so the assertion
+            # below is about priority and not about thread scheduling luck.
+            while mod.GATE._household_waiting == 0:
+                time.sleep(0.001)
+
+    monkeypatch.setattr(faster_whisper, "STEP_HOOK", hook)
+    segments = mod.transcribe_file(transcriber, "kai.wav", "de", [])
+    waiter[0].join(timeout=5)
+    assert len(segments) == 3
+    # The household request is served BETWEEN two segments, not after the job.
+    assert order == ["segment0", "household", "segment1", "segment2"]
+
+
+def test_the_household_path_holds_the_gate(pd, tmp_path, monkeypatch):
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    from wyoming_faster_whisper.faster_whisper_handler import FasterWhisperTranscriber
+
+    assert FasterWhisperTranscriber.transcribe is mod.household_transcribe
