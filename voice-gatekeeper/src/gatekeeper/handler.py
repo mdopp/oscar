@@ -74,20 +74,26 @@ GUEST_UID = "guest"
 
 @dataclass(frozen=True)
 class SpeakerResolution:
-    """What speaker-ID concluded about one turn.
+    """What speaker-ID concluded about one turn — who, and whether we know it.
 
-    `attributed` is the fail-closed bit. It is True only when speaker-ID
-    actually ran and reached a verdict about *this voice*: a match that cleared
-    threshold and margin, or an explicit non-match routed to `guest`. Every gap
-    — feature off, no extractor in this image, extraction raised, nobody
-    enrolled — leaves it False, because the uid is then a fallback nobody
-    recognised. The engine facade reads the presence of a stash row as "this
-    utterance was attributed" and unlocks PERSONAL tools on it (#1146), so a
-    fallback must be distinguishable from a recognition all the way down.
+    `attributed` is the fail-closed bit for *publishing*: True only when
+    speaker-ID actually ran and reached a verdict about this voice — a match
+    that cleared threshold and margin, or an explicit non-match routed to
+    `guest`. Every gap (feature off, no extractor in this image, extraction
+    raised, nobody enrolled) leaves it False, because the uid is then a
+    fallback nobody recognised, and no row is written at all (#1146).
+
+    `matched` is the fail-closed bit for *recognition*, and it is the one the
+    engine's PERSONAL gate reads: True only for a voice matched to an enrolled
+    resident. The unknown-speaker verdict is `uid=guest, matched=False` — it
+    routes to the guest profile without ever claiming a recognition, so no uid
+    value, today's sentinel or tomorrow's, can stand in for the claim (#1152).
+    Both default to the safe answer.
     """
 
     uid: str
-    attributed: bool
+    attributed: bool = False
+    matched: bool = False
 
 
 def client_id_from_peername(peer: object) -> str | None:
@@ -550,21 +556,21 @@ class GatekeeperHandler(AsyncEventHandler):
         # apart) is an unknown speaker, not the household — route it to the
         # guest profile.
         if not match.accepted(margin=settings.speaker_match_margin):
-            return SpeakerResolution(GUEST_UID, attributed=True)
+            return SpeakerResolution(GUEST_UID, attributed=True, matched=False)
         await asyncio.to_thread(touch_last_seen, settings.solaris_db_path, uid)
-        return SpeakerResolution(uid, attributed=True)
+        return SpeakerResolution(uid, attributed=True, matched=True)
 
     async def _stash_speaker(self, transcript: str, speaker: SpeakerResolution) -> None:
         """Publish this turn's speaker to the engine facade over the
         transcript-keyed side-channel — and only when speaker-ID reached a
         verdict.
 
-        The facade treats a stash row as proof that speaker-ID attributed the
-        utterance and unlocks the PERSONAL tool class on it. Writing the
-        household fallback here would therefore report every voice in the room
-        as a recognised resident on an install where speaker-ID is switched on
-        but inert (#1146) — so a gap leaves no row at all, and the facade's
-        miss path puts the turn back on the household default."""
+        Two facts go over the wire, not one: `uid` routes the turn, `matched`
+        is the recognition claim the facade's PERSONAL gate reads (#1152). The
+        household fallback is published as neither — a gap leaves no row at
+        all, so an install where speaker-ID is switched on but inert can't
+        report every voice in the room as a recognised resident (#1146), and
+        the facade's miss path puts the turn back on the household default."""
         if not speaker.attributed:
             log.info(
                 "gatekeeper.speaker.unattributed",
@@ -573,9 +579,18 @@ class GatekeeperHandler(AsyncEventHandler):
             )
             return
         await asyncio.to_thread(
-            stash_uid, settings.solaris_db_path, transcript, speaker.uid
+            stash_uid,
+            settings.solaris_db_path,
+            transcript,
+            speaker.uid,
+            matched=speaker.matched,
         )
-        log.info("gatekeeper.speaker.stash", trace_id=self.trace_id, uid=speaker.uid)
+        log.info(
+            "gatekeeper.speaker.stash",
+            trace_id=self.trace_id,
+            uid=speaker.uid,
+            matched=speaker.matched,
+        )
 
     async def _resolve_location(self) -> str | None:
         """Room of the originating satellite, or None when unknown. The engine

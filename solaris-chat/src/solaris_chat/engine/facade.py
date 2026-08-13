@@ -42,11 +42,13 @@ from solaris_chat.engine.tools import (
     current_speaker_matched,
 )
 from solaris_chat.logging import log
-from solaris_chat.voice_uid_stash import consume_uid
+from solaris_chat.voice_uid_stash import consume_speaker
 
 # The gatekeeper stashes this uid for a speaker that speaker-ID heard but
 # matched to no enrolled resident (an attempted-but-unknown speaker, #351).
 # It is not a real resident: the turn runs the ephemeral guest profile (#353).
+# It is a *routing* label only — what unlocks the PERSONAL tool class is the
+# row's explicit `matched` flag, never this string's absence (#1152).
 GUEST_UID = "guest"
 
 
@@ -244,18 +246,20 @@ def add_facade_routes(
         # the newest one does not.
         _strip_room_from_messages(messages)
         current_room.set(room)
-        matched_uid = consume_uid(solaris_db_path, transcript)
-        uid = matched_uid or str(body.get("user") or default_uid)
+        speaker = consume_speaker(solaris_db_path, transcript)
+        uid = (speaker.uid if speaker else "") or str(body.get("user") or default_uid)
         # Visibility gate (#1130, ADR-12 / G-6): everything on this route is
         # spoken out loud, so the tool's declared class decides whether it may
-        # answer with content at all. A stash hit is a real speaker-ID match and
-        # unlocks the PERSONAL class; it never unlocks CONFIDENTIAL, because
-        # far-field recognition is spoofable and the failure mode is a leak
-        # inside the family. With speaker-ID off for the install no stash hit is
-        # possible at all, so PERSONAL collapses to HOUSEHOLD rather than
-        # withholding a resident's own notes from every spoken turn.
+        # answer with content at all. What unlocks the PERSONAL class is the
+        # gatekeeper's explicit `matched` claim on the stashed row — not the row
+        # existing, and not the uid it carries (#1152). It never unlocks
+        # CONFIDENTIAL, because far-field recognition is spoofable and the
+        # failure mode is a leak inside the family. With speaker-ID off for the
+        # install nothing can ever be matched, so PERSONAL collapses to
+        # HOUSEHOLD rather than withholding a resident's own notes from every
+        # spoken turn.
         current_channel.set(CHANNEL_VOICE)
-        current_speaker_matched.set(bool(matched_uid) and matched_uid != GUEST_UID)
+        current_speaker_matched.set(speaker is not None and speaker.matched)
         current_speaker_id_enabled.set(speaker_id_enabled)
         # An unknown speaker (speaker-ID ran but matched no resident, #351) is
         # routed to the ephemeral guest profile, not the resident's household

@@ -567,7 +567,7 @@ async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
     ]
 
     resolved = await h._resolve_speaker()
-    assert resolved == handler.SpeakerResolution("alice", attributed=True)
+    assert resolved == handler.SpeakerResolution("alice", attributed=True, matched=True)
 
     # touch_last_seen must have stamped last_seen_at for the matched uid
     with sqlite3.connect(db) as conn:
@@ -612,7 +612,7 @@ async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch
     ]
 
     assert await h._resolve_speaker() == handler.SpeakerResolution(
-        handler.GUEST_UID, attributed=True
+        handler.GUEST_UID, attributed=True, matched=False
     )
 
 
@@ -663,7 +663,7 @@ async def test_resolve_uid_ambiguous_speaker_routes_to_guest(tmp_path, monkeypat
     ]
 
     assert await h._resolve_speaker() == handler.SpeakerResolution(
-        handler.GUEST_UID, attributed=True
+        handler.GUEST_UID, attributed=True, matched=False
     )
     # A refused turn is not a sighting — nobody may be stamped as seen.
     with sqlite3.connect(db) as conn:
@@ -794,6 +794,7 @@ def _add_stash_table(db: str) -> None:
             CREATE TABLE voice_uid_stash (
               transcript TEXT PRIMARY KEY,
               uid        TEXT NOT NULL,
+              matched    INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
@@ -802,9 +803,9 @@ def _add_stash_table(db: str) -> None:
 
 
 def _facade_speaker_matched(db: str, transcript: str) -> bool:
-    """The engine facade's verdict on this turn, as facade.py computes it: a
-    stash row that isn't the `guest` sentinel counts as a speaker-ID match and
-    unlocks the PERSONAL tool class on voice.
+    """The engine facade's verdict on this turn, as facade.py computes it: the
+    row's explicit `matched` claim, and nothing else — not the row's existence,
+    not the uid it carries (#1152). Anything else reads as "not matched".
 
     Mirrored here rather than imported because CI installs the two packages in
     separate jobs; the engine half of the contract is asserted in
@@ -812,10 +813,9 @@ def _facade_speaker_matched(db: str, transcript: str) -> bool:
     """
     with sqlite3.connect(db) as conn:
         row = conn.execute(
-            "SELECT uid FROM voice_uid_stash WHERE transcript = ?", (transcript,)
+            "SELECT matched FROM voice_uid_stash WHERE transcript = ?", (transcript,)
         ).fetchone()
-    uid = row[0] if row else None
-    return bool(uid) and uid != "guest"
+    return bool(row) and row[0] == 1
 
 
 def _handler_for(monkeypatch, db: str, *, extractor, **overrides):
@@ -916,7 +916,14 @@ async def test_satellite_match_is_published_to_the_facade(tmp_path, monkeypatch)
 
     # The satellite turn ran as before, attributed to alice...
     assert h._solaris.converse.await_args.kwargs["uid"] == "alice"
-    # ...and the match reached the facade, which now unlocks PERSONAL.
+    # ...and the match reached the facade as an explicit claim, which unlocks
+    # PERSONAL.
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT uid, matched FROM voice_uid_stash WHERE transcript = ?",
+            ("lies mir meine notizen vor",),
+        ).fetchone()
+    assert row == ("alice", 1)
     assert _facade_speaker_matched(db, "lies mir meine notizen vor") is True
 
 
@@ -924,8 +931,8 @@ async def test_satellite_unknown_speaker_is_published_as_guest_not_a_match(
     tmp_path, monkeypatch
 ):
     """Speaker-ID ran and refused: an unknown voice still has to reach the guest
-    profile, so the row is written — but as the `guest` sentinel, which the
-    facade explicitly does not count as a match."""
+    profile, so the row is written — with `matched=0`, i.e. carrying no
+    recognition claim at all. The uid is routing; the claim is the flag."""
     from unittest.mock import AsyncMock
 
     db = _seed_db(tmp_path)
@@ -948,9 +955,49 @@ async def test_satellite_unknown_speaker_is_published_as_guest_not_a_match(
 
     with sqlite3.connect(db) as conn:
         row = conn.execute(
-            "SELECT uid FROM voice_uid_stash WHERE transcript = ?", ("wer bin ich",)
+            "SELECT uid, matched FROM voice_uid_stash WHERE transcript = ?",
+            ("wer bin ich",),
         ).fetchone()
-    assert row == ("guest",)
+    assert row == ("guest", 0)
+    assert _facade_speaker_matched(db, "wer bin ich") is False
+
+
+async def test_a_renamed_unknown_speaker_sentinel_still_publishes_no_match(
+    tmp_path, monkeypatch
+):
+    """#1152, the drift the design has to survive: someone changes the
+    unknown-speaker sentinel from `guest` to anything else. Under the old
+    contract that alone turned an unknown voice into a recognised resident for
+    the facade. Now the sentinel is only a routing label — the row still
+    carries no match claim, so PERSONAL stays shut whatever the uid says."""
+    import gatekeeper.handler as handler
+    from unittest.mock import AsyncMock
+
+    db = _seed_db(tmp_path)
+    _add_stash_table(db)
+    insert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+    monkeypatch.setattr(handler, "GUEST_UID", "unknown")
+
+    class _StrangerExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return _emb(99)
+
+    h = _handler_for(
+        monkeypatch, db, extractor=_StrangerExtractor(), speaker_id_threshold=0.99
+    )
+    h._transcribe = AsyncMock(return_value="wer bin ich")
+    h._resolve_location = AsyncMock(return_value=None)
+    h._solaris.converse = AsyncMock(return_value="Klar.")
+    h._synthesize_and_stream = AsyncMock()
+
+    await h._process_pipeline()
+
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT uid, matched FROM voice_uid_stash WHERE transcript = ?",
+            ("wer bin ich",),
+        ).fetchone()
+    assert row == ("unknown", 0)
     assert _facade_speaker_matched(db, "wer bin ich") is False
 
 
