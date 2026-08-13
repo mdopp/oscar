@@ -104,7 +104,9 @@ def _new_handler(
     h = GatekeeperHandler(None, None, _StubInfo())
     h.write_event = AsyncMock()
     h._transcribe = AsyncMock(return_value="lena")
-    h._resolve_uid = AsyncMock(return_value="guest")
+    h._resolve_speaker = AsyncMock(
+        return_value=handler_mod.SpeakerResolution("guest", attributed=True)
+    )
     return h
 
 

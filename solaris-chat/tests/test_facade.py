@@ -1052,6 +1052,61 @@ async def test_facade_stash_is_consume_once(aiohttp_client, db, soul):
     )
 
 
+async def test_facade_speaker_match_is_the_stash_not_the_user_field(
+    aiohttp_client, db, soul
+):
+    # #1146: `user` routes the conversation, the stash is the evidence. The
+    # gatekeeper writes a stash row only when speaker-ID actually attributed the
+    # utterance, so PERSONAL unlocks on a stash hit and stays locked when the
+    # body merely names a resident — which is all an inert speaker-ID setup, or
+    # a satellite that never published its match, can offer.
+    from solaris_chat.engine.tools import current_speaker_matched
+
+    seen: list[bool] = []
+
+    async def _capture(args):
+        seen.append(current_speaker_matched.get())
+        return "ok"
+
+    capture = Tool(
+        name="capture",
+        description="capture the speaker verdict",
+        parameters={"type": "object", "properties": {}},
+        handler=_capture,
+        visibility=Visibility.HOUSEHOLD,
+    )
+    call = ChatResult(
+        content="",
+        tool_calls=[{"function": {"name": "capture", "arguments": {}}}],
+        prompt_tokens=5,
+    )
+    answer = ChatResult(content="Klar.", prompt_tokens=6, completion_tokens=2)
+    household, _ = _engine(db, soul, [call, answer, call, answer], tools=[capture])
+    app = build_app(
+        engine=household,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        speaker_id_enabled=True,
+    )
+    http = await aiohttp_client(app)
+
+    _stash(db, "Licht an", "anna")
+    for transcript in ("Licht an", "Wer bin ich"):
+        resp = await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "solaris",
+                "stream": False,
+                "messages": [{"role": "user", "content": transcript}],
+                "user": "anna",
+            },
+        )
+        assert resp.status == 200
+    # Stashed match -> attributed. Stash miss with the very same `user` -> not.
+    assert seen == [True, False]
+
+
 def test_consume_uid_is_atomic_consume_once(db):
     # A single consume returns the stashed uid; a second returns None because
     # the read+delete happen in one statement under the write lock, so a
