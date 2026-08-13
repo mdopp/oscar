@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session as connect
+from mcp import ClientSession
+from mcp.client._memory import InMemoryTransport
 
 from gatekeeper.mcp_server import _BearerAuth, build_mcp
 
@@ -28,13 +30,22 @@ def db_path(tmp_path):
     return p
 
 
+@asynccontextmanager
+async def connect(server):
+    """An initialized client session wired to `server` in-process."""
+    async with InMemoryTransport(server) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
 def _payload(result):
-    """Tools return a dict, which FastMCP serializes into text content."""
+    """Tools return a dict, which MCPServer serializes into text content."""
     return json.loads(result.content[0].text)
 
 
 async def test_lists_room_tools(db_path):
-    async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
+    async with connect(build_mcp(db_path=db_path)) as client:
         tools = await client.list_tools()
         assert {t.name for t in tools.tools} == {"set_room", "list_rooms"}
 
@@ -45,7 +56,7 @@ def test_only_tools_capability_advertised(db_path):
     list_resources/read_resource as four useless tools in every prompt)."""
     from mcp.server.lowlevel.server import NotificationOptions
 
-    caps = build_mcp(db_path=db_path)._mcp_server.get_capabilities(
+    caps = build_mcp(db_path=db_path)._lowlevel_server.get_capabilities(
         NotificationOptions(), {}
     )
     assert caps.tools is not None
@@ -54,7 +65,7 @@ def test_only_tools_capability_advertised(db_path):
 
 
 async def test_set_and_list_room(db_path):
-    async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
+    async with connect(build_mcp(db_path=db_path)) as client:
         set_res = await client.call_tool(
             "set_room", {"satellite_id": "192.168.178.42", "room": "kitchen"}
         )
@@ -68,7 +79,7 @@ async def test_set_and_list_room(db_path):
 
 
 async def test_set_room_accepts_endpoint_form(db_path):
-    async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
+    async with connect(build_mcp(db_path=db_path)) as client:
         res = await client.call_tool(
             "set_room", {"endpoint": "voice-pe:10.0.0.5", "room": "office"}
         )
@@ -76,13 +87,13 @@ async def test_set_room_accepts_endpoint_form(db_path):
 
 
 async def test_set_room_rejects_blank_room(db_path):
-    async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
+    async with connect(build_mcp(db_path=db_path)) as client:
         res = await client.call_tool("set_room", {"satellite_id": "x", "room": "   "})
         assert _payload(res) == {"ok": False, "reason": "invalid_room"}
 
 
 async def test_set_room_rejects_missing_satellite(db_path):
-    async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
+    async with connect(build_mcp(db_path=db_path)) as client:
         res = await client.call_tool("set_room", {"room": "kitchen"})
         assert _payload(res) == {"ok": False, "reason": "invalid_satellite_id"}
 

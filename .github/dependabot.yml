@@ -12,13 +12,11 @@ updates:
       gatekeeper-deps:
         patterns: ["*"]
     ignore:
-      # The `mcp<2` cap is a guard, not a stale pin. mcp 2.0 replaced
-      # `mcp.server.fastmcp` with `MCPServer` and dropped
-      # `mcp.client.streamable_http.streamablehttp_client`, which solaris-chat
-      # imports FUNCTION-LOCALLY at three sites — so CI stays green and the
-      # break only appears at runtime on the box. Lifting the cap is tracked in
-      # #1106 and waits on mdopp/servicebay#2437; until then a bump PR here can
-      # only be wrong, and #1111 was closed for exactly this reason.
+      # The `mcp<3` cap is a guard, not a stale pin: every mcp major so far has
+      # renamed the server/client entrypoints this repo uses, and the engine's
+      # half of the wire imports them FUNCTION-LOCALLY — so a bad bump keeps CI
+      # green and only breaks at runtime on the box. A major goes in by hand,
+      # both ends together, with a real-box verify (#1102/#1106).
       - dependency-name: mcp
         update-types: ["version-update:semver-major"]
 
