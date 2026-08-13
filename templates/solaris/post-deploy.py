@@ -207,10 +207,12 @@ _WHISPER_PROMPT_UNSAFE = str.maketrans({c: " " for c in '"\\$%`\n\r\t'})
 # `--initial-prompt` (#1142), so the only way to reach the flag is to mount our
 # own copy of that script over it. Everything but the prompt args is a
 # line-for-line copy of upstream's run script — upstream flag drift has to be
-# mirrored here by hand.
+# mirrored here by hand. Since #1157 the script launches the hint wrapper below
+# instead of `python3 -m wyoming_faster_whisper`; the wrapper runs the stock
+# server, so every flag still means what upstream says it means.
 WHISPER_RUN_SCRIPT = """#!/command/with-contenv bash
 # shellcheck shell=bash
-# Managed by the Solaris post-deploy (#1142).
+# Managed by the Solaris post-deploy (#1142, #1157).
 
 prompt_args=()
 if [ -n "${WHISPER_PROMPT:-}" ]; then
@@ -219,7 +221,7 @@ fi
 
 exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
-        s6-setuidgid abc python3 -m wyoming_faster_whisper \\
+        s6-setuidgid abc python3 /solaris_whisper_hints.py \\
         --uri 'tcp://0.0.0.0:10300' \\
         --model "${WHISPER_MODEL:-auto}" \\
         --beam-size "${WHISPER_BEAM:-1}" \\
@@ -230,6 +232,104 @@ exec \\
         ${DEBUG:+--debug} \\
         ${LOCAL_ONLY:+--local-files-only}
 """
+
+# Per-request word hints (#1157). #1142's prompt is static: it primes whisper on
+# the whole household at deploy time. What a caller actually needs is the words
+# that matter for THIS utterance. `wyoming` 1.10.0 already carries them on
+# `Transcribe` as `transcript_names`/`transcript_terms` — the stock server reads
+# only `language` and drops them.
+#
+# This wrapper launches the stock server with one patch: a request's words are
+# appended to that connection's `initial_prompt`, BEHIND the static household
+# lead-in. Whisper keeps only the LAST 224 tokens, so the request's own words sit
+# where they survive truncation, the static lead-in is not evicted, and a request
+# that carries none leaves the loader untouched — byte-identical to #1142.
+# (`hotwords` would be the better lever for long audio, but the image's
+# FasterWhisperTranscriber.transcribe has a fixed signature with no hotwords
+# parameter, so reaching it would mean patching a second file for no gain on a
+# 3-second household command.)
+#
+# It sits two files deep in a third-party image carrying AutoUpdate=registry, so
+# it asserts its interception point at startup and REFUSES TO START when the
+# shape moved: a container systemd shows as failed is noticed; a server that
+# looks healthy and silently drops the words is not.
+WHISPER_HINTS_FILE = "whisper_hints.py"
+WHISPER_HINTS_MODULE = '''"""Per-request word hints for wyoming-faster-whisper (Solaris, #1157)."""
+
+import dataclasses
+import inspect
+import sys
+
+from wyoming.asr import Transcribe
+from wyoming_faster_whisper import __main__ as stock
+from wyoming_faster_whisper import __version__
+from wyoming_faster_whisper.dispatch_handler import DispatchEventHandler
+
+PROMPT_SITE = "initial_prompt=self._loader.initial_prompt"
+
+_stock_handle_event = DispatchEventHandler.handle_event
+
+
+def shape_problem():
+    """Why this patch no longer applies to the installed server, or ''."""
+    fields = {f.name for f in dataclasses.fields(Transcribe)}
+    if not {"transcript_names", "transcript_terms"} <= fields:
+        return "wyoming Transcribe carries no transcript_names/transcript_terms"
+    seen = inspect.getsource(DispatchEventHandler).count(PROMPT_SITE)
+    if seen != 2:
+        return f"DispatchEventHandler reads {PROMPT_SITE} {seen}x, expected 2"
+    return ""
+
+
+class HintedLoader:
+    """The shared loader as ONE connection sees it, with that request's words
+    appended to the static prompt. Wyoming gives every connection its own
+    handler and every request its own connection, so this cannot leak."""
+
+    def __init__(self, loader, words):
+        self._solaris_wrapped = loader
+        lead = (getattr(loader, "initial_prompt", None) or "").strip()
+        self.initial_prompt = (lead + " " + ", ".join(words) + ".").strip()
+
+    def __getattr__(self, name):
+        return getattr(self._solaris_wrapped, name)
+
+
+async def handle_event(self, event):
+    if Transcribe.is_type(event.type):
+        transcribe = Transcribe.from_event(event)
+        raw = list(transcribe.transcript_names or []) + list(
+            transcribe.transcript_terms or []
+        )
+        words = [w for w in (str(x).strip() for x in raw) if w]
+        if words:
+            loader = getattr(self._loader, "_solaris_wrapped", self._loader)
+            self._loader = HintedLoader(loader, words)
+    return await _stock_handle_event(self, event)
+
+
+def main():
+    problem = shape_problem()
+    if problem:
+        sys.stderr.write(
+            f"solaris-hints: NOT APPLIED to wyoming-faster-whisper {__version__} "
+            f"- {problem}. Refusing to start: the mounted run script and hint "
+            "wrapper no longer match this image (solarisbay#1157).\\n"
+        )
+        return 1
+    DispatchEventHandler.handle_event = handle_event
+    sys.stderr.write(
+        f"solaris-hints: active on wyoming-faster-whisper {__version__} - "
+        "per-request transcript_names/transcript_terms append to initial_prompt\\n"
+    )
+    sys.stderr.flush()
+    stock.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
 VOICE_PROMPT = "Antworte kurz, gesprochen und ohne Markdown."
@@ -680,6 +780,10 @@ def render_whisper_unit(
             # --initial-prompt (#1142), so mount ours over it.
             f"Volume={data_dir}/voice/whisper-run:"
             "/etc/s6-overlay/s6-rc.d/svc-whisper/run:ro,Z\n"
+            # …and the run script launches this wrapper instead of the stock
+            # module, so a request's own words reach the decoder (#1157).
+            f"Volume={data_dir}/voice/{WHISPER_HINTS_FILE}:"
+            "/solaris_whisper_hints.py:ro,Z\n"
             "AutoUpdate=registry\n"
             "# STT health probe (#610): a wedged CUDA context leaves the\n"
             "# container Up while every transcription throws invalid-device, so\n"
@@ -1077,10 +1181,16 @@ def install_whisper_unit(data_dir: str) -> bool:
         jlog("warn", "voice-unit", "whisper: could not write STT probe", error=str(e))
     if gpu:
         run_path = os.path.join(data_dir, "voice", "whisper-run")
+        hints_path = os.path.join(data_dir, "voice", WHISPER_HINTS_FILE)
         try:
             with open(run_path, "w", encoding="utf-8") as f:
                 f.write(WHISPER_RUN_SCRIPT)
             os.chmod(run_path, 0o755)
+            # The run script execs this, so a missing/stale copy is a startup
+            # failure, not a degraded feature — write it before the unit starts.
+            with open(hints_path, "w", encoding="utf-8") as f:
+                f.write(WHISPER_HINTS_MODULE)
+            os.chmod(hints_path, 0o644)
         except OSError as e:
             jlog(
                 "warn",
