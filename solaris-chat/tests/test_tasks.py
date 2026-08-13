@@ -145,9 +145,9 @@ async def test_chat_tools_roundtrip(tmp_path):
     assert json.loads(await tools["task_list"].handler({}))["tasks"] == []
 
 
-async def test_dated_task_becomes_calendar_event(tmp_path, monkeypatch):
+async def test_dated_task_becomes_vtodo(tmp_path, monkeypatch):
     db, notes = _env(tmp_path)
-    # Household-scoped: only shared tasks reach the shared Fristen calendar.
+    # Household-scoped: only shared tasks reach the shared Fristen collection.
     tid = tasks.create_task(
         db_path=db,
         notes_dir=notes,
@@ -171,6 +171,7 @@ async def test_dated_task_becomes_calendar_event(tmp_path, monkeypatch):
     uid, ics = put[0]
     assert uid == f"solaris-task-{tid}"
     assert "TÜV Termin" in ics and "VALARM" in ics
+    assert "BEGIN:VTODO" in ics and "BEGIN:VEVENT" not in ics
 
 
 async def test_completed_task_not_written_to_calendar(tmp_path, monkeypatch):

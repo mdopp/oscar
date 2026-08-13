@@ -13,16 +13,13 @@ authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
 dependencies = [
   "aiohttp>=3.9",
   # Official MCP SDK — the admin profile's servicebay_admin toolbox and the
-  # client end of the gatekeeper's room tool server.
-  # Capped below 2.0: mcp 2.0 removed
-  # `mcp.client.streamable_http.streamablehttp_client`, which
-  # engine/tools/mcp_tools.py imports at three call sites. Those imports are
-  # function-local, so a 2.x install still imports, collects and passes the
-  # suite — the ImportError only lands at runtime on the box, the first time
-  # the engine tries to list or call an MCP tool. Green tests are not evidence
-  # this pin is safe. Lifting the cap means porting both ends of the wire at
-  # once, since voice-gatekeeper is capped the same way (#1102/#1106).
-  "mcp>=1.9,<2",
+  # client end of the gatekeeper's room tool server. On the 2.x line (#1106):
+  # the transport helper is `streamable_http_client`, it takes an
+  # `httpx2.AsyncClient` instead of `headers=`, and it yields a 2-tuple.
+  # Capped below 3.0 because engine/tools/mcp_tools.py imports it at three
+  # function-local call sites, so a breaking rename passes CI and only fails
+  # on the box the first time the engine lists or calls an MCP tool.
+  "mcp>=2,<3",
   # Brute-force cosine over the OKF embedding vectors (float32 blobs); #650/#651.
   "numpy>=1.26",
   # Web Push (VAPID) for timer/reminder phone notifications (#713); no FCM.
@@ -41,6 +38,9 @@ test = [
   "pytest>=7",
   "pytest-asyncio>=0.23",
   "pytest-aiohttp>=1.0",
+  # test_mcp_transport.py serves a real MCP server so the function-local
+  # client imports are exercised by CI (#1106).
+  "uvicorn>=0.27",
 ]
 
 [project.scripts]

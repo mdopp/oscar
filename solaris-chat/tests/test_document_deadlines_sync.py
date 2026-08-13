@@ -2,13 +2,14 @@
 #997).
 
 `document_deadlines_sync.sync_deadlines` reads each document's dated facts and
-each resident's dated OPEN tasks and PUTs one all-day, alarmed calendar object
-per item into a `solaris` calendar under the owner's OWN principal
-(`{base}/{uid}/solaris/`, option A / #1011). These
-tests mock `put_item`/`ensure_calendar` and prove the per-resident collection
-URLs, the event/alarm content, the stable overwrite UID, owner-scoping (a
-resident's task never reaches another's calendar), that non-deadline /
-unparseable dates are skipped, and the disabled no-op.
+each resident's dated OPEN tasks and PUTs one all-day, alarmed object per item
+into a `solaris` collection under the owner's OWN principal
+(`{base}/{uid}/solaris/`, option A / #1011) — a document deadline as a VEVENT,
+a task as a VTODO (#1127). These tests mock `put_item`/`ensure_calendar` and
+prove the per-resident collection URLs, the component/alarm content, the stable
+overwrite UID, owner-scoping (a resident's task never reaches another's
+calendar), that non-deadline / unparseable dates are skipped, and the disabled
+no-op.
 """
 
 from __future__ import annotations
@@ -115,6 +116,8 @@ async def test_deadline_puts_alarmed_all_day_event(tmp_path, monkeypatch):
     assert c["url"] == _SHARED_URL and c["suffix"] == ".ics"
     assert _SHARED_URL in ensured  # collection ensured before its PUTs
     assert c["uid"] == "solaris-deadline-d1-cancellation_deadline"
+    # A document deadline stays a VEVENT — only tasks became VTODOs (#1127).
+    assert "BEGIN:VEVENT" in c["body"] and "BEGIN:VTODO" not in c["body"]
     assert "SUMMARY:Kündigungsfrist: ERGO Rechtsschutz" in c["body"]
     assert "DTSTART;VALUE=DATE:20261215" in c["body"]
     assert "BEGIN:VALARM" in c["body"] and "TRIGGER:-P14D" in c["body"]
@@ -175,6 +178,11 @@ async def test_task_lands_in_owning_residents_calendar(tmp_path, monkeypatch):
     assert out == {"written": 2, "skipped": 0, "failed": 0}
     by_uid = {c["uid"]: c for c in calls}
     lena_url = f"{_BASE}/lena/{_CALENDAR}/"
+    # Both tasks reach the phone as to-dos, not as appointments (#1127).
+    for c in calls:
+        assert "BEGIN:VTODO" in c["body"] and "BEGIN:VEVENT" not in c["body"]
+        assert "STATUS:NEEDS-ACTION" in c["body"]
+    assert "DUE;VALUE=DATE:20260901" in by_uid["solaris-task-t-lena"]["body"]
     # Lena's task → only Lena's calendar; the household task → only SHARED.
     assert by_uid["solaris-task-t-lena"]["url"] == lena_url
     assert by_uid["solaris-task-t-shared"]["url"] == _SHARED_URL
@@ -216,10 +224,15 @@ async def test_household_items_routed_to_primary_resident(tmp_path, monkeypatch)
     # and nothing is written under the principal-less `household` uid.
     assert all(c["url"] == mdopp_url for c in calls)
     assert _SHARED_URL not in ensured
-    assert {c["uid"] for c in calls} == {
+    by_uid = {c["uid"]: c for c in calls}
+    assert set(by_uid) == {
         "solaris-deadline-d1-cancellation_deadline",
         "solaris-task-t-shared",
     }
+    # Same collection, two component types: the deadline stays a VEVENT, the
+    # task is a VTODO (#1127).
+    assert "BEGIN:VEVENT" in by_uid["solaris-deadline-d1-cancellation_deadline"]["body"]
+    assert "BEGIN:VTODO" in by_uid["solaris-task-t-shared"]["body"]
 
 
 async def test_resolved_task_not_written(tmp_path, monkeypatch):
@@ -288,7 +301,7 @@ def _one_task(tmp_path, resident_uid, facts):
 
 async def test_cascade_add_with_due_puts(tmp_path, monkeypatch):
     # add-with-due → single PUT of the task's deterministic UID into its owner's
-    # calendar, ensured first.
+    # collection, ensured first, as an open VTODO (#1127).
     puts, deletes, ensured = _capture_cascade(monkeypatch)
     db = _one_task(
         tmp_path,
@@ -300,14 +313,19 @@ async def test_cascade_add_with_due_puts(tmp_path, monkeypatch):
     assert deletes == []
     assert len(puts) == 1
     assert puts[0]["url"] == lena_url and puts[0]["uid"] == "solaris-task-t1"
+    assert "BEGIN:VTODO" in puts[0]["body"]
+    assert "BEGIN:VEVENT" not in puts[0]["body"]
+    assert "STATUS:NEEDS-ACTION" in puts[0]["body"]
     assert "SUMMARY:Aufgabe: Zahnarzt" in puts[0]["body"]
-    assert "DTSTART;VALUE=DATE:20260901" in puts[0]["body"]
+    assert "DUE;VALUE=DATE:20260901" in puts[0]["body"]
+    # A VTODO's trigger anchors to DTSTART by default; a task only has a DUE.
+    assert "TRIGGER;RELATED=END:-P14D" in puts[0]["body"]
     assert lena_url in ensured
 
 
 async def test_cascade_status_done_deletes(tmp_path, monkeypatch):
-    # status→done → the event is DELETEd, not written, even though it still has a
-    # due date.
+    # status→done → the VTODO is DELETEd, not written, even though it still has a
+    # due date — that's the round-trip that clears it off the phone (#1127).
     puts, deletes, _ = _capture_cascade(monkeypatch)
     db = _one_task(
         tmp_path,
@@ -332,7 +350,7 @@ async def test_cascade_due_change_reputs(tmp_path, monkeypatch):
     await cascade_task_event(db, "t1", _BASE, "solaris", "pw")
     assert deletes == []
     assert len(puts) == 1 and puts[0]["uid"] == "solaris-task-t1"
-    assert "DTSTART;VALUE=DATE:20261015" in puts[0]["body"]
+    assert "DUE;VALUE=DATE:20261015" in puts[0]["body"]
 
 
 async def test_cascade_household_task_routes_to_primary(tmp_path, monkeypatch):

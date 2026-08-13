@@ -23,20 +23,12 @@ dependencies = [
   # Room set/list exposed to the Solaris Engine as a streamable-HTTP MCP tool server
   # (#104). uvicorn is pinned explicitly because the MCP server runs its
   # own ASGI app beside the aiohttp push server.
-  # Capped below 2.0. The removed test helper
-  # (mcp.shared.memory.create_connected_server_and_client_session) is the
-  # visible symptom, not the reason: mcp 2.0 deletes the whole
-  # `mcp.server.fastmcp` package this server is built on (FastMCP is now
-  # mcp.server.mcpserver.MCPServer, `_mcp_server` is `_lowlevel_server`, and
-  # the handler registry the #312 capability-trim pops from is keyed by
-  # method string). That port is mechanical and verified against 2.0.0 —
-  # what blocks it is the other end of the wire: mcp 2.0 also removed
-  # `mcp.client.streamable_http.streamablehttp_client`, the helper the
-  # Solaris Engine (solaris-chat, `mcp>=1.9` uncapped) uses to call this
-  # server. Its CI is green only because those imports are function-local.
-  # Lifting this cap alone would put a 2.x server behind a client that
-  # cannot be built on 2.x, so the two move together or not at all (#1102).
-  "mcp>=1.2,<2",
+  # On the 2.x line (#1102): the server is `mcp.server.mcpserver.MCPServer`,
+  # the low-level handle is `_lowlevel_server`, and the handler registry the
+  # #312 capability-trim pops from is keyed by method string. Capped below
+  # 3.0 — the engine (solaris-chat) is the only client of this server and
+  # tracks the same major.
+  "mcp>=2,<3",
   "uvicorn>=0.27",
 ]
 

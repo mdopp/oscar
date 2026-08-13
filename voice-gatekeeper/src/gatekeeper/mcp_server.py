@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import asyncio
 
-import mcp.types as mcp_types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -32,10 +31,10 @@ _MAX_ROOM_LEN = 64
 _MAX_SAT_LEN = 128
 
 
-def build_mcp(*, db_path: str) -> FastMCP:
-    """Construct the FastMCP server with the room tools. Pure factory so
+def build_mcp(*, db_path: str) -> MCPServer:
+    """Construct the MCP server with the room tools. Pure factory so
     tests can drive the tools without binding a port."""
-    mcp = FastMCP("solaris-gatekeeper-rooms")
+    mcp = MCPServer("solaris-gatekeeper-rooms")
 
     @mcp.tool()
     async def set_room(room: str, satellite_id: str = "", endpoint: str = "") -> dict:
@@ -68,20 +67,20 @@ def build_mcp(*, db_path: str) -> FastMCP:
         rooms = await asyncio.to_thread(_list_rooms, db_path)
         return {"rooms": rooms}
 
-    # We register zero prompts and zero resources, but FastMCP unconditionally
+    # We register zero prompts and zero resources, but MCPServer unconditionally
     # installs their protocol handlers, so `get_capabilities` advertises the
     # prompts+resources capabilities and the engine's MCP client surfaces
     # list_prompts/get_prompt/list_resources/read_resource as four useless
     # model-callable tools in every prompt (#312). Drop those handlers so the
     # initialize response advertises only `tools`.
-    for _req in (
-        mcp_types.ListPromptsRequest,
-        mcp_types.GetPromptRequest,
-        mcp_types.ListResourcesRequest,
-        mcp_types.ReadResourceRequest,
-        mcp_types.ListResourceTemplatesRequest,
+    for _method in (
+        "prompts/list",
+        "prompts/get",
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
     ):
-        mcp._mcp_server.request_handlers.pop(_req, None)
+        mcp._lowlevel_server._request_handlers.pop(_method, None)
 
     return mcp
 

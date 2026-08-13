@@ -6,6 +6,11 @@ contract `end_date`. Rather than push notifications, we write each as an all-day
 event with an advance alarm into a calendar, where the calendar app itself
 reminds the resident (the passive, non-intrusive channel the plan chose).
 
+A dated **task** is not an appointment, so it goes into the same collection as a
+VTODO instead (#1127): a CalDAV task client (Tasks.org via DAVx5) then shows it
+on the phone's to-do list with a checkbox, while the document deadlines stay
+VEVENTs in the calendar view.
+
 Solaris owns, the calendar mirrors (#997, option A / #1011): every resident's
 Solaris calendar lives under the RESIDENT's OWN principal tree —
 `{base}/{resident_uid}/solaris/` — a `solaris`-named calendar under each resident.
@@ -27,7 +32,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from icalendar import Alarm, Calendar, Event
+from icalendar import Alarm, Calendar, Event, Todo
 
 from solaris_chat.engine.ingest.dav_client import HttpDavClient
 from solaris_chat.engine.knowledge import projection
@@ -79,6 +84,31 @@ def _build_event(uid: str, summary: str, description: str, day: date) -> str:
     alarm.add("trigger", timedelta(days=-_LEAD_DAYS))
     ev.add_component(alarm)
     cal.add_component(ev)
+    return cal.to_ical().decode()
+
+
+def _build_todo(uid: str, summary: str, day: date) -> str:
+    """One VTODO — an open task with a DUE date (#1127).
+
+    Same collection as the deadline VEVENTs, but a task component, so a CalDAV
+    task client lists it with a checkbox instead of blocking a day in the
+    calendar. The alarm carries `RELATED=END` because a VTODO's trigger anchors
+    to DTSTART by default and a task only has a DUE.
+    """
+    cal = Calendar()
+    cal.add("prodid", "-//solaris//tasks//EN")
+    cal.add("version", "2.0")
+    todo = Todo()
+    todo.add("uid", uid)
+    todo.add("summary", summary)
+    todo.add("status", "NEEDS-ACTION")
+    todo.add("due", day)  # a date (not datetime) → VALUE=DATE
+    alarm = Alarm()
+    alarm.add("action", "DISPLAY")
+    alarm.add("description", summary)
+    alarm.add("trigger", timedelta(days=-_LEAD_DAYS), parameters={"RELATED": "END"})
+    todo.add_component(alarm)
+    cal.add_component(todo)
     return cal.to_ical().decode()
 
 
@@ -168,10 +198,10 @@ async def sync_deadlines(
                 per_resident.setdefault(shared_target, []).append(
                     (uid, _build_event(uid, summary, desc, day))
                 )
-        # Dated to-do tasks (#todo, #997): an OPEN task with an ISO `due` becomes
-        # a calendar entry in ITS OWNER's calendar — a private resident's task
+        # Dated to-do tasks (#todo, #997, #1127): an OPEN task with an ISO `due`
+        # becomes a VTODO in ITS OWNER's collection — a private resident's task
         # under their own uid, a household task under SHARED_UID. A resolved task
-        # simply stops being written (its event lingers until re-synced away —
+        # simply stops being written (its item lingers until re-synced away —
         # refined by cascade-on-change, see the TODO below).
         tasks = conn.execute(
             "SELECT id, canonical_name, resident_uid FROM entities WHERE type = 'task'"
@@ -189,7 +219,7 @@ async def sync_deadlines(
             # (SHARED_UID) is routed to the primary resident like the deadlines.
             owner = calendar_target_uid(task["resident_uid"], shared_target)
             per_resident.setdefault(owner, []).append(
-                (uid, _build_event(uid, summary, "", day))
+                (uid, _build_todo(uid, summary, day))
             )
     finally:
         conn.close()
@@ -228,12 +258,13 @@ async def cascade_task_event(
     password: str,
     household_uid: str = "",
 ) -> None:
-    """Re-sync the SINGLE calendar event for one task, immediately (#997).
+    """Re-sync the SINGLE VTODO for one task, immediately (#997, #1127).
 
-    Called on task add/update/set_status so the calendar isn't stale until the
-    nightly `sync_deadlines`. Reads the task's current facts and either PUTs its
-    `solaris-task-<id>` event (still OPEN with a parseable ISO `due`) or DELETEs it
-    (resolved, or the due date removed/unparseable, or the task gone). Routing +
+    Called on task add/update/set_status so the phone's task list isn't stale
+    until the nightly `sync_deadlines`. Reads the task's current facts and either
+    PUTs its `solaris-task-<id>` VTODO (still OPEN with a parseable ISO `due`) or
+    DELETEs it (resolved, or the due date removed/unparseable, or the task
+    gone). Routing +
     the deterministic UID match the nightly full sync exactly, so a re-PUT
     overwrites in place. Never raises. Disabled (no-op) when the base URL /
     credentials are unset.
@@ -269,7 +300,7 @@ async def cascade_task_event(
             await client.put_item(
                 collection_url,
                 uid,
-                _build_event(uid, summary, "", day),
+                _build_todo(uid, summary, day),
                 suffix=".ics",
                 content_type="text/calendar; charset=utf-8",
             )

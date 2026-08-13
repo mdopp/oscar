@@ -352,21 +352,22 @@ class McpToolbox(Toolbox):
 
     async def _list_tools(self) -> list[dict[str, Any]]:
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
 
-        async with streamablehttp_client(self._url, headers=self._headers()) as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                listed = await session.list_tools()
+        async with create_mcp_http_client(self._headers()) as http:
+            async with streamable_http_client(self._url, http_client=http) as (
+                read,
+                write,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    listed = await session.list_tools()
         return [
             {
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": t.inputSchema,
+                "inputSchema": t.input_schema,
             }
             for t in listed.tools
         ]
@@ -382,22 +383,23 @@ class McpToolbox(Toolbox):
         touches the ambient `_session_token`; the normal path passes the
         ambient headers."""
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
 
-        async with streamablehttp_client(self._url, headers=headers) as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
+        async with create_mcp_http_client(headers) as http:
+            async with streamable_http_client(self._url, http_client=http) as (
+                read,
+                write,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
         parts: list[str] = []
         for item in result.content:
             text = getattr(item, "text", None)
             if text:
                 parts.append(str(text))
-        out = "\n".join(parts) or json.dumps({"ok": not result.isError})
+        out = "\n".join(parts) or json.dumps({"ok": not result.is_error})
         return out[:16000]
 
 
@@ -441,18 +443,20 @@ async def call_sb_tool(
     needs to file/poll an access request as a code side-effect, not only expose
     the tool to the model)."""
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
 
     token = read_token(token_path)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(name, arguments)
+    async with create_mcp_http_client(headers) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments)
     parts: list[str] = []
     for item in result.content:
         text = getattr(item, "text", None)
         if text:
             parts.append(str(text))
-    out = "\n".join(parts) or json.dumps({"ok": not result.isError})
+    out = "\n".join(parts) or json.dumps({"ok": not result.is_error})
     return out[:16000]
