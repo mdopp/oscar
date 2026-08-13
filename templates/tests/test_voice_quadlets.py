@@ -83,7 +83,7 @@ def test_install_whisper_unit_picks_gpu_model_default_on_cdi(pd, monkeypatch, tm
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -109,7 +109,7 @@ def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_p
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             rendered.update(model=model, gpu=gpu) or "UNIT"
         ),
     )
@@ -163,7 +163,9 @@ def test_whisper_run_script_keeps_upstreams_flags_and_adds_the_prompt(pd):
     script = pd.WHISPER_RUN_SCRIPT
     for flag in ("--uri", "--model", "--beam-size", "--language", "--data-dir"):
         assert flag in script
-    assert "wyoming_faster_whisper" in script
+    # Since #1157 the script launches the hint wrapper, which runs the stock
+    # server itself — see test_whisper_hints.py.
+    assert "/solaris_whisper_hints.py" in script
     # Quoted array expansion: an unquoted "$WHISPER_PROMPT" would word-split the
     # names into separate argv entries and the server would reject them.
     assert 'prompt_args=(--initial-prompt "${WHISPER_PROMPT}")' in script
@@ -292,7 +294,7 @@ def test_install_whisper_unit_passes_the_persisted_prompt(pd, monkeypatch, tmp_p
     monkeypatch.setattr(
         pd,
         "render_whisper_unit",
-        lambda data_dir, model, language, gpu, prompt="": (
+        lambda data_dir, model, language, gpu, prompt="", segments_root="": (
             seen.update(prompt=prompt) or "UNIT"
         ),
     )
