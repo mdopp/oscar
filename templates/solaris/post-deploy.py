@@ -204,24 +204,52 @@ _WHISPER_PROMPT_UNSAFE = str.maketrans({c: " " for c in '"\\$%`\n\r\t'})
 
 # The linuxserver faster-whisper image builds the server command line in
 # /etc/s6-overlay/s6-rc.d/svc-whisper/run and wires NO env var to
-# `--initial-prompt` (#1142), so the only way to reach the flag is to mount our
-# own copy of that script over it. Everything but the prompt args is a
-# line-for-line copy of upstream's run script — upstream flag drift has to be
-# mirrored here by hand.
+# `--initial-prompt` (#1142) nor to `--device`, which upstream leaves at `cpu`
+# (#1162), so the only way to reach either flag is to mount our own copy of that
+# script over it. Everything but the prompt args, the device and the CUDA
+# library path is a line-for-line copy of upstream's run script — upstream flag
+# drift has to be mirrored here by hand.
 WHISPER_RUN_SCRIPT = """#!/command/with-contenv bash
 # shellcheck shell=bash
-# Managed by the Solaris post-deploy (#1142).
+# Managed by the Solaris post-deploy (#1142, #1162).
 
 prompt_args=()
 if [ -n "${WHISPER_PROMPT:-}" ]; then
     prompt_args=(--initial-prompt "${WHISPER_PROMPT}")
 fi
 
+# The :gpu image ships cuBLAS/cuDNN as pip packages but puts them on no library
+# path, so `--device cuda` loads the model into VRAM and then dies on the first
+# encode with "Library libcublas.so.12 is not found" (#1162). Resolve the dirs
+# from the interpreter instead of pinning a site-packages python version, and
+# refuse to start when they are gone — falling back to the CPU would hide
+# exactly the regression this fixes.
+cuda_lib_path="$(python3 -c '
+import importlib.util, pathlib, sys
+
+dirs = []
+for pkg, soname in (
+    ("nvidia.cublas.lib", "libcublas.so.12"),
+    ("nvidia.cudnn.lib", "libcudnn.so.9"),
+):
+    try:
+        spec = importlib.util.find_spec(pkg)
+    except ModuleNotFoundError:
+        spec = None
+    d = pathlib.Path(list(spec.submodule_search_locations)[0]) if spec else None
+    if d is None or not (d / soname).exists():
+        sys.exit("solaris-whisper: %s missing for %s" % (soname, pkg))
+    dirs.append(str(d))
+print(":".join(dirs))
+')" || exit 1
+export LD_LIBRARY_PATH="${cuda_lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
 exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
         s6-setuidgid abc python3 -m wyoming_faster_whisper \\
         --uri 'tcp://0.0.0.0:10300' \\
         --model "${WHISPER_MODEL:-auto}" \\
+        --device cuda \\
         --beam-size "${WHISPER_BEAM:-1}" \\
         --language "${WHISPER_LANG:-auto}" \\
         --data-dir /config \\
