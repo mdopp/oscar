@@ -14,8 +14,10 @@ import ast
 import builtins
 import importlib.util
 import json
+import os
 import pathlib
 import re
+import subprocess
 import symtable
 import sys
 
@@ -163,11 +165,88 @@ def test_whisper_run_script_keeps_upstreams_flags_and_adds_the_prompt(pd):
     script = pd.WHISPER_RUN_SCRIPT
     for flag in ("--uri", "--model", "--beam-size", "--language", "--data-dir"):
         assert flag in script
-    assert "wyoming_faster_whisper" in script
+    # Since #1157 the script launches the hint wrapper, which runs the stock
+    # server itself — see test_whisper_hints.py.
+    assert "/solaris_whisper_hints.py" in script
     # Quoted array expansion: an unquoted "$WHISPER_PROMPT" would word-split the
     # names into separate argv entries and the server would reject them.
     assert 'prompt_args=(--initial-prompt "${WHISPER_PROMPT}")' in script
     assert '"${prompt_args[@]}"' in script
+
+
+# -- whisper on the GPU (#1162) ----------------------------------------------
+#
+# The card was passed through but never used: wyoming-faster-whisper defaults
+# --device to cpu, and the :gpu image puts its own pip cuBLAS/cuDNN on no
+# library path — so `cuda` would load the model into VRAM and then die on the
+# first encode. Both have to hold, or the household's only voice path breaks.
+
+
+def _run_script_preamble(pd) -> str:
+    """Everything the run script does before exec'ing the server, as a
+    standalone bash program that reports the library path it derived."""
+    head = pd.WHISPER_RUN_SCRIPT.split("\nexec \\")[0]
+    return head + '\necho "$LD_LIBRARY_PATH"\n'
+
+
+def test_whisper_run_script_asks_for_the_gpu(pd):
+    assert "--device cuda" in pd.WHISPER_RUN_SCRIPT
+
+
+def test_whisper_cpu_unit_never_asks_for_a_device(pd):
+    # The rhasspy CPU image has no CUDA at all, and it runs the server directly
+    # — no run-script wrapper to carry a device flag onto.
+    cpu = pd.render_whisper_unit("/mnt/data", "base-int8", "de", gpu=False)
+    assert "--device" not in cpu
+    assert "LD_LIBRARY_PATH" not in cpu
+    assert "whisper-run" not in cpu
+
+
+def test_whisper_run_script_is_valid_bash(pd, tmp_path):
+    # It replaces the image's own s6 run script; a syntax error takes STT down.
+    script = tmp_path / "run"
+    script.write_text(pd.WHISPER_RUN_SCRIPT)
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+
+
+def _fake_cuda_tree(root: pathlib.Path, *libs: str) -> pathlib.Path:
+    for lib in libs:
+        pkg, soname = lib.split("/")
+        d = root / "nvidia" / pkg / "lib"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / soname).touch()
+    return root
+
+
+def _derive(pd, tmp_path, pythonpath: str):
+    script = tmp_path / "preamble.sh"
+    script.write_text(_run_script_preamble(pd))
+    return subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"], "PYTHONPATH": pythonpath},
+    )
+
+
+def test_whisper_run_script_derives_the_cuda_library_path(pd, tmp_path):
+    # Derived from the interpreter, never a hardcoded site-packages path: the
+    # image's python version moves and a stale literal would silently be wrong.
+    root = _fake_cuda_tree(
+        tmp_path / "site", "cublas/libcublas.so.12", "cudnn/libcudnn.so.9"
+    )
+    out = _derive(pd, tmp_path, str(root))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == (f"{root}/nvidia/cublas/lib:{root}/nvidia/cudnn/lib")
+
+
+def test_whisper_run_script_refuses_to_start_without_the_cuda_libraries(pd, tmp_path):
+    # A silent fall back to the CPU is the exact bug #1162 fixes — a missing
+    # library must take the service down where it can be seen.
+    root = _fake_cuda_tree(tmp_path / "site", "cublas/libcublas.so.12")
+    out = _derive(pd, tmp_path, str(root))
+    assert out.returncode != 0
+    assert "libcudnn.so.9" in out.stderr
 
 
 def test_whisper_prompt_stays_inside_whispers_224_token_window(pd):
