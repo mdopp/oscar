@@ -202,26 +202,9 @@ WHISPER_PROMPT_DOMAINS = (
 # the run script's double-quoted expansion; `%` is a systemd specifier.
 _WHISPER_PROMPT_UNSAFE = str.maketrans({c: " " for c in '"\\$%`\n\r\t'})
 
-# The linuxserver faster-whisper image builds the server command line in
-# /etc/s6-overlay/s6-rc.d/svc-whisper/run and wires NO env var to
-# `--initial-prompt` (#1142) nor to `--device`, which upstream leaves at `cpu`
-# (#1162), so the only way to reach either flag is to mount our own copy of that
-# script over it. Everything but the prompt args, the device and the CUDA
-# library path is a line-for-line copy of upstream's run script — upstream flag
-# drift has to be mirrored here by hand. Since #1157 the script launches the hint
-# wrapper below instead of `python3 -m wyoming_faster_whisper`; the wrapper runs
-# the stock server, so every flag — `--device cuda` included — still means what
-# upstream says it means.
-WHISPER_RUN_SCRIPT = """#!/command/with-contenv bash
-# shellcheck shell=bash
-# Managed by the Solaris post-deploy (#1142, #1157, #1162).
-
-prompt_args=()
-if [ -n "${WHISPER_PROMPT:-}" ]; then
-    prompt_args=(--initial-prompt "${WHISPER_PROMPT}")
-fi
-
-# The :gpu image ships cuBLAS/cuDNN as pip packages but puts them on no library
+# Shared by both GPU whisper run scripts — the household one and the batch one
+# (#1162, #1161); the household script's text is unchanged by the extraction.
+WHISPER_CUDA_LIB_PREAMBLE = """# The :gpu image ships cuBLAS/cuDNN as pip packages but puts them on no library
 # path, so `--device cuda` loads the model into VRAM and then dies on the first
 # encode with "Library libcublas.so.12 is not found" (#1162). Resolve the dirs
 # from the interpreter instead of pinning a site-packages python version, and
@@ -246,7 +229,31 @@ for pkg, soname in (
 print(":".join(dirs))
 ')" || exit 1
 export LD_LIBRARY_PATH="${cuda_lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+"""
 
+# The linuxserver faster-whisper image builds the server command line in
+# /etc/s6-overlay/s6-rc.d/svc-whisper/run and wires NO env var to
+# `--initial-prompt` (#1142) nor to `--device`, which upstream leaves at `cpu`
+# (#1162), so the only way to reach either flag is to mount our own copy of that
+# script over it. Everything but the prompt args, the device and the CUDA
+# library path is a line-for-line copy of upstream's run script — upstream flag
+# drift has to be mirrored here by hand. Since #1157 the script launches the hint
+# wrapper below instead of `python3 -m wyoming_faster_whisper`; the wrapper runs
+# the stock server, so every flag — `--device cuda` included — still means what
+# upstream says it means.
+WHISPER_RUN_SCRIPT = (
+    """#!/command/with-contenv bash
+# shellcheck shell=bash
+# Managed by the Solaris post-deploy (#1142, #1157, #1162).
+
+prompt_args=()
+if [ -n "${WHISPER_PROMPT:-}" ]; then
+    prompt_args=(--initial-prompt "${WHISPER_PROMPT}")
+fi
+
+"""
+    + WHISPER_CUDA_LIB_PREAMBLE
+    + """
 exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
         s6-setuidgid abc python3 /solaris_whisper_hints.py \\
@@ -261,6 +268,7 @@ exec \\
         ${DEBUG:+--debug} \\
         ${LOCAL_ONLY:+--local-files-only}
 """
+)
 
 # Per-request word hints (#1157). #1142's prompt is static: it primes whisper on
 # the whole household at deploy time. What a caller actually needs is the words
@@ -353,6 +361,248 @@ def main():
     )
     sys.stderr.flush()
     stock.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# Batch transcription (#1161, foundry-chronicle#141): a SECOND whisper container
+# on the same card, serving timestamped segments for hours-long recordings.
+#
+# A separate container, not a second model inside the household process. The
+# shared-model attempt (#1159, reverted by #1160) put a lock between the two and
+# cost the household STT probe 133s; two separate CUDA processes time-slice at
+# kernel granularity and cost it ~3s (box-measured 2026-08-14: 6.05s → 10.53s
+# worst case against the probe's own 30s deadline).
+#
+# Base image stays lscr.io/linuxserver/faster-whisper:gpu — it already carries
+# faster-whisper, CTranslate2 and the CUDA libraries, so there is no new GHCR
+# image and no change to the release chain. Only the s6 run script is ours, and
+# it replaces the image's whisper service outright: this container never starts
+# the Wyoming server, so on the shared host network it cannot contend for :10300.
+WHISPER_BATCH_UNIT = "solaris-whisper-batch"
+WHISPER_BATCH_PORT = "10301"
+# large-v3-turbo/float16: 2221 MiB peak against 9992 MiB free, 23.7x realtime on
+# one CPU core (box-measured 2026-08-14) — a 4h track in ~10 min.
+WHISPER_BATCH_MODEL = "large-v3-turbo"
+WHISPER_BATCH_COMPUTE = "float16"
+# foundry-chronicle's session tracks on the shared box. Mounted read-only at the
+# SAME path they have on the host, so a caller sends the path it already knows,
+# and only when the directory is actually there.
+WHISPER_RECORDINGS_ROOT = "/mnt/data/stacks/daggerheart-aufnahmen"
+WHISPER_BATCH_FILE = "whisper_batch.py"
+
+WHISPER_BATCH_RUN_SCRIPT = (
+    """#!/command/with-contenv bash
+# shellcheck shell=bash
+# Managed by the Solaris post-deploy (#1161). This REPLACES the image's whisper
+# service: the batch container's main process is the segment endpoint, never the
+# Wyoming server.
+
+"""
+    + WHISPER_CUDA_LIB_PREAMBLE
+    + """
+# The endpoint binds only once the model is loaded, so the readiness check IS
+# "the model is on the card". A first start also downloads large-v3-turbo into
+# the empty cache, hence the wider window than the household unit's.
+exec \\
+    s6-notifyoncheck -d -n 900 -w 1000 \\
+        -c "nc -z localhost ${WHISPER_BATCH_PORT:-10301}" \\
+        s6-setuidgid abc python3 /solaris_whisper_batch.py
+"""
+)
+
+WHISPER_BATCH_MODULE = '''"""Timestamped batch transcription for Solaris (#1161).
+
+The main process of the solaris-whisper-batch container: one faster-whisper
+model on the GPU behind POST /transcribe.
+
+Nothing of the caller's data touches our disk. The recording is read in place
+through a read-only mount, the segments live in memory until the response is
+written, no temp copy, no cache, no transcript persisted, and the access log
+line carries the method and the endpoint but never the path — which is a
+speaker's name — nor the text. Those tracks are personal data their owner
+deletes after 7 days; nothing of ours may outlive that.
+"""
+
+import dataclasses
+import inspect
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import faster_whisper
+from faster_whisper.transcribe import Segment
+
+ROOT = os.environ.get("WHISPER_BATCH_ROOT", "")
+PORT = int(os.environ.get("WHISPER_BATCH_PORT") or 0)
+MODEL = os.environ.get("WHISPER_BATCH_MODEL", "large-v3-turbo")
+COMPUTE = os.environ.get("WHISPER_BATCH_COMPUTE", "float16")
+BEAM = int(os.environ.get("WHISPER_BATCH_BEAM") or 1)
+CACHE = os.environ.get("WHISPER_BATCH_CACHE", "/config")
+
+_loaded = {}
+
+
+def shape_problem():
+    """Why this service cannot deliver what it promises, or ''.
+
+    The image carries AutoUpdate=registry, so faster-whisper moves under us
+    unattended. Both things asserted here are load-bearing for a caller who
+    would otherwise notice weeks later: the hotword budget report, and the
+    per-segment timestamps a second project stores as its own ms columns."""
+    params = inspect.signature(faster_whisper.WhisperModel.transcribe).parameters
+    if "hotwords" not in params:
+        return "faster_whisper.WhisperModel.transcribe takes no hotwords"
+    source = inspect.getsource(faster_whisper.WhisperModel)
+    for needed in ("self.max_length", "self.hf_tokenizer"):
+        if needed not in source:
+            return f"faster_whisper.WhisperModel has no {needed}"
+    fields = set(getattr(Segment, "_fields", ()) or ())
+    if not fields and dataclasses.is_dataclass(Segment):
+        fields = {f.name for f in dataclasses.fields(Segment)}
+    if not {"start", "end", "text"} <= fields:
+        return "faster_whisper Segment no longer carries start/end/text"
+    return ""
+
+
+def fit_hotwords(model, words):
+    """Split `words` into the ones that fit faster-whisper's hotword budget and
+    the ones that do not.
+
+    faster-whisper truncates the encoded TOKEN list, which cuts a name in half
+    and reports nothing; 52 names measure 415 tokens against a budget of 223, so
+    that silence would eat half of them. Drop whole names instead and hand the
+    rest back so the caller can be told (foundry-chronicle#141)."""
+    budget = model.max_length // 2 - 1
+    kept = []
+    for index, word in enumerate(words):
+        candidate = " " + ", ".join(kept + [word])
+        encoded = model.hf_tokenizer.encode(candidate, add_special_tokens=False)
+        if len(encoded.ids) > budget:
+            return kept, list(words[index:])
+        kept.append(word)
+    return kept, []
+
+
+def resolve_path(candidate):
+    """The requested recording, or '' if it is not a real file inside the mount.
+
+    realpath first: it is what makes `../` and symlinks land outside the root
+    and get refused rather than followed."""
+    if not ROOT or not candidate:
+        return ""
+    root = os.path.realpath(ROOT)
+    full = os.path.realpath(os.path.join(root, candidate))
+    if full != root and not full.startswith(root + os.sep):
+        return ""
+    return full if os.path.isfile(full) else ""
+
+
+def transcribe_file(model, path, language, hotwords):
+    """Segments for ONE submitted file, timed relative to THAT file.
+
+    Stateless on purpose: the caller splits a session into 10-30 min chunks and
+    adds each chunk's own offset. A service that invented an offset here would
+    stack all five speaker tracks at the session start, and that is only noticed
+    in the finished protocol - by which time the recording is seven days gone."""
+    segments, _info = model.transcribe(
+        path,
+        language=language,
+        beam_size=BEAM,
+        hotwords=", ".join(hotwords) or None,
+    )
+    return [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+
+
+class SegmentHandler(BaseHTTPRequestHandler):
+    """POST /transcribe {"path": ..., "language": ..., "hotwords": [...]}."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        if self.path != "/transcribe":
+            self._json(404, {"error": "unknown endpoint, expected /transcribe"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            request = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._json(400, {"error": "body must be JSON"})
+            return
+        path = resolve_path(str(request.get("path") or ""))
+        if not path:
+            self._json(403, {"error": f"path must be a file under {ROOT}"})
+            return
+        model = _loaded.get("model")
+        if model is None:
+            self._json(503, {"error": "faster-whisper model not loaded yet"})
+            return
+        words = [w for w in (str(x).strip() for x in request.get("hotwords") or []) if w]
+        kept, dropped = fit_hotwords(model, words)
+        try:
+            segments = transcribe_file(model, path, request.get("language"), kept)
+        except Exception as e:  # one bad file must not take the service down
+            self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+        self._json(
+            200,
+            {
+                "segments": segments,
+                "hotwords_dropped_count": len(dropped),
+                "hotwords_dropped": dropped,
+            },
+        )
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write(f"solaris-whisper-batch: {self.command} {self.path}\\n")
+
+    def _json(self, code, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def serve():
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), SegmentHandler)
+    server.daemon_threads = True
+    _loaded["server"] = server
+    return server
+
+
+def main():
+    problem = shape_problem()
+    if problem:
+        sys.stderr.write(
+            f"solaris-whisper-batch: NOT APPLIED to faster-whisper "
+            f"{faster_whisper.__version__} - {problem}. Refusing to start rather "
+            "than serve segments a caller cannot trust (solarisbay#1161).\\n"
+        )
+        return 1
+    if not (ROOT and PORT):
+        sys.stderr.write(
+            "solaris-whisper-batch: no WHISPER_BATCH_ROOT/WHISPER_BATCH_PORT - "
+            "refusing to start a listener with nothing it may read.\\n"
+        )
+        return 1
+    # Load BEFORE binding: the port coming up is the readiness signal s6 waits
+    # for, so a caller that connects never meets a half-loaded model.
+    _loaded["model"] = faster_whisper.WhisperModel(
+        MODEL, device="cuda", compute_type=COMPUTE, download_root=CACHE
+    )
+    sys.stderr.write(
+        f"solaris-whisper-batch: faster-whisper {faster_whisper.__version__}, "
+        f"{MODEL}/{COMPUTE} on cuda, POST :{PORT}/transcribe, "
+        f"reading {ROOT} read-only\\n"
+    )
+    sys.stderr.flush()
+    serve().serve_forever()
     return 0
 
 
@@ -572,6 +822,38 @@ def install_unit(unit: str, content: str) -> bool:
         )
         return False
     jlog("info", "voice-unit", f"{unit}: installed + started")
+    return True
+
+
+def remove_unit(unit: str) -> bool:
+    """Stop + delete one companion `.container` Quadlet — install_unit's missing
+    counterpart (#1161). Without it an off-switch only skips the next install:
+    a unit written once keeps running, and "temporary" is a promise the code
+    cannot keep.
+
+    Stop first, delete second: after the file is gone and systemd has reloaded,
+    the unit no longer exists to be stopped and the container would keep running
+    until the next reboot."""
+    systemd_dir = os.path.expanduser("~/.config/containers/systemd")
+    unit_path = os.path.join(systemd_dir, f"{unit}.container")
+    if not os.path.exists(unit_path) and not service_active(unit):
+        return True
+    subprocess.run(
+        ["systemctl", "--user", "stop", f"{unit}.service"],
+        check=False,
+        capture_output=True,
+    )
+    try:
+        os.remove(unit_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        jlog("warn", "voice-unit", f"{unit}: could not remove unit", error=str(e))
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    jlog("info", "voice-unit", f"{unit}: stopped + removed")
     return True
 
 
@@ -862,6 +1144,63 @@ def render_whisper_unit(
         "[Service]\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def render_whisper_batch_unit(data_dir: str, recordings_root: str, cpus: int) -> str:
+    """Render the batch-transcription `.container` Quadlet (pure, GPU via CDI).
+
+    Its own container, its own process, its own model cache — nothing is shared
+    with the household whisper but the card. `Network=host` on both, and only
+    this one binds :10301.
+
+    `cpus` is the 50% guardrail the operator asked for. It does not bind: the GPU
+    path was measured at 1.0 of 6 cores. It is here against a model or compute
+    type that behaves differently, not as the thing that protects the household —
+    that is the separate CUDA context."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Whisper batch transcription "
+        "(timestamped segments, GPU via CDI #1161)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        # Same stock image as the household unit: it already carries
+        # faster-whisper, CTranslate2 and CUDA. No new GHCR image.
+        "Image=lscr.io/linuxserver/faster-whisper:gpu\n"
+        f"ContainerName={WHISPER_BATCH_UNIT}\n"
+        "Network=host\n"
+        f"Environment=WHISPER_BATCH_ROOT={recordings_root}\n"
+        f"Environment=WHISPER_BATCH_PORT={WHISPER_BATCH_PORT}\n"
+        f"Environment=WHISPER_BATCH_MODEL={WHISPER_BATCH_MODEL}\n"
+        f"Environment=WHISPER_BATCH_COMPUTE={WHISPER_BATCH_COMPUTE}\n"
+        "AddDevice=nvidia.com/gpu=all\n"
+        "SecurityLabelDisable=true\n"
+        # Its own cache, not the household's: a different model, and a batch
+        # download must never disturb the cache voice commands run out of.
+        f"Volume={data_dir}/voice/whisper-batch:/config:Z\n"
+        # Our run script replaces the image's whisper service, so this container
+        # runs the segment endpoint and never the Wyoming server.
+        f"Volume={data_dir}/voice/whisper-batch-run:"
+        "/etc/s6-overlay/s6-rc.d/svc-whisper/run:ro,Z\n"
+        f"Volume={data_dir}/voice/{WHISPER_BATCH_FILE}:"
+        "/solaris_whisper_batch.py:ro,Z\n"
+        # The recordings, read-only at the SAME host path the caller knows. No
+        # :Z — relabelling another stack's data dir would break its owner's
+        # access, and SecurityLabelDisable above already lets this read it.
+        f"Volume={recordings_root}:{recordings_root}:ro\n"
+        f"PodmanArgs=--cpus {cpus}\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        # A first start downloads large-v3-turbo into an empty cache.
+        "TimeoutStartSec=1800\n"
         "\n"
         "[Install]\n"
         "WantedBy=default.target\n"
@@ -1242,6 +1581,46 @@ def install_whisper_unit(data_dir: str) -> bool:
     )
 
 
+def install_whisper_batch_unit(data_dir: str) -> bool:
+    """Write + activate the batch-transcription Quadlet — or take it off the box.
+
+    Off by default, GPU-only, and only where the recordings actually are. Every
+    "no" path REMOVES the unit instead of merely skipping the install: an
+    operator who sets WHISPER_BATCH_ENABLED back to false means the container is
+    gone, not that the next deploy leaves yesterday's one running."""
+    recordings = env("WHISPER_BATCH_ROOT", WHISPER_RECORDINGS_ROOT)
+    if not _truthy(env("WHISPER_BATCH_ENABLED", "false")):
+        skip = "disabled by variable"
+    elif not cdi_available():
+        skip = "no CDI GPU"
+    elif not os.path.isdir(recordings):
+        skip = f"no recordings dir at {recordings}"
+    else:
+        skip = ""
+    if skip:
+        jlog("info", "voice-unit", f"whisper-batch: {skip} — ensuring it is gone")
+        remove_unit(WHISPER_BATCH_UNIT)
+        return False
+    run_path = os.path.join(data_dir, "voice", "whisper-batch-run")
+    module_path = os.path.join(data_dir, "voice", WHISPER_BATCH_FILE)
+    try:
+        os.makedirs(os.path.join(data_dir, "voice", "whisper-batch"), exist_ok=True)
+        with open(run_path, "w", encoding="utf-8") as f:
+            f.write(WHISPER_BATCH_RUN_SCRIPT)
+        os.chmod(run_path, 0o755)
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write(WHISPER_BATCH_MODULE)
+        os.chmod(module_path, 0o644)
+    except OSError as e:
+        jlog("warn", "voice-unit", "whisper-batch: could not write it", error=str(e))
+        return False
+    cpus = max(1, (os.cpu_count() or 2) // 2)
+    jlog("info", "voice-unit", "whisper-batch enabled", root=recordings, cpus=cpus)
+    return install_unit(
+        WHISPER_BATCH_UNIT, render_whisper_batch_unit(data_dir, recordings, cpus)
+    )
+
+
 def install_tts_units() -> bool:
     """GPU boxes get Solaris's Martin voice: the Kokoro OpenAI TTS on :8881, a
     GPU companion Quadlet. The wyoming bridge that fronts it as an HA TTS entity
@@ -1297,6 +1676,7 @@ def install_voice_pipeline(data_dir: str) -> None:
         data_dir, custom_dir, env("WAKE_WORD_MODEL", WAKE_WORD_MODEL)
     )
     install_whisper_unit(data_dir)
+    install_whisper_batch_unit(data_dir)
     install_tts_units()
     install_wakeword_trainer_unit(data_dir)
 

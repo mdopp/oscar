@@ -336,5 +336,14 @@
       "false"
     ],
     "description": "Wakeword-Training (#1066): installiert den GPU-Companion, der eingeplante Trainingslaeufe abholt und das On-Device-microWakeWord-Modell fuer „Solaris\" baut. OHNE ihn bleibt jeder eingeplante Lauf liegen — dann sagt Solaris zwar ehrlich Bescheid, aber es entsteht nie ein Modell. Braucht eine CDI-GPU (auf CPU-Boxen wird die Unit ohnehin nicht geschrieben) und viel Platz: das TensorFlow-GPU-Image ist ~10 GB, dazu kommen Piper-Stimmen und Negativ-Korpora im Arbeitsverzeichnis. Auf `false` stellen, wenn die Box den Platz nicht hat."
+  },
+  "WHISPER_BATCH_ENABLED": {
+    "type": "select",
+    "default": "false",
+    "options": [
+      "true",
+      "false"
+    ],
+    "description": "Stapel-Verschriftung (#1161): stellt einen ZWEITEN Whisper-Container auf der Grafikkarte bereit, der unter POST :10301 /transcribe zu einer Aufnahmedatei zeitgestempelte Abschnitte liefert — fuer stundenlange Mitschnitte, nicht fuer Sprachbefehle. Gemessen: large-v3-turbo braucht 2221 MiB VRAM und einen CPU-Kern, eine Vier-Stunden-Spur ~10 min, und der Haushalts-Sprachpfad wird dabei rund 3 s langsamer. Der Container laeuft nur, wenn es auf der Box eine CDI-GPU UND das Aufnahmeverzeichnis gibt; die Aufnahmen werden nur lesend eingehaengt. Auf `false` zurueckstellen entfernt die Unit wieder von der Box — nicht nur aus der naechsten Installation. Standardmaessig aus: nur einschalten, solange wirklich verschriftet wird."
   }
 }
