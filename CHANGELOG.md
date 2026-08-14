@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.39.0](https://github.com/mdopp/solarisbay/compare/v0.38.0...v0.39.0) (2026-08-14)
+
+
+### Features
+
+* **template:** let a whisper request carry its own words ([deba59a](https://github.com/mdopp/solarisbay/commit/deba59a6492e3ae9f5dcb000b4506fd6490451dd)), closes [#1157](https://github.com/mdopp/solarisbay/issues/1157)
+* **template:** let a whisper request carry its own words ([3fc98a0](https://github.com/mdopp/solarisbay/commit/3fc98a0520cf85acbd2cd513289e86d65f8703d4)), closes [#1157](https://github.com/mdopp/solarisbay/issues/1157)
+* **template:** per-request word hints and a timestamped segment endpoint for solaris-whisper ([3173dcb](https://github.com/mdopp/solarisbay/commit/3173dcb0180d8d7af01558bf8ce99f1d836ed1cc))
+* **template:** put whisper on the GPU, per-request hints, and a batch transcription unit ([114fb58](https://github.com/mdopp/solarisbay/commit/114fb58b0dbf970f39b85e03d3022c39d20d70b3))
+* **template:** serve timestamped whisper segments from a path ([b6445fd](https://github.com/mdopp/solarisbay/commit/b6445fdbe451b1ca8a4d9c22c743e69818fe5018)), closes [#1157](https://github.com/mdopp/solarisbay/issues/1157)
+* **template:** transcribe recordings in a second GPU whisper container ([28c1ad6](https://github.com/mdopp/solarisbay/commit/28c1ad67d582f66cf9a8fa6c5e40024f96d81f38)), closes [#1161](https://github.com/mdopp/solarisbay/issues/1161)
+
+
+### Bug Fixes
+
+* **gatekeeper:** carry the speaker-ID verdict as an explicit matched flag ([6eebb84](https://github.com/mdopp/solarisbay/commit/6eebb8435a72bd4cb51a1db6a5aad74595aa42e8))
+* **gatekeeper:** carry the speaker-ID verdict as an explicit matched flag ([4d70830](https://github.com/mdopp/solarisbay/commit/4d708304c3b91cba0a0b6f49cb32e86fb20f6dd0)), closes [#1152](https://github.com/mdopp/solarisbay/issues/1152)
+* **template:** revert per-request whisper hints, real-load regression ([#1160](https://github.com/mdopp/solarisbay/issues/1160)) ([f4a4996](https://github.com/mdopp/solarisbay/commit/f4a4996bfb9599a506939d7f3ea7acf1d8e15b37)), closes [#1157](https://github.com/mdopp/solarisbay/issues/1157)
+* **template:** run solaris-whisper on the GPU, not the CPU ([e1cb96f](https://github.com/mdopp/solarisbay/commit/e1cb96f67866ec3d4541d18144cb2b1bc04573eb)), closes [#1162](https://github.com/mdopp/solarisbay/issues/1162)
+
 ## [0.38.0](https://github.com/mdopp/solarisbay/compare/v0.37.0...v0.38.0) (2026-08-13)
 
 
