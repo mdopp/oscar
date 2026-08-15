@@ -1015,3 +1015,122 @@ def test_install_unit_rewrites_on_drift(pd, monkeypatch, tmp_path):
     monkeypatch.setattr(pd.subprocess, "run", lambda *a, **k: _OK())
     assert pd.install_unit("solaris-whisper", "NEW") is True
     assert unit_path.read_text() == "NEW"
+
+
+# -- mounted-asset drift (#1166) ---------------------------------------------
+#
+# A bind-mounted script is named by a stable path, so its content is invisible
+# to the unit-text diff: whisper's new --vad-filter sat on disk while the live
+# process kept the old argv. Both directions matter — the change must restart,
+# and an unchanged deploy must stay a no-op (a blanket restart would bounce the
+# household's only voice path on every deploy).
+
+
+def _install_harness(pd, monkeypatch, tmp_path):
+    """(systemd dir, recorded argv lists) for a box where the unit is active."""
+    systemd_dir = tmp_path / ".config" / "containers" / "systemd"
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        pd.os.path, "expanduser", lambda p: str(systemd_dir) if "systemd" in p else p
+    )
+    monkeypatch.setattr(pd, "service_active", lambda unit: True)
+
+    class _OK:
+        returncode = 0
+        stderr = ""
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        pd.subprocess, "run", lambda *a, **k: (calls.append(list(a[0])), _OK())[1]
+    )
+    return systemd_dir, calls
+
+
+def _restarted(calls):
+    return any("restart" in c for c in calls)
+
+
+def test_install_unit_restarts_when_a_mounted_script_changed(pd, monkeypatch, tmp_path):
+    script = tmp_path / "whisper-run"
+    script.write_text("exec whisper\n")
+    unit = f"[Container]\nVolume={script}:/run:ro,Z\n"
+    systemd_dir, calls = _install_harness(pd, monkeypatch, tmp_path)
+    assert pd.install_unit("solaris-whisper", unit) is True
+    stamped = (systemd_dir / "solaris-whisper.container").read_text()
+    calls.clear()
+    # Same rendered unit, new script content — the old blind spot.
+    script.write_text("exec whisper --vad-filter\n")
+    assert pd.install_unit("solaris-whisper", unit) is True
+    assert (systemd_dir / "solaris-whisper.container").read_text() != stamped
+    assert _restarted(calls)
+
+
+def test_install_unit_noop_when_unit_and_mounted_assets_unchanged(
+    pd, monkeypatch, tmp_path
+):
+    # Idempotence must survive the fix: nothing changed ⇒ no rewrite, no
+    # daemon-reload, no restart.
+    script = tmp_path / "whisper-run"
+    script.write_text("exec whisper --vad-filter\n")
+    hints = tmp_path / "solaris_whisper_hints.py"
+    hints.write_text("HINTS = 1\n")
+    unit = f"[Container]\nVolume={script}:/run:ro,Z\nVolume={hints}:/hints.py:ro,Z\n"
+    systemd_dir, calls = _install_harness(pd, monkeypatch, tmp_path)
+    assert pd.install_unit("solaris-whisper", unit) is True
+    stamped = (systemd_dir / "solaris-whisper.container").read_text()
+    calls.clear()
+    assert pd.install_unit("solaris-whisper", unit) is True
+    assert (systemd_dir / "solaris-whisper.container").read_text() == stamped
+    assert calls == []
+
+
+def test_install_unit_restarts_when_a_second_mounted_asset_changed(
+    pd, monkeypatch, tmp_path
+):
+    # The whisper run script was the case that was caught; the hints module,
+    # the STT probe and the batch module share the shape.
+    script = tmp_path / "whisper-run"
+    script.write_text("exec whisper\n")
+    hints = tmp_path / "solaris_whisper_hints.py"
+    hints.write_text("HINTS = 1\n")
+    unit = f"[Container]\nVolume={script}:/run:ro,Z\nVolume={hints}:/hints.py:ro,Z\n"
+    _, calls = _install_harness(pd, monkeypatch, tmp_path)
+    assert pd.install_unit("solaris-whisper", unit) is True
+    calls.clear()
+    hints.write_text("HINTS = 2\n")
+    assert pd.install_unit("solaris-whisper", unit) is True
+    assert _restarted(calls)
+
+
+def test_stamp_keeps_the_rendered_unit_and_adds_one_comment(pd, tmp_path):
+    script = tmp_path / "whisper-run"
+    script.write_text("exec whisper\n")
+    unit = f"[Container]\nVolume={script}:/run:ro,Z\n"
+    stamped = pd.stamp_mounted_assets(unit)
+    assert stamped.startswith(unit)
+    extra = stamped[len(unit) :].splitlines()
+    assert len(extra) == 1 and extra[0].startswith(pd.ASSET_STAMP)
+
+
+def test_stamp_ignores_directories_and_missing_paths(pd, tmp_path):
+    # Model caches, corpora and recording trees are tens of GB and are not what
+    # the unit runs; a unit that mounts no file must stay byte-identical.
+    cache = tmp_path / "whisper-gpu"
+    cache.mkdir()
+    unit = (
+        "[Container]\n"
+        f"Volume={cache}:/config:Z\n"
+        f"Volume={tmp_path / 'not-written-yet'}:/probe.py:ro,Z\n"
+    )
+    assert pd.stamp_mounted_assets(unit) == unit
+
+
+def test_stamp_changes_when_a_mounted_asset_changes(pd, tmp_path):
+    script = tmp_path / "whisper-run"
+    script.write_text("exec whisper\n")
+    unit = f"[Container]\nVolume={script}:/run:ro,Z\n"
+    before = pd.stamp_mounted_assets(unit)
+    script.write_text("exec whisper --vad-filter\n")
+    assert pd.stamp_mounted_assets(unit) != before
+    script.write_text("exec whisper\n")
+    assert pd.stamp_mounted_assets(unit) == before
