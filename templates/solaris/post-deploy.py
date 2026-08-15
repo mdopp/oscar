@@ -271,9 +271,9 @@ exec \\
         --uri 'tcp://0.0.0.0:10300' \\
         --model "${WHISPER_MODEL:-auto}" \\
         --device cuda \\
-        --vad-filter \\
         --beam-size "${WHISPER_BEAM:-1}" \\
         --language "${WHISPER_LANG:-auto}" \\
+        --vad-filter \\
         --data-dir /config \\
         --download-dir /config \\
         "${prompt_args[@]}" \\
