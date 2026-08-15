@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.39.1](https://github.com/mdopp/solarisbay/compare/v0.39.0...v0.39.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **template:** filter non-speech before whisper decodes device names ([ec7316f](https://github.com/mdopp/solarisbay/commit/ec7316fb5dd9a08328f74a02e9d6007cdbe306b7))
+* **template:** filter non-speech before whisper decodes device names ([9dc14fe](https://github.com/mdopp/solarisbay/commit/9dc14fef52ce6f7fa98f69be93f8a4288134faa7)), closes [#1158](https://github.com/mdopp/solarisbay/issues/1158)
+* **template:** restart a voice unit when its mounted assets change ([441e3a4](https://github.com/mdopp/solarisbay/commit/441e3a4fb9bc4f46d4cf64d2ae3794f565e11996))
+* **template:** restart a voice unit when its mounted assets change ([f9a5675](https://github.com/mdopp/solarisbay/commit/f9a5675becf85129f982a209afa03664ed2eb3d3)), closes [#1166](https://github.com/mdopp/solarisbay/issues/1166)
+
 ## [0.39.0](https://github.com/mdopp/solarisbay/compare/v0.38.0...v0.39.0) (2026-08-14)
 
 
