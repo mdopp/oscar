@@ -174,6 +174,42 @@ def test_whisper_run_script_keeps_upstreams_flags_and_adds_the_prompt(pd):
     assert '"${prompt_args[@]}"' in script
 
 
+# -- non-speech must not become a device name (#1158) ------------------------
+#
+# The prompt above cuts both ways: priming the decoder on the household's proper
+# nouns also teaches it to emit them when it hears nothing, so a wake-word false
+# trigger recording room noise could be transcribed into a device name and become
+# a command nobody spoke. Box-measured on the deployed GPU build: 7 of 10
+# non-speech inputs decoded to device names without `--vad-filter`, 0 with it,
+# and no real utterance was lost.
+
+
+def test_whisper_run_script_filters_non_speech(pd):
+    script = pd.WHISPER_RUN_SCRIPT
+    assert "--vad-filter" in script
+    # In the server's argv, not the CUDA preamble — a flag that never reaches
+    # the wrapper is a fix that silently does nothing.
+    assert "--vad-filter" in script.split("\nexec \\")[1]
+
+
+def test_whisper_run_script_leaves_the_vad_thresholds_at_upstream_defaults(pd):
+    # The opposite failure is worse than the one being fixed: a tighter VAD
+    # discards a quiet, sleepy "mach das Licht aus" — the household's normal
+    # use. Upstream's defaults were measured to keep those; don't tune them
+    # without measuring the quiet direction again.
+    script = pd.WHISPER_RUN_SCRIPT
+    for flag in ("--vad-threshold", "--vad-min-speech-ms", "--vad-min-silence-ms"):
+        assert flag not in script
+
+
+def test_whisper_run_script_still_primes_the_device_names(pd):
+    # Filtering non-speech is not a licence to drop #1142/#1157: the names still
+    # have to reach the decoder for real commands.
+    script = pd.WHISPER_RUN_SCRIPT
+    assert '"${prompt_args[@]}"' in script
+    assert "/solaris_whisper_hints.py" in script
+
+
 # -- whisper on the GPU (#1162) ----------------------------------------------
 #
 # The card was passed through but never used: wyoming-faster-whisper defaults

@@ -241,10 +241,21 @@ export LD_LIBRARY_PATH="${cuda_lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # wrapper below instead of `python3 -m wyoming_faster_whisper`; the wrapper runs
 # the stock server, so every flag — `--device cuda` included — still means what
 # upstream says it means.
+#
+# `--vad-filter` (#1158) is the other half of the prompt: priming the decoder on
+# the household's proper nouns also teaches it to emit them when it hears nothing,
+# so a wake-word false trigger recording room noise could be transcribed into a
+# device name and become a command nobody spoke. Silero VAD drops the non-speech
+# before the decoder ever sees it. Box-measured on the deployed medium-int8 GPU
+# build: without it 7 of 10 non-speech inputs (silence included) decoded to
+# household device names; with it, 0 — while all 60 real German household
+# utterances down to -40 dBFS still transcribed, at unchanged latency. The VAD
+# parameters stay at upstream's defaults on purpose: tightening them buys nothing
+# here and starts discarding quiet speech, which is the worse failure.
 WHISPER_RUN_SCRIPT = (
     """#!/command/with-contenv bash
 # shellcheck shell=bash
-# Managed by the Solaris post-deploy (#1142, #1157, #1162).
+# Managed by the Solaris post-deploy (#1142, #1157, #1158, #1162).
 
 prompt_args=()
 if [ -n "${WHISPER_PROMPT:-}" ]; then
@@ -262,6 +273,7 @@ exec \\
         --device cuda \\
         --beam-size "${WHISPER_BEAM:-1}" \\
         --language "${WHISPER_LANG:-auto}" \\
+        --vad-filter \\
         --data-dir /config \\
         --download-dir /config \\
         "${prompt_args[@]}" \\
