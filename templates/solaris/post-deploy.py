@@ -794,9 +794,53 @@ def service_active(unit: str) -> bool:
     return out.stdout.strip() == "active"
 
 
+ASSET_STAMP = "# solaris-mounted-assets="
+
+
+def stamp_mounted_assets(content: str) -> str:
+    """`content` plus a digest of every *file* it bind-mounts.
+
+    install_unit restarts on unit-FILE drift, but a mounted asset is named by a
+    stable path, so changing only that file's content drifts nothing: the deploy
+    writes the new script, logs `current and active — no-op`, and the container
+    keeps running the old copy until something else restarts it. Box-observed on
+    #1166 — whisper's new `--vad-filter` was on disk while the live argv had no
+    such flag. Stamping the assets' digest into the unit text makes that drift
+    visible to the same one comparison, and identical assets stamp identically,
+    so a deploy that changed nothing stays a no-op.
+
+    Only regular files count: the other Volume= sources are model caches,
+    corpora and recording trees — tens of gigabytes, and not what the unit runs.
+    A unit that mounts no files is returned untouched. Images are out of scope
+    too; a rebuilt image needs the idle-guarded refresh_wakeword_trainer_image,
+    not a restart on every deploy."""
+    digest = hashlib.sha256()
+    mounted = False
+    for line in content.splitlines():
+        if not line.startswith("Volume="):
+            continue
+        host = line[len("Volume=") :].split(":", 1)[0]
+        if not os.path.isfile(host):
+            continue
+        try:
+            with open(host, "rb") as f:
+                blob = f.read()
+        except OSError:
+            continue
+        digest.update(host.encode("utf-8"))
+        digest.update(hashlib.sha256(blob).digest())
+        mounted = True
+    if not mounted:
+        return content
+    return f"{content}{ASSET_STAMP}{digest.hexdigest()[:16]}\n"
+
+
 def install_unit(unit: str, content: str) -> bool:
     """Write + activate one companion `.container` Quadlet, idempotently:
-    rewrite only on content drift; (re)start when drifted or inactive."""
+    rewrite only on content drift; (re)start when drifted or inactive. Drift
+    includes the content of the files the unit bind-mounts (#1166) — see
+    stamp_mounted_assets."""
+    content = stamp_mounted_assets(content)
     systemd_dir = os.path.expanduser("~/.config/containers/systemd")
     unit_path = os.path.join(systemd_dir, f"{unit}.container")
     existing = ""
