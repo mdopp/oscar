@@ -568,14 +568,19 @@ def test_wakeword_trainer_unit_picks_up_a_rebuilt_image(pd):
     assert "Pull=newer\n" in unit
 
 
-def test_install_wakeword_trainer_unit_skips_without_cdi(pd, monkeypatch):
+def test_install_wakeword_trainer_unit_removes_the_unit_without_cdi(pd, monkeypatch):
     monkeypatch.setattr(pd, "cdi_available", lambda: False)
     monkeypatch.setattr(
         pd,
         "install_unit",
         lambda *a: pytest.fail("must not write the trainer unit on CPU box"),
     )
+    removed = []
+    monkeypatch.setattr(pd, "remove_unit", lambda unit: removed.append(unit) or True)
     assert pd.install_wakeword_trainer_unit("/mnt/data") is False
+    # A box that loses CUDA/CDI (driver update, hardware change) must not keep an
+    # already-installed trainer pointed at a GPU it can no longer get.
+    assert removed == ["solaris-wakeword-trainer"]
 
 
 def test_install_wakeword_trainer_unit_honours_the_off_switch(pd, monkeypatch):

@@ -1551,19 +1551,20 @@ def refresh_wakeword_trainer_image(chat_port: str) -> bool:
 
 
 def install_wakeword_trainer_unit(data_dir: str) -> bool:
-    """Write + activate the wakeword-trainer companion Quadlet. GPU-only (the
-    image is TensorFlow-CUDA) and skippable via WAKEWORD_TRAINER_ENABLED for
-    boxes that can't spare the ~10 GB image plus its training corpora. Creates
+    """Write + activate the wakeword-trainer companion Quadlet — or take it off
+    the box. GPU-only (the image is TensorFlow-CUDA) and skippable via
+    WAKEWORD_TRAINER_ENABLED for boxes that can't spare the ~10 GB image plus its
+    training corpora. Every "no" path REMOVES the unit: a box that loses CUDA/CDI
+    must not keep a trainer running against a GPU it can no longer get. Creates
     the work dir first — Quadlet Volume= does not create it."""
     if not cdi_available():
-        jlog("info", "voice-unit", "wakeword-trainer: no CDI GPU — skipping unit")
-        return False
-    if not _truthy(env("WAKEWORD_TRAINER_ENABLED", "true")):
-        jlog(
-            "info",
-            "voice-unit",
-            "wakeword-trainer: disabled by variable — ensuring it is gone",
-        )
+        skip = "no CDI GPU"
+    elif not _truthy(env("WAKEWORD_TRAINER_ENABLED", "true")):
+        skip = "disabled by variable"
+    else:
+        skip = ""
+    if skip:
+        jlog("info", "voice-unit", f"wakeword-trainer: {skip} — ensuring it is gone")
         remove_unit(WAKEWORD_TRAINER_UNIT)
         return False
     work_dir = os.path.join(data_dir, "solaris", "wakeword-train")
