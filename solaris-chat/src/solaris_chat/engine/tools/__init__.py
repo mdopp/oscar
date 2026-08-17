@@ -67,6 +67,14 @@ current_channel: contextvars.ContextVar[str] = contextvars.ContextVar(
     "engine_channel", default=""
 )
 
+# Home Assistant's per-conversation id for this turn — the only handle the voice
+# bridge has on WHICH dialog is speaking while speaker-ID is off. Read by
+# start_voice_enrollment so the wizard it opens belongs to that dialog and not
+# to the whole box (#1184). Empty on a turn that carried none.
+current_conversation: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "engine_conversation", default=""
+)
+
 # Whether speaker-ID resolved THIS utterance to an enrolled resident. ADR-12:
 # recognition sets the context, it is not authorization — far-field recognition
 # is spoofable, so a match only ever unlocks PERSONAL, never CONFIDENTIAL.

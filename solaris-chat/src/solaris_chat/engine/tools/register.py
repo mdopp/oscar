@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from solaris_chat import enroll_requests_store, pending_residents_store
-from solaris_chat.engine.tools import Tool, Visibility
+from solaris_chat.engine.tools import Tool, Visibility, current_conversation
 
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -31,9 +31,12 @@ def build_register_tools(
         """
         from solaris_chat.engine import enrollment_fsm
 
+        # The wizard belongs to the dialog that asked for it, not to the box
+        # (#1184) — otherwise the next resident to speak answers its consent.
+        key = enrollment_fsm.session_key(current_conversation.get())
         try:
-            enrollment_fsm.reset_fsm(db_path)
-            say = enrollment_fsm.handle_turn(db_path, "einrichten")
+            enrollment_fsm.reset_fsm(db_path, key)
+            say = enrollment_fsm.handle_turn(db_path, "einrichten", session_key=key)
         except Exception:
             return json.dumps(
                 {

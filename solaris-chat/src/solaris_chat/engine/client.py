@@ -38,6 +38,7 @@ from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import (
     Toolbox,
     current_channel,
+    current_conversation,
     current_speaker_id_enabled,
     current_speaker_matched,
     estimate_tokens,
@@ -817,6 +818,9 @@ class EngineClient:
         channel = current_channel.get()
         speaker_matched = current_speaker_matched.get()
         speaker_id_enabled = current_speaker_id_enabled.get()
+        # Same reason (#1184): start_voice_enrollment keys its wizard row on the
+        # dialog this turn came from, and it runs in the gather child task.
+        conversation_key = current_conversation.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
 
@@ -1118,6 +1122,7 @@ class EngineClient:
                 # short-lived token, so it must survive the gather task hop.
                 current_admin_identity.set(admin_identity)
                 current_channel.set(channel)
+                current_conversation.set(conversation_key)
                 current_speaker_matched.set(speaker_matched)
                 current_speaker_id_enabled.set(speaker_id_enabled)
                 ha_tools.card_sink.set(ha_cards)

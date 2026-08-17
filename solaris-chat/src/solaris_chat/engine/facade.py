@@ -38,6 +38,7 @@ from solaris_chat.engine.notify import EventBus, Notifier, emit_chat
 from solaris_chat.engine.tools import (
     CHANNEL_VOICE,
     current_channel,
+    current_conversation,
     current_speaker_id_enabled,
     current_speaker_matched,
 )
@@ -271,16 +272,26 @@ def add_facade_routes(
         if uid == GUEST_UID and guest is not None:
             model, client = "solaris-guest", guest
 
-        # Enrollment routing (#1056): if ANY user has an active voice enrollment
-        # or wakeword request, route ALL voice turns to the isolated enrollment
-        # profile. This profile has no HA tools, no history, no context pollution.
+        # HA's conversation id keys the confirmation gate per conversation on the
+        # ephemeral path so one caller can't confirm another's held action (#570
+        # F3); None when absent disables stashing (re-gate every turn). It also
+        # keys the enrolment wizard (#1184) — see enrollment_fsm.session_key.
+        conversation_id = body.get("conversation_id")
+        conversation_id = str(conversation_id) if conversation_id else None
+        fsm_key = enrollment_fsm.session_key(conversation_id)
+        current_conversation.set(conversation_id or "")
+
+        # Enrollment routing (#1056): while THIS dialog is in the wizard, route
+        # its turns to the isolated enrollment profile — no HA tools, no history,
+        # no context pollution. Scoped to the dialog (#1184): another resident
+        # talking to another satellite keeps normal service.
         enrollment = clients.get("solaris-enrollment")
         if enrollment is not None:
             try:
-                from solaris_chat import enroll_requests_store, wakeword_requests_store
+                from solaris_chat import wakeword_requests_store
 
-                if enroll_requests_store.has_any_active_request(
-                    solaris_db_path
+                if enrollment_fsm.is_active(
+                    solaris_db_path, fsm_key
                 ) or wakeword_requests_store.has_any_active_request(solaris_db_path):
                     model, client = "solaris-enrollment", enrollment
             except Exception:
@@ -302,12 +313,6 @@ def add_facade_routes(
         # guest turns persist nothing.
         t0 = time.time()
 
-        # HA's conversation id keys the confirmation gate per conversation on the
-        # ephemeral path so one caller can't confirm another's held action (#570
-        # F3); None when absent disables stashing (re-gate every turn).
-        conversation_id = body.get("conversation_id")
-        conversation_id = str(conversation_id) if conversation_id else None
-
         def turns() -> AsyncIterator[dict[str, Any]]:
             # A decline that ends the conversation, answered deterministically so
             # the reply carries no `?` and HA closes the mic. Skipped while the
@@ -315,7 +320,7 @@ def add_facade_routes(
             # is held for confirmation, where "nein" is the answer, not an exit.
             if (
                 _is_bare_decline(transcript)
-                and not enrollment_fsm.is_active(solaris_db_path)
+                and not enrollment_fsm.is_active(solaris_db_path, fsm_key)
                 and not client.has_pending_confirmation(
                     conversation_id
                     if client.ephemeral
@@ -330,14 +335,15 @@ def add_facade_routes(
 
                 return _closing_turns()
 
-            if client.profile_name == "solaris-enrollment" or enrollment_fsm.is_active(
-                solaris_db_path
-            ):
+            # Only THIS dialog's own wizard swallows the turn (#1184): the
+            # profile alone is not the trigger, or a bystander routed here by
+            # someone else's wakeword request would be read as answering it.
+            if enrollment_fsm.is_active(solaris_db_path, fsm_key):
                 # Deterministic FSM Pipeline (#1056): Runs 100% deterministically in Python with 0 LLM calls.
                 # Guarantees zero latency, zero hallucinations, and zero device action risk.
                 async def _fsm_turns() -> AsyncIterator[dict[str, Any]]:
                     reply = enrollment_fsm.handle_turn(
-                        solaris_db_path, transcript, uid_hint=uid
+                        solaris_db_path, transcript, uid_hint=uid, session_key=fsm_key
                     )
                     yield {"type": "assistant.delta", "data": {"delta": reply}}
                     yield {"type": "run.completed", "data": {"answer": reply}}
