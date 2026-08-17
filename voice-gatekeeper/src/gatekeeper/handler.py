@@ -71,6 +71,16 @@ from .uid_stash import stash_uid
 # engine facade routes this to the ephemeral guest profile (#351, #353).
 GUEST_UID = "guest"
 
+# Hard ceiling on the PCM one connection may buffer before its turn ends.
+# The Wyoming port is unauthenticated and, under hostNetwork, reachable from
+# every LAN device (templates/solaris/template.yml:42), and nothing else bounds
+# a stream that never sends AudioStop: wyoming's server awaits the next event
+# with no read deadline. 10 MiB is ~5 minutes of the 16 kHz/16-bit/mono every
+# satellite here streams — two orders of magnitude past a real turn, which the
+# satellite's own VAD ends after seconds, so no household utterance, enrolment
+# sentence or conversation-mode reply can reach it.
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class SpeakerResolution:
@@ -128,6 +138,7 @@ class GatekeeperHandler(AsyncEventHandler):
         self.client_id = self._resolve_client_id()
         self._audio_start: AudioStart | None = None
         self._audio_buffer: list[AudioChunk] = []
+        self._audio_bytes = 0
         # Set when the client opens with a Transcribe event — HA's STT client
         # does, a wyoming-satellite doesn't. Selects STT-provider mode (#350).
         self._stt_mode = False
@@ -166,6 +177,7 @@ class GatekeeperHandler(AsyncEventHandler):
         if AudioStart.is_type(event.type):
             self._audio_start = AudioStart.from_event(event)
             self._audio_buffer = []
+            self._audio_bytes = 0
             log.info(
                 "gatekeeper.audio.start",
                 trace_id=self.trace_id,
@@ -176,7 +188,22 @@ class GatekeeperHandler(AsyncEventHandler):
             return True
 
         if AudioChunk.is_type(event.type):
-            self._audio_buffer.append(AudioChunk.from_event(event))
+            chunk = AudioChunk.from_event(event)
+            self._audio_bytes += len(chunk.audio)
+            if self._audio_bytes > MAX_AUDIO_BYTES:
+                # Drop the connection instead of transcribing a truncated turn:
+                # a stream this long is broken or hostile either way, and a
+                # partial transcript would look like a complete one.
+                log.error(
+                    "gatekeeper.audio.overflow",
+                    trace_id=self.trace_id,
+                    client_id=self.client_id,
+                    bytes=self._audio_bytes,
+                    limit=MAX_AUDIO_BYTES,
+                )
+                self._audio_buffer = []
+                return False
+            self._audio_buffer.append(chunk)
             return True
 
         if AudioStop.is_type(event.type):

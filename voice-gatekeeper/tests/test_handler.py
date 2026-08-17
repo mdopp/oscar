@@ -9,9 +9,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+from wyoming.audio import AudioChunk, AudioStart
 from wyoming.info import Describe
 
-from gatekeeper.handler import GatekeeperHandler, client_id_from_peername
+from gatekeeper.handler import (
+    MAX_AUDIO_BYTES,
+    GatekeeperHandler,
+    client_id_from_peername,
+)
 
 
 class _StubInfo:
@@ -52,3 +57,32 @@ async def test_handler_answers_describe():
     handled = await handler.handle_event(Describe().event())
     assert handled is True
     handler.write_event.assert_awaited_once_with("info-event")
+
+
+async def test_audio_buffer_capped_and_connection_dropped():
+    # A client that streams AudioChunks and never sends AudioStop used to grow
+    # _audio_buffer for the life of the connection — an unauthenticated OOM on
+    # the hostNetwork Wyoming port (#1174).
+    handler = GatekeeperHandler(None, None, _StubInfo())
+    await handler.handle_event(
+        AudioStart(rate=16000, width=2, channels=1).event(),
+    )
+    frame = AudioChunk(
+        rate=16000, width=2, channels=1, audio=b"\x00" * (1024 * 1024)
+    ).event()
+
+    for _ in range(MAX_AUDIO_BYTES // (1024 * 1024)):
+        assert await handler.handle_event(frame) is True
+
+    assert await handler.handle_event(frame) is False
+    assert handler._audio_buffer == []
+
+
+async def test_audio_start_resets_the_byte_count():
+    handler = GatekeeperHandler(None, None, _StubInfo())
+    await handler.handle_event(AudioStart(rate=16000, width=2, channels=1).event())
+    await handler.handle_event(
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00" * 4096).event()
+    )
+    await handler.handle_event(AudioStart(rate=16000, width=2, channels=1).event())
+    assert handler._audio_bytes == 0
