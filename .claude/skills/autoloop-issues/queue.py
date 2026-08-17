@@ -292,7 +292,13 @@ def v_built(c: Cache, a) -> None:
     if a.pr:
         u["pr"] = a.pr
     b = d.get("batch")
-    if b and str(a.unit) not in [str(x) for x in b["unit_ids"]]:
+    # A security unit rides its own branch and draft PR, so it never lands on the
+    # shared batch; counting it there makes the seal close issues it didn't ship.
+    if (
+        b
+        and not u.get("security")
+        and str(a.unit) not in [str(x) for x in b["unit_ids"]]
+    ):
         b["unit_ids"].append(str(a.unit))
         b["count"] = len(b["unit_ids"])
     c.save(d)
@@ -565,6 +571,25 @@ def v_selftest(c: Cache, a) -> None:
             )
             self._run(v_park, issue=99999, state="review", comment="")
             self.assertEqual(self._next()["id"], "z2")
+
+        def test_built_security_unit_stays_off_the_batch(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[99999],"gate":"normal"}',
+            )
+            self._run(
+                v_plan,
+                unit='{"id":"s1","kind":"issue","issues":[88888],"gate":"normal",'
+                '"security":true}',
+            )
+            self._run(v_batch, action="new", branch="batch/x")
+            self._run(v_built, unit="z1", pr=None)
+            self._run(v_built, unit="s1", pr=1177)
+            back = self.c.load()
+            self.assertEqual(back["batch"]["unit_ids"], ["z1"])
+            self.assertEqual(back["batch"]["count"], 1)
+            self.assertEqual(back["units"]["s1"]["status"], "built")
+            self.assertEqual(back["units"]["s1"]["pr"], 1177)
 
         def test_verify_set_without_detail_keeps_the_checklist(self):
             self._run(
