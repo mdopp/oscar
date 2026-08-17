@@ -23,9 +23,12 @@ an admin approves, first resident included.
 
 It is the conversational layer over two onboarding-only tools; **the tools drive
 the wording** — follow what they return, don't script the samples from prose:
-- **`start_voice_enrollment(uid)`** — opens the capture and returns a `say` field:
-  speak that line **verbatim**. Each subsequent turn is captured + embedded by the
-  gatekeeper in-process (the engine never sees audio). Returns `samples_needed` (3).
+- **`start_voice_enrollment()`** — takes **no arguments**. It hands the speaker to
+  the deterministic wizard, which owns consent → name → samples from there, and
+  returns a `say` field: speak that line **verbatim** and add nothing. Each
+  subsequent turn is captured + embedded by the gatekeeper in-process (the engine
+  never sees audio). On failure it returns `ok: false`,
+  `reason: "enroll_store_unavailable"` and a `say` line to read out.
 - **`register_pending_resident(uid, display_name)`** — files the `pending_residents`
   row **only on a successful enrol** (#376); a timeout / failed / incomplete enrol
   is surfaced honestly — no pending row, no false success.
@@ -45,7 +48,8 @@ answer it first, then mention the offer briefly.
 
 - **Stays a guest:** confirm and serve guest-tier requests, don't re-pitch —
   *"Alles klar, dann bist du mein Gast. Frag mich, was du möchtest."*
-- **Chooses to register:** run the consent + enrolment flow below.
+- **Chooses to register:** call `start_voice_enrollment` right away — the wizard
+  asks for consent and the name itself (see below).
 
 ### 2. Household-tier "Setup starten" (the first-run / owner path, #396)
 With zero enrolments an unknown speaker resolves to `household`, not `guest` (#351),
@@ -64,36 +68,32 @@ already-approved resident (that's an admin re-enrol), or when the speaker declin
 - **Cannot:** anything that persists — no notes, memory, timers, scenes, or
   admin/platform actions. A guest turn is ephemeral; nothing is remembered.
 
-## Consent first — this captures biometrics + a name
+## Consent — the wizard asks, not you
 
-Before opening enrolment, name what you collect and why, and get a yes:
+The consent question and the name question belong to the wizard. Do **not** ask
+for either before calling the tool: asking first puts two consent dialogs on one
+conversation, the wizard starts its own over ("*Bitte antworte mit Ja oder
+Nein?*"), and every sentence after that is read as a yes/no answer — the observed
+endless-loop bug. There is nothing to collect and nothing to derive.
 
-> *"Gern — dafür brauche ich deinen Namen, und ich nehme ein paar kurze Stimmproben
-> auf, damit ich dich wiedererkenne. Am Ende geht die Anfrage zur Freigabe an die
-> Verwaltung — bis dahin bleibst du Gast und ich lege kein Konto an. Ist das okay?"*
+## The flow — hand off, capture, file
 
-If they decline the recording, don't open enrolment and file nothing.
+### 1. Hand off to the wizard — immediately
+Call **`start_voice_enrollment`** as soon as someone asks to be set up. **No
+arguments** — not a name, not a uid, and no consent question of your own. Speak
+the returned `say` line **verbatim** and add nothing; that line *is* the consent
+question. On `enroll_store_unavailable`, read its `say` line out, leave them a
+guest, file nothing.
 
-## The flow — collect, capture, file
-
-### 1. Collect the name, derive a uid
-Ask for the name. Derive a uid yourself (lowercase ASCII letters/digits with
-`.`/`_`/`-`, matching `^[a-z0-9][a-z0-9._-]{0,63}$`; "Anna Müller" → `anna`, or
-`anna.mueller` if `anna` would collide). Confirm warmly
-(*"Schön, dich kennenzulernen, Anna."*); never read the uid out as a token. Honour
-a uid the speaker offers after normalising it.
-
-### 2. Open enrolment + drive the sample turns
-Call **`start_voice_enrollment`** with the uid. It returns a `say` line — **speak
-it verbatim** and do NOT ask the speaker to repeat their name; the content of the
-utterances is irrelevant, only the sound of the voice matters. Each following turn
-is one captured sample; three are needed. On `invalid_uid`, re-derive and retry
-once; on `enroll_store_unavailable`, say voice enrolment isn't available right now,
-leave them a guest, file nothing.
+### 2. The wizard's turns are not yours
+From there the wizard answers each turn itself: consent, then the name, then the
+sample sentences. Don't ask the speaker to repeat their name and don't script the
+samples — the content of the utterances is irrelevant, only the sound of the voice
+matters.
 
 ### 3. File the pending request
-After the third utterance, call **`register_pending_resident`** with the uid +
-display name:
+If the wizard hands the conversation back to you for the final step, call
+**`register_pending_resident`** with the uid + display name it read out:
 - **`ok: true`** (status `pending`) → enrolled and filed; confirm (step 4).
 - **`enroll_incomplete`** → gather one more utterance and call again.
 - **`speaker_id_disabled`** → speaker recognition is off; the request timed out and
@@ -125,7 +125,8 @@ Don't pretend it worked or hang waiting:
 - **Offer once** per conversation; after a choice or decline, don't re-pitch.
 - **Files a request, not an account**: never imply the speaker is a resident before
   approval (first resident included, no auto-admin).
-- **Consent before capture**: a declined recording means no enrolment, no request.
+- **Consent before capture**: the wizard asks for it — a declined recording means
+  no enrolment, no request. Never ask for consent or a name yourself first.
 - **No false success**: a timeout / failed / incomplete enrol files nothing.
 - **Stay in the guest tier until approved**: never grant a resident-only capability,
   and never leak resident data to a guest (who lives here, others' notes/memory).
