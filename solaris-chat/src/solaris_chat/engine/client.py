@@ -870,6 +870,38 @@ class EngineClient:
         confirmed: set[tuple[str, str, str]] = set()
         confirmed_executed = False
         pending = self._pending.peek(pending_key) if pending_key else None
+        # Past its window the held action is gone (#1183). A yes that lands on
+        # nothing is answered deterministically — like the gate itself — so the
+        # resident is never left wondering whether the house just opened, and
+        # ends on a question so the microphone stays open for the repeat.
+        lapsed = self._pending.take_lapsed(pending_key) if pending_key else None
+        if lapsed is not None and confirm.is_affirmative(_last_user_text(messages)):
+            answer = (
+                f"Die Rückfrage „{lapsed.prompt}“ ist abgelaufen — ich habe"
+                " nichts ausgeführt. Sag mir bitte noch einmal, was ich tun soll?"
+            )
+            if persist:
+                store.append_message(
+                    self._db_path,
+                    session_id,
+                    "assistant",
+                    answer,
+                    conversation_id=conversation,
+                )
+            yield {"type": "assistant.delta", "data": {"delta": answer}}
+            yield {
+                "type": "run.completed",
+                "data": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": answer,
+                            "reasoning_content": "",
+                        }
+                    ]
+                },
+            }
+            return
         if pending is not None:
             reply = _last_user_text(messages)
             if confirm.is_negative(reply):

@@ -15,8 +15,17 @@ before dispatching a tool and consumes a stashed action at the top of a turn.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
+
+# How long a held sensitive action stays confirmable (#1183). A confirmation is
+# answered in the same breath as the question; the household session is SHARED
+# (one row for the whole box while speaker-ID is off), so anything later is a
+# different conversation — possibly a different resident — and an incidental
+# "ja"/"genau" in it must not open the garage. Monotonic, so a clock step can
+# neither extend the window nor close it early.
+PENDING_TTL_S = 120.0
 
 # A ha_call_service is SENSITIVE when its target can open or unsecure the house.
 # Two axes so the set is explicit and easy to extend: the whole domain (any lock
@@ -177,17 +186,32 @@ class PendingStore:
     NOT be used as the key — that would let one caller confirm another caller's
     held action (#570 fail-open F3). When the ephemeral path has no
     per-conversation key, the loop simply does not stash (re-gate every turn).
-    One slot per key: a fresh sensitive request replaces an unanswered one.
+    One slot per key: a fresh sensitive request replaces an unanswered one, and
+    an unanswered one goes stale after `PENDING_TTL_S` (#1183).
     """
 
     def __init__(self) -> None:
-        self._pending: dict[str, PendingAction] = {}
+        self._pending: dict[str, tuple[PendingAction, float]] = {}
 
     def stash(self, session_id: str, action: PendingAction) -> None:
-        self._pending[session_id] = action
+        self._pending[session_id] = (action, time.monotonic() + PENDING_TTL_S)
 
     def take(self, session_id: str) -> PendingAction | None:
-        return self._pending.pop(session_id, None)
+        entry = self._pending.pop(session_id, None)
+        return entry[0] if entry and entry[1] > time.monotonic() else None
 
     def peek(self, session_id: str) -> PendingAction | None:
-        return self._pending.get(session_id)
+        entry = self._pending.get(session_id)
+        return entry[0] if entry and entry[1] > time.monotonic() else None
+
+    def take_lapsed(self, session_id: str) -> PendingAction | None:
+        """Pop and return an action whose confirmation window has closed.
+
+        Separate from `take` so the loop can SAY it lapsed: a resident whose
+        "ja" reaches no held action must not be left guessing whether the house
+        just opened."""
+        entry = self._pending.get(session_id)
+        if entry is None or entry[1] > time.monotonic():
+            return None
+        del self._pending[session_id]
+        return entry[0]
