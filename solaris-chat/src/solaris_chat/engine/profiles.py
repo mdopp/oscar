@@ -130,7 +130,7 @@ def build_engine_clients(
     choice_tools = build_choice_tools()
 
     household_tools: list[Tool] = list(ha_tools)
-    household_tools += build_timer_tools(db_path, _current_uid)
+    household_tools += build_timer_tools(db_path, _current_uid, _current_room)
     household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += choice_tools
     # calendar_create (#1125): writes straight to Radicale via the existing

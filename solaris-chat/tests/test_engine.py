@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from solaris_chat.engine import scheduler, store
+from solaris_chat.engine.areas import AreaSnapshot
 from solaris_chat.engine.client import (
     _TOOL_DISCIPLINE,
     EngineClient,
@@ -65,7 +66,8 @@ CREATE TABLE engine_timers (
   rrule      TEXT,
   session_id TEXT,
   status     TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  room       TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE voice_uid_stash (
   transcript TEXT PRIMARY KEY,
@@ -1123,10 +1125,19 @@ async def test_timer_fires_and_announces(db, monkeypatch):
     assert status == "fired"
 
 
-def _capture_announce(monkeypatch):
-    """Stub aiohttp so _announce hits one fake satellite and records the POST
-    body. Returns the list the announce payload lands in."""
+def _capture_announce(monkeypatch, states=None, entity_area=None):
+    """Stub aiohttp so _announce sees `states` (default: one fake satellite) and
+    records the POST body; `entity_area` stubs the HA area registry the room
+    scoping reads. Returns the list the announce payload lands in."""
     posted: list[dict] = []
+    states = (
+        states if states is not None else [{"entity_id": "assist_satellite.kitchen"}]
+    )
+
+    async def fake_snapshot(_self):
+        return AreaSnapshot(entity_area=dict(entity_area or {}))
+
+    monkeypatch.setattr(scheduler.AreaRegistry, "snapshot", fake_snapshot)
 
     class _Resp:
         status = 200
@@ -1138,7 +1149,7 @@ def _capture_announce(monkeypatch):
             return False
 
         async def json(self):
-            return [{"entity_id": "assist_satellite.kitchen"}]
+            return states
 
         def raise_for_status(self):
             return None
@@ -1170,8 +1181,13 @@ async def test_alarm_rings_media_when_sound_present(monkeypatch, tmp_path):
     sched = scheduler.TimerScheduler(
         ":memory:", "http://ha", "token", "media-source://x/alarm.ogg", str(sound)
     )
-    posted = _capture_announce(monkeypatch)
-    assert await sched._announce({"kind": "alarm", "label": "Aufstehen"}) is True
+    posted = _capture_announce(
+        monkeypatch, entity_area={"assist_satellite.kitchen": "Küche"}
+    )
+    assert (
+        await sched._announce({"kind": "alarm", "label": "Aufstehen", "room": "Küche"})
+        is True
+    )
     assert posted == [
         {
             "entity_id": ["assist_satellite.kitchen"],
@@ -1189,7 +1205,7 @@ async def test_alarm_falls_back_to_tts_when_sound_missing(monkeypatch, tmp_path)
         str(tmp_path / "absent.ogg"),
     )
     posted = _capture_announce(monkeypatch)
-    assert await sched._announce({"kind": "alarm", "label": ""}) is True
+    assert await sched._announce({"kind": "alarm", "label": "", "room": ""}) is True
     assert posted[0]["message"] == "Es ist Zeit aufzustehen."
     assert "media_id" not in posted[0]
 
@@ -1207,10 +1223,82 @@ async def test_timer_and_reminder_keep_tts(monkeypatch, tmp_path, kind, message)
     sched = scheduler.TimerScheduler(
         ":memory:", "http://ha", "token", "media-source://x/alarm.ogg", str(sound)
     )
-    posted = _capture_announce(monkeypatch)
-    assert await sched._announce({"kind": kind, "label": "Tee"}) is True
+    posted = _capture_announce(
+        monkeypatch, entity_area={"assist_satellite.kitchen": "Küche"}
+    )
+    assert (
+        await sched._announce({"kind": kind, "label": "Tee", "room": "Küche"}) is True
+    )
     assert posted[0]["message"] == message
     assert "media_id" not in posted[0]
+
+
+# #1187: a fired timer speaks only where it was set — reminder text is often
+# private, so it must not be read out on every satellite in the house.
+
+
+def _room_sched() -> scheduler.TimerScheduler:
+    return scheduler.TimerScheduler(":memory:", "http://ha", "token")
+
+
+_TWO_SATS = [
+    {"entity_id": "assist_satellite.kitchen"},
+    {"entity_id": "assist_satellite.bedroom"},
+]
+_TWO_AREAS = {
+    "assist_satellite.kitchen": "Küche",
+    "assist_satellite.bedroom": "Schlafzimmer",
+}
+
+
+async def test_announce_rings_only_the_originating_room(monkeypatch):
+    posted = _capture_announce(monkeypatch, states=_TWO_SATS, entity_area=_TWO_AREAS)
+    ok = await _room_sched()._announce(
+        {"kind": "reminder", "label": "Arzttermin", "room": "Küche"}
+    )
+    assert ok is True
+    assert posted[0]["entity_id"] == ["assist_satellite.kitchen"]
+    assert posted[0]["message"] == "Erinnerung: Arzttermin"
+
+
+async def test_announce_without_a_room_rings_everywhere_without_the_label(monkeypatch):
+    # App/browser-set timer: no originating device, so it is never silently
+    # dropped — it rings house-wide, but the private label stays off the air.
+    posted = _capture_announce(monkeypatch, states=_TWO_SATS, entity_area=_TWO_AREAS)
+    ok = await _room_sched()._announce(
+        {"kind": "reminder", "label": "Arzttermin", "room": ""}
+    )
+    assert ok is True
+    assert sorted(posted[0]["entity_id"]) == [
+        "assist_satellite.bedroom",
+        "assist_satellite.kitchen",
+    ]
+    assert posted[0]["message"] == "Erinnerung."
+
+
+async def test_announce_falls_back_when_the_originating_satellite_is_offline(
+    monkeypatch,
+):
+    posted = _capture_announce(
+        monkeypatch,
+        states=[
+            {"entity_id": "assist_satellite.kitchen", "state": "unavailable"},
+            {"entity_id": "assist_satellite.bedroom", "state": "idle"},
+        ],
+        entity_area=_TWO_AREAS,
+    )
+    ok = await _room_sched()._announce(
+        {"kind": "reminder", "label": "Arzttermin", "room": "Küche"}
+    )
+    assert ok is True
+    assert posted[0]["entity_id"] == ["assist_satellite.bedroom"]
+    assert posted[0]["message"] == "Erinnerung."
+
+
+def test_add_timer_records_the_originating_room(db):
+    scheduler.add_timer(db, "anna", duration_s=60, label="Tee", room="Küche")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT room FROM engine_timers").fetchone()[0] == "Küche"
 
 
 # -- trace shape ---------------------------------------------------------

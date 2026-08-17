@@ -2,8 +2,9 @@
 
 Timers live in solaris.db (`engine_timers`) so they survive a restart; one
 asyncio loop polls the next pending row and fires it. Delivery is an HA
-`assist_satellite.announce` to the Voice PE speaker (TTS rides HA's pipeline)
-— HA stays the device tool, the schedule itself lives here, not in HA.
+`assist_satellite.announce` to the Voice PE speaker the timer was set on (TTS
+rides HA's pipeline) — HA stays the device tool, the schedule itself lives
+here, not in HA.
 Fail-open: an unreachable HA marks the timer `failed` and logs; it never
 kills the loop.
 """
@@ -19,6 +20,7 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.logging import log
 
 _POLL_S = 5.0
@@ -43,8 +45,12 @@ def add_timer(
     kind: str = "timer",
     label: str = "",
     session_id: str = "",
+    room: str = "",
 ) -> dict[str, Any]:
-    """Insert a pending timer; returns its row as a dict."""
+    """Insert a pending timer; returns its row as a dict.
+
+    `room` is the area the request came in on (`current_room`, #1187) — it
+    decides which satellite rings; "" for an app/browser-set timer."""
     if duration_s is not None:
         when = datetime.now(UTC) + timedelta(seconds=max(int(duration_s), 1))
     elif fire_at:
@@ -57,8 +63,8 @@ def add_timer(
     with _conn(db_path) as conn:
         conn.execute(
             "INSERT INTO engine_timers (id, owner_uid, kind, label, fire_at,"
-            " session_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (timer_id, uid, kind, label, when.isoformat(), session_id),
+            " session_id, room) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (timer_id, uid, kind, label, when.isoformat(), session_id, room),
         )
     return {"id": timer_id, "kind": kind, "label": label, "fire_at": when.isoformat()}
 
@@ -98,6 +104,7 @@ class TimerScheduler:
         self._hass_token = hass_token
         self._alarm_sound_media_id = alarm_sound_media_id
         self._alarm_sound_path = alarm_sound_path
+        self._areas = AreaRegistry(hass_url, hass_token)
         # Best-effort Web Push (#713): a fired timer also fans a phone
         # notification out to the owner's PWA. The speaker announce stays
         # primary; a missing/disabled notifier just skips the push.
@@ -143,12 +150,7 @@ class TimerScheduler:
                 delivered=ok,
             )
 
-    async def _announce(self, timer: dict[str, Any]) -> bool:
-        """Ring on the PE speaker via HA. True when HA accepted the call."""
-        if not self._hass_url or not self._hass_token:
-            return False
-        label = timer.get("label") or ""
-        kind = timer.get("kind") or "timer"
+    def _payload(self, kind: str, label: str) -> dict[str, Any]:
         text = {
             "timer": f"Der Timer {label} ist abgelaufen."
             if label
@@ -161,15 +163,39 @@ class TimerScheduler:
         # whether a media_id will play, so we fall back to the TTS text rather
         # than risk a silent alarm.
         if kind == "alarm" and self._alarm_sound_can_play():
-            payload: dict[str, Any] = {"media_id": self._alarm_sound_media_id}
-        else:
-            payload = {"message": text}
+            return {"media_id": self._alarm_sound_media_id}
+        return {"message": text}
+
+    async def _room_satellites(self, room: str, satellites: list[str]) -> list[str]:
+        """`satellites` that sit in `room`; empty when the room can't be resolved."""
+        room = room.strip()
+        if not room:
+            return []
+        snap = await self._areas.snapshot()
+        return [
+            eid for eid in satellites if snap.area_of(eid).casefold() == room.casefold()
+        ]
+
+    async def _announce(self, timer: dict[str, Any]) -> bool:
+        """Ring on the PE speaker via HA. True when HA accepted the call.
+
+        Scoped to the satellite the timer was set on (#1187): reminder text is
+        often private, so it is spoken only in the originating room. When that
+        room is unknown (app/browser-set), has no satellite, or the satellite is
+        offline, the announcement still rings on every satellite — but without
+        the label, so nothing private is read out to the house. The owner's Web
+        Push (`_push`) carries the full text either way.
+        """
+        if not self._hass_url or not self._hass_token:
+            return False
+        label = timer.get("label") or ""
+        kind = timer.get("kind") or "timer"
         try:
             timeout = aiohttp.ClientTimeout(total=15)
             headers = {"Authorization": f"Bearer {self._hass_token}"}
             async with aiohttp.ClientSession(timeout=timeout) as client:
-                # The announce service requires a target; ring every satellite
-                # in the house (box-verified: a target-less call is a 400).
+                # The announce service requires a target (box-verified: a
+                # target-less call is a 400).
                 async with client.get(
                     f"{self._hass_url}/api/states", headers=headers
                 ) as resp:
@@ -179,13 +205,22 @@ class TimerScheduler:
                     s["entity_id"]
                     for s in states
                     if str(s.get("entity_id", "")).startswith("assist_satellite.")
+                    and s.get("state") != "unavailable"
                 ]
                 if not satellites:
                     log.warn("engine.timer.no_satellites")
                     return False
+                targets = await self._room_satellites(
+                    str(timer.get("room") or ""), satellites
+                )
+                if not targets:
+                    log.info(
+                        "engine.timer.announce_house_wide", timer_id=timer.get("id")
+                    )
+                    targets, label = satellites, ""
                 async with client.post(
                     f"{self._hass_url}/api/services/assist_satellite/announce",
-                    json={"entity_id": satellites, **payload},
+                    json={"entity_id": targets, **self._payload(kind, label)},
                     headers=headers,
                 ) as resp:
                     return resp.status < 400
