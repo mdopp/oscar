@@ -300,7 +300,11 @@ def v_built(c: Cache, a) -> None:
         and str(a.unit) not in [str(x) for x in b["unit_ids"]]
     ):
         b["unit_ids"].append(str(a.unit))
-        b["count"] = len(b["unit_ids"])
+        # The batch economy is specified in ISSUES (8), not units — a clustered
+        # unit carries several, so count what the batch's units close (#1192).
+        b["count"] = sum(
+            len(d["units"].get(uid, {}).get("issues") or []) for uid in b["unit_ids"]
+        )
     c.save(d)
     print(f"built {a.unit}; batch count {d['batch']['count'] if d.get('batch') else 0}")
 
@@ -590,6 +594,23 @@ def v_selftest(c: Cache, a) -> None:
             self.assertEqual(back["batch"]["count"], 1)
             self.assertEqual(back["units"]["s1"]["status"], "built")
             self.assertEqual(back["units"]["s1"]["pr"], 1177)
+
+        def test_built_clustered_unit_counts_its_issues(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[99999],"gate":"normal"}',
+            )
+            self._run(
+                v_plan,
+                unit='{"id":"c1","kind":"cluster","issues":[88888,77777],'
+                '"gate":"normal"}',
+            )
+            self._run(v_batch, action="new", branch="batch/x")
+            self._run(v_built, unit="z1", pr=None)
+            self._run(v_built, unit="c1", pr=None)
+            back = self.c.load()
+            self.assertEqual(back["batch"]["unit_ids"], ["z1", "c1"])
+            self.assertEqual(back["batch"]["count"], 3)
 
         def test_verify_set_without_detail_keeps_the_checklist(self):
             self._run(
