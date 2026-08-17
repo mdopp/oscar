@@ -106,6 +106,9 @@ class TraceRecorder:
         }
         detail = {
             "path": "/api/chat",
+            # The detail ring is process-wide, so the reader at `/__traces__/<id>`
+            # needs the session to scope the body to its owner (#1171).
+            "session_id": session_id,
             "request": {"model": model, "tools": tools, "messages": messages},
             "response": {
                 "final": content,
