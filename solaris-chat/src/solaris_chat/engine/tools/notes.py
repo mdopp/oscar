@@ -62,6 +62,22 @@ _ALL_TERMS_BONUS = 0.1
 _MIN_SCORE = 0.2
 
 
+def _vault_rel(root: Path, arg: Any) -> str:
+    """Vault-relative form of a tool `path` argument (#1173).
+
+    The skills instruct the absolute vault path (`/opt/data/notes/x.md`), so read
+    and write must reduce it the same way — otherwise pathlib's absolute-override
+    sends them to two different files and a read-merge-write cycle never merges.
+    """
+    rel = str(arg or "").strip()
+    prefix = str(root.resolve())
+    if rel == prefix:
+        return ""
+    if rel.startswith(prefix + "/"):
+        rel = rel[len(prefix) + 1 :]
+    return rel.lstrip("/")
+
+
 def _snippet(text: str, present_terms: list[str]) -> str:
     """A ~240-char excerpt anchored on the first present query term, else start."""
     lower = text.lower()
@@ -338,7 +354,7 @@ def build_notes_tools(
         return json.dumps([h for _, h in ordered[:_MAX_HITS]], ensure_ascii=False)
 
     async def read(args: dict[str, Any]) -> str:
-        rel = str(args.get("path") or "")
+        rel = _vault_rel(root, args.get("path"))
         path = (root / rel).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             return '{"error": "not found"}'
@@ -370,7 +386,7 @@ def build_notes_tools(
         return json.dumps({"path": rel, "content": text[:8000]}, ensure_ascii=False)
 
     async def write(args: dict[str, Any]) -> str:
-        rel = str(args.get("path") or "").strip().lstrip("/")
+        rel = _vault_rel(root, args.get("path"))
         content = str(args.get("content") or "")
         if not rel.endswith(".md"):
             return '{"error": "path must end in .md"}'
