@@ -22,6 +22,8 @@ from pathlib import Path
 
 import vobject
 
+from solaris_chat.logging import log
+
 from ....ingest.dav_client import HttpDavClient
 from .. import ImportPlan, radicale_store
 
@@ -34,14 +36,53 @@ def _iter_cards(vcf_text: str):
         yield card
 
 
+def _values(card, name: str) -> list[str]:
+    return [
+        str(line.value).strip()
+        for line in card.contents.get(name, [])
+        if str(line.value or "").strip()
+    ]
+
+
+def _identity(card) -> str:
+    """Stable per-person key for a card that carries no source ``UID`` (#1190).
+
+    Hashing the whole serialization keyed the card on *every* field, so a
+    re-export with one phone number added produced a second UID and a duplicate
+    card. Name plus the card's strongest self-contained identifier survives
+    edits to the rest of the card; the identifier is chosen by sort order, not
+    by file order, so a reordered export keeps the same key.
+    """
+    fn = next(iter(_values(card, "fn")), "").lower()
+    mails = sorted(v.lower() for v in _values(card, "email"))
+    if mails:
+        return f"{fn}|{mails[0]}"
+    tels = sorted("".join(c for c in v if c.isdigit()) for v in _values(card, "tel"))
+    if tels:
+        return f"{fn}|{tels[0]}"
+    return fn
+
+
+def _ensure_fn(card) -> None:
+    """vCard 3.0 requires ``FN``; without it ``serialize()`` raises (#1189).
+
+    A "saved a phone number, no name" Google export has none, so label the card
+    with the number itself — the way Google Contacts shows it — instead of
+    losing the entry.
+    """
+    if _values(card, "fn"):
+        return
+    label = next(iter(_values(card, "email") + _values(card, "tel")), "")
+    if label:
+        card.add("fn").value = label
+
+
 def _ensure_uid(card) -> str:
     uid = None
     if hasattr(card, "uid") and card.uid.value:
         uid = str(card.uid.value)
     if not uid:
-        fn = card.fn.value if hasattr(card, "fn") else ""
-        # Serialize to hash the whole card for a stable synthetic UID.
-        uid = f"import-{uuid.uuid5(_NS, fn + '|' + card.serialize())}"
+        uid = f"import-{uuid.uuid5(_NS, _identity(card))}"
         card.add("uid").value = uid
     return uid
 
@@ -75,6 +116,7 @@ def preview(filename: str, vcf_bytes: bytes) -> dict:
 def do_import(radicale_data: Path, user: str, filename: str, vcf_bytes: bytes) -> dict:
     text = _decode(vcf_bytes)
     written = 0
+    skipped = 0
     with radicale_store.storage_lock(radicale_data):
         coll = radicale_store.ensure_collection(
             radicale_data,
@@ -84,12 +126,19 @@ def do_import(radicale_data: Path, user: str, filename: str, vcf_bytes: bytes) -
             displayname="Kontakte",
         )
         for card in _iter_cards(text):
-            uid = _ensure_uid(card)
-            radicale_store.write_item(coll, uid, card.serialize(), "vcf")
+            try:
+                _ensure_fn(card)
+                uid = _ensure_uid(card)
+                radicale_store.write_item(coll, uid, card.serialize(), "vcf")
+            except Exception as exc:  # noqa: BLE001 — one bad card must not cost the rest (#1189).
+                skipped += 1
+                log.warn("import.contacts.card_failed", file=filename, error=str(exc))
+                continue
             written += 1
     return {
         "type": "contacts",
         "written": written,
+        "skipped": skipped,
         "target": f"{user}/{_CONTACTS_COLLECTION}",
     }
 
@@ -106,19 +155,27 @@ async def import_to_dav(
     """
     text = _decode(vcf_bytes)
     written = 0
+    skipped = 0
     for card in _iter_cards(text):
-        uid = _ensure_uid(card)
-        await client.put_item(
-            collection_url,
-            uid,
-            card.serialize(),
-            suffix=".vcf",
-            content_type="text/vcard; charset=utf-8",
-        )
+        try:
+            _ensure_fn(card)
+            uid = _ensure_uid(card)
+            await client.put_item(
+                collection_url,
+                uid,
+                card.serialize(),
+                suffix=".vcf",
+                content_type="text/vcard; charset=utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad card must not cost the rest (#1189).
+            skipped += 1
+            log.warn("import.contacts.card_failed", file=filename, error=str(exc))
+            continue
         written += 1
     return {
         "type": "contacts",
         "written": written,
+        "skipped": skipped,
         "target": collection_url,
     }
 
