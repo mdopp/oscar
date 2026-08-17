@@ -114,6 +114,16 @@ def test_chat_binds_loopback(raw_template):
     assert 'value: "127.0.0.1"' in chat
 
 
+def test_cpu_voice_containers_bind_loopback(raw_template):
+    # #1186: under hostNetwork a 0.0.0.0 bind puts these unauthenticated
+    # Wyoming listeners on the household LAN. Their callers are all on the
+    # host (HA's wyoming integration, the gatekeeper's OPENWAKEWORD_URI).
+    for name, port in (("openwakeword", 10400), ("tts-bridge", 10203)):
+        block = _block(raw_template, name)
+        assert f"tcp://127.0.0.1:{port}" in block
+        assert "0.0.0.0" not in block
+
+
 def test_gatekeeper_speaks_the_engine_facade(raw_template):
     gk = _block(raw_template, "gatekeeper")
     assert "SOLARIS_ENGINE_URL" in gk
