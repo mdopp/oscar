@@ -592,7 +592,12 @@ def test_install_wakeword_trainer_unit_honours_the_off_switch(pd, monkeypatch):
     monkeypatch.setattr(
         pd, "install_unit", lambda *a: pytest.fail("must not write a disabled unit")
     )
+    removed = []
+    monkeypatch.setattr(pd, "remove_unit", lambda unit: removed.append(unit) or True)
     assert pd.install_wakeword_trainer_unit("/mnt/data") is False
+    # Flipping the flag off has to actually reclaim the disk/VRAM the operator
+    # flipped it for — skipping the next install leaves yesterday's unit up.
+    assert removed == ["solaris-wakeword-trainer"]
 
 
 def test_install_wakeword_trainer_unit_creates_work_dir_on_gpu(

@@ -1559,7 +1559,12 @@ def install_wakeword_trainer_unit(data_dir: str) -> bool:
         jlog("info", "voice-unit", "wakeword-trainer: no CDI GPU — skipping unit")
         return False
     if not _truthy(env("WAKEWORD_TRAINER_ENABLED", "true")):
-        jlog("info", "voice-unit", "wakeword-trainer: disabled by variable")
+        jlog(
+            "info",
+            "voice-unit",
+            "wakeword-trainer: disabled by variable — ensuring it is gone",
+        )
+        remove_unit(WAKEWORD_TRAINER_UNIT)
         return False
     work_dir = os.path.join(data_dir, "solaris", "wakeword-train")
     try:
