@@ -257,3 +257,64 @@ def test_skill_promotion_tools_are_admin_only(tmp_path):
         names = set(client._profile.toolbox.names())
         assert "file_skill_approval" not in names
         assert "check_skill_approval" not in names
+
+
+def _draft_tool(skills_dir: Path):
+    return {
+        t.name: t for t in skill_promotion.build_skill_draft_tools(str(skills_dir))
+    }["draft_skill"]
+
+
+async def test_draft_lands_in_the_pending_dir_the_admin_promotes_from(tmp_path):
+    """#1188: the draft has to arrive where `file_skill_approval` reads it."""
+    out = json.loads(
+        await _draft_tool(tmp_path).handler({"slug": "wetter", "content": _SKILL})
+    )
+
+    assert out == {"ok": True, "slug": "wetter", "status": "pending"}
+    assert (tmp_path / "_pending" / "wetter" / "SKILL.md").read_text() == _SKILL
+
+
+async def test_draft_rejects_an_escaping_slug_and_an_empty_body(tmp_path):
+    tool = _draft_tool(tmp_path)
+
+    assert json.loads(await tool.handler({"slug": "../active", "content": _SKILL})) == {
+        "ok": False,
+        "reason": "invalid_slug",
+    }
+    assert json.loads(await tool.handler({"slug": "wetter", "content": "  "})) == {
+        "ok": False,
+        "reason": "empty_draft",
+    }
+    assert not (tmp_path / "_pending").exists()
+
+
+async def test_household_drafts_into_pending_skills_not_the_notes_vault(tmp_path):
+    """#1188: the drafting turn is a household turn, and `note_write` is
+    vault-scoped — so the household toolset needs `draft_skill` or the draft
+    silently nests inside the resident's own notes."""
+    from solaris_chat.engine import profiles
+
+    skills = tmp_path / "skills"
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    household, _admin, guest, _lib, _enroll, _rec, _bus = profiles.build_engine_clients(
+        db_path=str(tmp_path / "solaris.db"),
+        ollama_url="http://ollama",
+        fast_model="m",
+        thorough_model="m",
+        soul_path="",
+        skills_dir=str(skills),
+        notes_dir=str(notes),
+    )
+
+    out = json.loads(
+        await household._profile.toolbox.dispatch(
+            "draft_skill", {"slug": "wetter", "content": _SKILL}
+        )
+    )
+
+    assert out["ok"] is True
+    assert (skills / "_pending" / "wetter" / "SKILL.md").is_file()
+    assert list(notes.rglob("SKILL.md")) == []
+    assert "draft_skill" not in set(guest._profile.toolbox.names())
