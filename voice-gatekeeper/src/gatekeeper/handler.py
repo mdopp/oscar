@@ -40,9 +40,11 @@ from .config import settings
 from .embeddings_store import insert_embedding, list_embeddings, touch_last_seen
 from .enroll_stash import (
     MAX_ENROLL_SAMPLES,
+    STATUS_PENDING,
     add_embedding,
     capture_lock,
     claim_active_request,
+    expire_stale_embeddings,
     finish_request,
     increment_collected,
     restore_embeddings,
@@ -355,6 +357,9 @@ class GatekeeperHandler(AsyncEventHandler):
         stored — otherwise the request stays open for another sentence (capped at
         MAX_ENROLL_SAMPLES) or fails, so "erfolgreich gespeichert" is never said
         over a profile that doesn't carry."""
+        # Every turn, not just enrolment ones: nothing else in this long-lived
+        # process would ever reclaim an abandoned sitting's vectors.
+        expire_stale_embeddings()
         extractor = get_extractor()
         if extractor is None or self._audio_start is None or not self._audio_buffer:
             return
@@ -386,6 +391,12 @@ class GatekeeperHandler(AsyncEventHandler):
             return
 
         async with capture_lock(request.uid):
+            if request.status == STATUS_PENDING:
+                # First turn of a sitting — the engine zeroed `collected` when it
+                # opened the request, so anything still buffered for this uid is
+                # an earlier abandoned sitting, possibly a different speaker on a
+                # shared device. It must never be averaged into this profile.
+                take_embeddings(request.uid)
             add_embedding(request.uid, embedding)
             collected = await asyncio.to_thread(
                 increment_collected, settings.solaris_db_path, request.uid
