@@ -16,7 +16,7 @@ WORKDIR /opt/solaris-schema
 # SQLAlchemy to drive op.execute() against SQLite. The migration files
 # themselves are baked in below.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir alembic>=1.13 sqlalchemy>=2.0
+RUN pip install --no-cache-dir "alembic==1.19.1" "sqlalchemy==2.0.52"
 
 COPY alembic.ini ./
 COPY migrations ./migrations
