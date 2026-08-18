@@ -69,7 +69,7 @@ def test_whisper_cpu_unit_uses_cpu_image_and_wyoming_port(pd):
     assert "SecurityLabelDisable" not in unit
     assert "Image=docker.io/rhasspy/wyoming-whisper:latest" in unit
     # Same Wyoming endpoint as GPU (the linuxserver image binds :10300 itself).
-    assert "--uri tcp://0.0.0.0:10300" in unit
+    assert "--uri tcp://127.0.0.1:10300" in unit
     assert "--model base-int8 --language de" in unit
     assert "Volume=/mnt/data/voice/whisper:/data:Z" in unit
     # The STT self-heal probe applies to the CPU path too (#610).
@@ -494,6 +494,31 @@ def test_tts_unit_is_solaris_image_martin_voice_with_cdi(pd):
     assert "Environment=KOKORO_ONNX_PROVIDER=cuda" in unit
     assert "AddDevice=nvidia.com/gpu=all" in unit
     assert "SecurityLabelDisable=true" in unit
+
+
+# -- unauthenticated GPU companions stay off the LAN (#1196) -----------------
+#
+# These are `Network=host` Quadlets, so a 0.0.0.0 bind is the LAN, and neither
+# the Wyoming transcriber nor the Kokoro HTTP API authenticates. Every real
+# caller is on host loopback: HA's wyoming entry (post-deploy registers
+# 127.0.0.1:10300), the gatekeeper and the STT probe for whisper; the pod's
+# tts-bridge (--tts-openai-url http://127.0.0.1:8881/v1) for Kokoro. The
+# gatekeeper's own :10700 is the deliberate exception — LAN satellites dial it.
+
+
+@pytest.mark.parametrize("gpu", [True, False])
+def test_whisper_binds_loopback_only(pd, gpu):
+    unit = pd.render_whisper_unit("/mnt/data", "base-int8", "de", gpu=gpu)
+    haystack = unit + (pd.WHISPER_RUN_SCRIPT if gpu else "")
+    assert "tcp://127.0.0.1:10300" in haystack
+    assert "0.0.0.0:10300" not in haystack
+
+
+def test_tts_binds_loopback_only(pd):
+    unit = pd.render_tts_unit()
+    # The image's CMD is --host 0.0.0.0; the unit has to override it.
+    assert "Exec=uvicorn main:app --host 127.0.0.1 --port 8881" in unit
+    assert "0.0.0.0" not in unit
 
 
 # The TTS bridge and openWakeWord are CPU containers in the solaris pod

@@ -268,7 +268,7 @@ fi
 exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
         s6-setuidgid abc python3 /solaris_whisper_hints.py \\
-        --uri 'tcp://0.0.0.0:10300' \\
+        --uri 'tcp://127.0.0.1:10300' \\
         --model "${WHISPER_MODEL:-auto}" \\
         --device cuda \\
         --beam-size "${WHISPER_BEAM:-1}" \\
@@ -1116,7 +1116,10 @@ def render_whisper_unit(
     """Render the voice-whisper `.container` Quadlet (pure). GPU path uses the
     linuxserver faster-whisper:gpu image with the CDI device + SELinux
     relaxation (#1026); CPU path the rhasspy wyoming-whisper image. Same
-    Wyoming endpoint (tcp://0.0.0.0:10300) either way.
+    Wyoming endpoint (tcp://127.0.0.1:10300) either way — host loopback, because
+    `Network=host` would otherwise put an unauthenticated transcriber on the LAN
+    and every caller (HA's wyoming entry, the gatekeeper, the health probe) dials
+    it over loopback (#1196).
 
     `prompt` is whisper's `initial_prompt` (#1142). The CPU image takes CLI args
     directly; the GPU image's s6 run script has to be overridden to reach the
@@ -1190,7 +1193,7 @@ def render_whisper_unit(
         f"Exec=--model {model} --language {language}"
         # This image takes CLI args, so the prompt needs no run-script override.
         + (f' --initial-prompt "{prompt}"' if prompt else "")
-        + " --data-dir /data --uri tcp://0.0.0.0:10300\n"
+        + " --data-dir /data --uri tcp://127.0.0.1:10300\n"
         f"Volume={data_dir}/voice/whisper:/data:Z\n"
         f"Volume={data_dir}/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z\n"
         "AutoUpdate=registry\n"
@@ -1272,6 +1275,10 @@ def render_whisper_batch_unit(data_dir: str, recordings_root: str, cpus: int) ->
 def render_tts_unit() -> str:
     """Render the Kokoro-Martin TTS `.container` Quadlet (pure, GPU via CDI).
     The bundled solaris-tts image serves the OpenAI-compatible API on :8881."""
+    # The image's CMD binds 0.0.0.0, which under `Network=host` is the LAN
+    # (#1196). Its only caller is the pod's tts-bridge on host loopback, so
+    # override the command to bind loopback. The nvidia entrypoint execs its
+    # args, so this replaces CMD without losing the CUDA setup.
     return (
         "[Unit]\n"
         "Description=Solaris Voice TTS Kokoro-Martin (OpenAI API, GPU via CDI #456)\n"
@@ -1282,6 +1289,7 @@ def render_tts_unit() -> str:
         f"Image={TTS_IMAGE}\n"
         f"ContainerName={TTS_UNIT}\n"
         "Network=host\n"
+        "Exec=uvicorn main:app --host 127.0.0.1 --port 8881\n"
         "# The 82M ONNX model on the CUDA provider: box-measured 0.29-0.36s\n"
         "# for a 7.4s sentence, 0.03s warm for a short one, ~1.2 GiB VRAM.\n"
         "Environment=KOKORO_ONNX_PROVIDER=cuda\n"
