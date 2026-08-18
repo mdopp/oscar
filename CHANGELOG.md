@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.4](https://github.com/mdopp/solarisbay/compare/v0.39.3...v0.39.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **template:** bind the GPU voice companions to loopback ([cf07e6f](https://github.com/mdopp/solarisbay/commit/cf07e6fd7cce4057933569621b0b15cce655280a))
+* **template:** bind the GPU voice companions to loopback ([aefebed](https://github.com/mdopp/solarisbay/commit/aefebed00421bb0e0da7acbb6bf8932db54f1da4)), closes [#1196](https://github.com/mdopp/solarisbay/issues/1196)
+
 ## [0.39.3](https://github.com/mdopp/solarisbay/compare/v0.39.2...v0.39.3) (2026-08-18)
 
 
