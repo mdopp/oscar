@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,16 +72,35 @@ _pending_embeddings: dict[str, list[bytes]] = {}
 # the loser averages an empty list (ValueError). Different uids stay independent.
 _capture_locks: dict[str, asyncio.Lock] = {}
 
+# When each uid's buffer was last written, so an abandoned sitting's vectors age
+# out on the same window as its DB row. Monotonic: a wall-clock step must not
+# keep biometric data alive (or drop a live sitting's).
+_last_capture: dict[str, float] = {}
+
 
 def capture_lock(uid: str) -> asyncio.Lock:
     """Return the (lazily created) per-uid lock for the capture critical section."""
     return _capture_locks.setdefault(uid, asyncio.Lock())
 
 
+def expire_stale_embeddings() -> None:
+    """Drop the buffered vectors of any sitting that went quiet longer ago than
+    the capture window. The gatekeeper is long-lived, so without this an
+    abandoned onboarding's biometric vectors stay resident until restart — and a
+    later sitting for the same uid would average them in. A resident who
+    abandons an enrolment starts over instead of resuming it."""
+    cutoff = time.monotonic() - ENROLL_TTL_SECONDS
+    for uid, last in list(_last_capture.items()):
+        if last < cutoff:
+            _pending_embeddings.pop(uid, None)
+            _last_capture.pop(uid, None)
+
+
 def add_embedding(uid: str, embedding: bytes) -> int:
     """Append one captured-turn embedding for this uid; return the count held."""
     bucket = _pending_embeddings.setdefault(uid, [])
     bucket.append(embedding)
+    _last_capture[uid] = time.monotonic()
     return len(bucket)
 
 
@@ -90,12 +110,14 @@ def restore_embeddings(uid: str, embeddings: list[bytes]) -> int:
     because a concurrent turn for the same uid may have captured meanwhile."""
     bucket = _pending_embeddings.setdefault(uid, [])
     bucket[:0] = embeddings
+    _last_capture[uid] = time.monotonic()
     return len(bucket)
 
 
 def take_embeddings(uid: str) -> list[bytes]:
     """Pop and return the accumulated embeddings for this uid, clearing the
     in-process buffer so the biometric vectors don't linger after enrolment."""
+    _last_capture.pop(uid, None)
     return _pending_embeddings.pop(uid, [])
 
 

@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import sqlite3
 import struct
+import time
 from unittest.mock import AsyncMock
 
 from gatekeeper import enroll_stash
@@ -554,3 +555,45 @@ async def test_no_active_request_is_noop(tmp_path, monkeypatch):
     n = conn.execute("SELECT COUNT(*) FROM voice_embeddings").fetchone()[0]
     conn.close()
     assert n == 0
+
+
+# --- abandoned sitting (#1175) ----------------------------------------------
+
+
+async def test_abandoned_sitting_vectors_expire_on_a_later_turn(tmp_path, monkeypatch):
+    """A resident speaks 2 of 3 sentences and walks away. The request row ages out
+    on its own, but the captured biometric vectors sat in this long-lived process
+    until restart (#1175). Past the capture window an ordinary voice turn — with
+    no enrolment in flight at all — must have reclaimed them."""
+    db = _db(tmp_path)  # enroll_requests empty: the abandoned request aged out
+    enroll_stash.take_embeddings("lena")
+    enroll_stash.add_embedding("lena", _EMBEDDING)
+    enroll_stash.add_embedding("lena", _EMBEDDING)
+    enroll_stash._last_capture["lena"] = (
+        time.monotonic() - enroll_stash.ENROLL_TTL_SECONDS - 1
+    )
+
+    await _turn(_new_handler(db, monkeypatch, extractor=_StubExtractor()))
+
+    assert "lena" not in enroll_stash._pending_embeddings
+    assert "lena" not in enroll_stash._last_capture
+
+
+async def test_restarted_enrolment_never_averages_the_abandoned_sitting(
+    tmp_path, monkeypatch
+):
+    """The resident abandons an enrolment and setup opens a fresh request for the
+    same uid inside the capture window — `collected` back to zero. The new sitting
+    must start from zero samples too: the earlier vectors, possibly a different
+    speaker on a shared device, must not ride along into the profile (#1175)."""
+    db = _db(tmp_path)
+    enroll_stash.take_embeddings("lena")
+    enroll_stash.add_embedding("lena", _emb(1))
+    enroll_stash.add_embedding("lena", _emb(2))
+    _open_request(db, "lena", 3)  # status pending, collected 0
+
+    fresh = _emb(3)
+    await _turn(_new_handler(db, monkeypatch, extractor=_ScriptedExtractor([fresh])))
+
+    assert enroll_stash._pending_embeddings["lena"] == [fresh]
+    enroll_stash.take_embeddings("lena")
