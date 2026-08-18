@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.39.3](https://github.com/mdopp/solarisbay/compare/v0.39.2...v0.39.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **chat:** expire a held confirmation instead of firing it on a later yes ([1952ca4](https://github.com/mdopp/solarisbay/commit/1952ca4e5208d66bcc2b5b38bcbf40d2d00f3ac5)), closes [#1183](https://github.com/mdopp/solarisbay/issues/1183)
+* **chat:** expire held confirmations and scope the enrolment wizard per dialog ([4ac89d2](https://github.com/mdopp/solarisbay/commit/4ac89d2f5b6c7af8a33a40840349ebfc0d5bd242))
+* **chat:** scope chat sessions traces and admin actions to the caller ([5ea82ec](https://github.com/mdopp/solarisbay/commit/5ea82ecb93f5f09841b72a40b55fedaf238a7966))
+* **chat:** scope chat sessions traces and admin actions to the caller ([7061349](https://github.com/mdopp/solarisbay/commit/706134914df807e57e3d893d784f21091bcce371)), closes [#1168](https://github.com/mdopp/solarisbay/issues/1168) [#1169](https://github.com/mdopp/solarisbay/issues/1169) [#1170](https://github.com/mdopp/solarisbay/issues/1170) [#1171](https://github.com/mdopp/solarisbay/issues/1171)
+* **chat:** scope the enrolment wizard to the dialog that started it ([bac3ed1](https://github.com/mdopp/solarisbay/commit/bac3ed1916da480d55101a25389299da33cea5db)), closes [#1184](https://github.com/mdopp/solarisbay/issues/1184)
+* **gatekeeper:** expire abandoned enrolment embeddings ([6d9480c](https://github.com/mdopp/solarisbay/commit/6d9480c16a69e9fa8fad4791931a432ebed16b9c))
+* **gatekeeper:** expire abandoned enrolment embeddings ([5e953bf](https://github.com/mdopp/solarisbay/commit/5e953bff4092ec8dc6ac0bc0b55063dc5047ee7c)), closes [#1175](https://github.com/mdopp/solarisbay/issues/1175)
+* **skill:** make the enrolment prose match the argument-less tool ([284ae82](https://github.com/mdopp/solarisbay/commit/284ae828342ce61197ed42ca7a49c52ff12225a8)), closes [#1185](https://github.com/mdopp/solarisbay/issues/1185)
+
 ## [0.39.2](https://github.com/mdopp/solarisbay/compare/v0.39.1...v0.39.2) (2026-08-18)
 
 
