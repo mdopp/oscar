@@ -42,7 +42,10 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
-from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
+from solaris_chat.engine.tools.skill_promotion import (
+    build_skill_draft_tools,
+    build_skill_promotion_tools,
+)
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
@@ -127,7 +130,7 @@ def build_engine_clients(
     choice_tools = build_choice_tools()
 
     household_tools: list[Tool] = list(ha_tools)
-    household_tools += build_timer_tools(db_path, _current_uid)
+    household_tools += build_timer_tools(db_path, _current_uid, _current_room)
     household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += choice_tools
     # calendar_create (#1125): writes straight to Radicale via the existing
@@ -217,6 +220,12 @@ def build_engine_clients(
         household_tools += build_register_tools(
             db_path, gatekeeper_url, gatekeeper_token
         )
+    # The drafting half of the skill-promotion gate (#1188): the resident asks
+    # for a new capability on a household turn, so that turn needs a write into
+    # `_pending/` — the notes tools are vault-scoped and can never reach it.
+    # Filing and completing the approval stay admin-only, below.
+    if skills_dir:
+        household_tools += build_skill_draft_tools(skills_dir)
 
     # A guest may control devices/read state (HA), but may NOT write anything
     # durable — no notes/fact_store, no timers, no admin MCP. The denial is the

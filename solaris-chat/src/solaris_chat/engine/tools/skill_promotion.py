@@ -1,8 +1,8 @@
 """Dynamic-skill promotion via the generic ServiceBay approval API (#427).
 
 The dynamic-skills skill drafts a new skill into the *pending* directory
-(`<SKILLS_DIR>/_pending/<slug>/SKILL.md`); it never goes live until a human
-approves it. ServiceBay 4.117.0 (#1818) ships a generic, service-agnostic
+(`<SKILLS_DIR>/_pending/<slug>/SKILL.md`, written by `draft_skill`); it never
+goes live until a human approves it. ServiceBay 4.117.0 (#1818) ships a generic, service-agnostic
 approval API, so promotion is the same file→poll shape the resident-onboarding
 flow uses (`onboarding_approval.py`):
 
@@ -21,8 +21,9 @@ flow uses (`onboarding_approval.py`):
       relies on ServiceBay moving files. On "denied"/"not-found" the pending
       draft is deleted. The admin is the gate; Solaris never approves itself.
 
-Admin-only, like the onboarding-approval tools — a household/guest turn drafts
-into pending (the dynamic-skills skill) but can never file or check an approval.
+The two promotion tools are admin-only, like the onboarding-approval tools — a
+household turn drafts into pending (`draft_skill`) but can never file or check
+an approval.
 """
 
 from __future__ import annotations
@@ -59,6 +60,57 @@ def _contained(root: Path, child: Path) -> bool:
         return False
     root_resolved = root.resolve(strict=False)
     return resolved == root_resolved or root_resolved in resolved.parents
+
+
+def build_skill_draft_tools(skills_dir: str) -> list[Tool]:
+    """The household side of the gate: write the draft into pending, nothing else.
+
+    `note_write` is hard-scoped to the notes vault, so the dynamic-skills skill's
+    draft used to land at `<vault>/users/<uid>/data/skills/_pending/<slug>/SKILL.md`
+    and the admin never saw it (#1188). Drafting needs its own tool because the
+    pending dir is the one place outside the vault a household turn may write —
+    and it stays inert there until an admin promotes it.
+    """
+    pending_root = Path(skills_dir) / _PENDING_SUBDIR
+
+    async def draft_skill(args: dict[str, Any]) -> str:
+        slug = str(args.get("slug") or "").strip()
+        if not _SLUG_RE.match(slug):
+            return json.dumps({"ok": False, "reason": "invalid_slug"})
+        content = str(args.get("content") or "").strip()
+        if not content:
+            return json.dumps({"ok": False, "reason": "empty_draft"})
+        pending_dir = pending_root / slug
+        if not _contained(pending_root, pending_dir):
+            return json.dumps({"ok": False, "reason": "path_escape"})
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        (pending_dir / "SKILL.md").write_text(
+            content.rstrip("\n") + "\n", encoding="utf-8"
+        )
+        return json.dumps({"ok": True, "slug": slug, "status": "pending"})
+
+    return [
+        Tool(
+            name="draft_skill",
+            description=(
+                "Legt den Entwurf einer neuen Skill unter den ausstehenden Skills"
+                " ab, wo ein Admin sie freigeben kann. slug = kleingeschriebener"
+                " Name aus Buchstaben, Ziffern und Bindestrichen; content = der"
+                " komplette SKILL.md-Text. Die Skill bleibt inaktiv, bis ein Admin"
+                " sie freigibt — Solaris aktiviert nie selbst."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["slug", "content"],
+            },
+            handler=draft_skill,
+            visibility=Visibility.HOUSEHOLD,
+        )
+    ]
 
 
 def build_skill_promotion_tools(

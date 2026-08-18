@@ -88,6 +88,21 @@ async def test_import_to_dav_puts_one_card_per_vcard(monkeypatch):
     assert all(url.endswith(".vcf") for (url, _d, _h) in _FakeSession.puts)
 
 
+async def test_bad_card_is_skipped_and_the_rest_are_put(monkeypatch):
+    """#1189: the DAV write path must isolate a per-card failure too."""
+    _patch_session(monkeypatch)
+    vcf = (
+        b"BEGIN:VCARD\nVERSION:3.0\nNOTE:kein Name, keine Nummer\nEND:VCARD\n"
+        b"BEGIN:VCARD\nVERSION:3.0\nFN:Grace Hopper\nN:Hopper;Grace;;;\nEND:VCARD\n"
+    )
+    client = HttpDavClient(carddav_username="u", carddav_password="p")
+
+    rep = await con.import_to_dav(client, "https://dav/u/contacts/", "c.vcf", vcf)
+
+    assert (rep["written"], rep["skipped"]) == (1, 1)
+    assert len(_FakeSession.puts) == 1
+
+
 async def test_contacts_kind_registered_and_run_writes_via_dav(monkeypatch):
     _patch_session(monkeypatch)
     imp = gt.get("contacts")

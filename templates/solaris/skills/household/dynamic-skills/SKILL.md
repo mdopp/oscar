@@ -3,7 +3,7 @@ name: solaris-dynamic-skills
 description: Use when a resident asks Solaris to learn a new capability or write down a fact/note — the self-enhancement loop. Writes facts to the vault and drafts new skills into a pending directory for admin approval.
 kind: skill
 scope: household
-version: 3.0.0
+version: 3.1.0
 author: Solaris
 license: MIT
 ---
@@ -62,22 +62,25 @@ When a resident shares a household fact/preference, write it down so it is index
 When a resident asks for a new capability, draft the skill **into the pending
 directory only**. Hard rules — do not skip:
 
-- **Write only to `/data/skills/_pending/<slug>/SKILL.md`.** Never write to the
-  active pack `/data/skills/<slug>/…` — that would make the skill live with no
-  human review (a prompt-injection risk).
-- **Do not execute the skill's scripts.** A scratch script may be drafted as a
-  *file* (`<slug>/scratch/<file>`) for the admin to inspect, never run.
+- **Use `draft_skill` — never `note_write`.** `draft_skill` is the only tool that
+  reaches the pending directory; the notes tools write into the vault, where an
+  admin never looks for a skill.
+- **Never write to the active pack** `/data/skills/<slug>/…` — that would make the
+  skill live with no human review (a prompt-injection risk). `draft_skill` can't.
+- **Do not execute anything.** The draft is the SKILL.md text and nothing else —
+  no scripts are written and none are run.
 - **Do not promote the draft yourself** — filing the approval and the promotion is
   the admin profile's job (`file_skill_approval` / `check_skill_approval`). This
-  session's job ends at "wrote the SKILL.md to `_pending`".
+  session's job ends at "drafted the SKILL.md".
 - **Use a safe `<slug>`** — lowercase letters/digits/dashes; no `/`, `..`, leading
   dots, or whitespace.
 
-Sequence: create `/data/skills/_pending/<slug>/`, write the SKILL.md with
-`note_write` (`name: solaris-custom-<slug>`, a clear router `description`,
-`version: 1.0.0`), draft any scratch script as an inert file, then tell the
-resident: *"Ich habe einen Entwurf für die Skill `<slug>` unter den ausstehenden
-Skills abgelegt. Sobald ein Admin sie freigibt, lerne ich sie."*
+Sequence: call `draft_skill` with the `slug` and the complete SKILL.md text as
+`content` (`name: solaris-custom-<slug>`, a clear router `description`,
+`version: 1.0.0`). On `{"ok": true}` tell the resident: *"Ich habe einen Entwurf
+für die Skill `<slug>` unter den ausstehenden Skills abgelegt. Sag einem Admin
+Bescheid — sobald er sie freigibt, lerne ich sie."* On `{"ok": false}` say the
+draft could not be filed and stop.
 
 On admin approval the **engine** moves `_pending/<slug>/` → `<slug>/` (the active
 pack is read live, so the move *is* the reload — no restart); on denial/expiry the
@@ -85,10 +88,10 @@ engine deletes the draft.
 
 ## Guards
 
-- **Strict path sandbox**: pending skills → `/data/skills/_pending/<slug>/`; notes
-  → `/opt/data/notes/`.
-- **No silent self-activation**: writing under the active pack from here is a bug,
-  never a shortcut — it bypasses the admin gate.
-- **No `run_command` for generated scripts**: drafted scripts are files for review.
-- **Error recovery**: surface a failed write to the resident and stop; never retry
-  against the active skills directory.
+- **One tool per destination**: pending skills → `draft_skill`; notes →
+  `note_write` under `/opt/data/notes/`. Neither can reach the other's place.
+- **No silent self-activation**: `draft_skill` writes only under `_pending/`; the
+  active pack is the admin's to fill, never this session's.
+- **No generated scripts**: a draft is prose the admin reads, not code to run.
+- **Error recovery**: surface a failed draft to the resident and stop; never fall
+  back to `note_write`.

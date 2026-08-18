@@ -44,7 +44,10 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
-from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
+from solaris_chat.engine.tools.skill_promotion import (
+    build_skill_draft_tools,
+    build_skill_promotion_tools,
+)
 from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
@@ -115,6 +118,7 @@ def _registered_tools() -> dict[str, list[Tool]]:
         "build_onboarding_approval_tools": build_onboarding_approval_tools(
             "/tmp/db.sqlite", "http://mcp", "/tmp/token", "", ""
         ),
+        "build_skill_draft_tools": build_skill_draft_tools("/tmp/skills"),
         "build_skill_promotion_tools": build_skill_promotion_tools(
             "/tmp/skills", "http://mcp", "/tmp/token"
         ),

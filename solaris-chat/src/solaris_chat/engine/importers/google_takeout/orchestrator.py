@@ -340,6 +340,12 @@ def build_result_card(result: dict[str, Any]) -> dict[str, Any]:
     if "music" in per:
         parts.append(f"{per['music']} Wunsch-Alben ergänzt")
     body = ", ".join(parts) + " importiert." if parts else "Nichts zu importieren."
+    left_out = result.get("skipped", {}).get("contacts", 0)
+    if left_out:
+        body += (
+            f" {left_out} Kontakte konnte ich nicht lesen"
+            " und habe sie übersprungen — alle anderen sind da."
+        )
     return {
         "kind": "action",
         "title": "Import abgeschlossen",
@@ -378,7 +384,9 @@ def _run_calendar(zip_bytes: bytes, names: list[str], cfg: dict[str, Any]) -> in
     return written
 
 
-def _run_contacts(zip_bytes: bytes, names: list[str], cfg: dict[str, Any]) -> int:
+def _run_contacts(
+    zip_bytes: bytes, names: list[str], cfg: dict[str, Any]
+) -> tuple[int, int]:
     import asyncio
 
     from ...ingest.dav_client import HttpDavClient
@@ -392,13 +400,15 @@ def _run_contacts(zip_bytes: bytes, names: list[str], cfg: dict[str, Any]) -> in
     )
     collection = f"{base}/{cfg['owner_uid']}/contacts/"
     written = 0
+    skipped = 0
     for name in names:
         if not name.lower().endswith(".vcf"):
             continue
         vcf = _read(zip_bytes, name)
         report = asyncio.run(con.import_to_dav(client, collection, name, vcf))
         written += report["written"]
-    return written
+        skipped += report["skipped"]
+    return written, skipped
 
 
 def _run_keep(zip_bytes: bytes, names: list[str], cfg: dict[str, Any]) -> int:
@@ -471,6 +481,7 @@ def run_import(payload: dict[str, Any], is_canceled=None):
     llm = None  # classify already ran at upload; the job trusts its bucketing.
     buckets = _bucket_members(zip_bytes, llm)
     per_category: dict[str, int] = {}
+    skipped: dict[str, int] = {}
     total = len(categories)
     for i, category in enumerate(categories):
         if is_canceled is not None and is_canceled():
@@ -511,6 +522,8 @@ def run_import(payload: dict[str, Any], is_canceled=None):
                         }
             else:
                 count = fn(zip_bytes, buckets[category], payload)
+                if isinstance(count, tuple):
+                    count, skipped[category] = count
         except Exception as exc:  # noqa: BLE001 — one category failing must not abort the rest.
             log.error("import.category_failed", category=category, error=str(exc))
             count = 0
@@ -519,6 +532,7 @@ def run_import(payload: dict[str, Any], is_canceled=None):
         "type": "import",
         "hash": payload["hash"],
         "per_category": per_category,
+        "skipped": {k: v for k, v in skipped.items() if v},
     }
     note = write_posteingang_note(payload["notes_dir"], payload["owner_uid"], result)
     result["posteingang"] = note
@@ -560,6 +574,9 @@ def write_posteingang_note(notes_dir: str, uid: str, result: dict[str, Any]) -> 
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     per = result.get("per_category", {})
     lines = [f"- {k}: {v}" for k, v in per.items()]
+    lines += [
+        f"- {k}: {v} übersprungen" for k, v in result.get("skipped", {}).items() if v
+    ]
     note = facts_dir / f"{day}-google-takeout-import-{result['hash']}.md"
     note.write_text(
         f"---\nadded_by: {uid}\ndate: {day}\nkind: import\nsource: google-takeout\n---\n\n"

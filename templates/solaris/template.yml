@@ -451,12 +451,16 @@ spec:
   # path the post-deploy drops the trained solaris.tflite into) and scanned via
   # --custom-model-dir, so the "Solaris" model shows up as a selectable wake
   # word the Assist pipeline then pins (ensure_assist_pipeline). Listens on the
-  # standard Wyoming wake-word port 10400 (OPENWAKEWORD_URI default).
+  # standard Wyoming wake-word port 10400 (OPENWAKEWORD_URI default), bound to
+  # loopback: a 0.0.0.0 bind under hostNetwork would put this unauthenticated
+  # Wyoming listener on the LAN (#116). Its only callers are on the host —
+  # HA's wyoming integration (post-deploy wires 127.0.0.1:10400) and the
+  # gatekeeper's OPENWAKEWORD_URI; satellites reach HA, never this port.
   - name: openwakeword
     image: docker.io/rhasspy/wyoming-openwakeword:latest
     args:
     - --uri
-    - tcp://0.0.0.0:10400
+    - tcp://127.0.0.1:10400
     - --custom-model-dir
     - /custom_models
     volumeMounts:
@@ -467,7 +471,9 @@ spec:
   # a streaming `tts.openai_streaming` HA entity on Wyoming :10203 (#456). A CPU
   # shim, so it rides the pod (unlike the Kokoro TTS itself, a GPU companion
   # Quadlet). It reaches the Kokoro OpenAI API over host loopback (:8881); the
-  # bare module command mirrors the standalone container's entrypoint.
+  # bare module command mirrors the standalone container's entrypoint. Bound to
+  # loopback for the same reason as openwakeword (#116) — its only caller is
+  # HA's wyoming integration on the host (post-deploy wires 127.0.0.1:10203).
   - name: tts-bridge
     image: ghcr.io/roryeckel/wyoming_openai:latest
     command:
@@ -476,7 +482,7 @@ spec:
     - wyoming_openai
     args:
     - --uri
-    - tcp://0.0.0.0:10203
+    - tcp://127.0.0.1:10203
     - --languages
     - "{{SOLARIS_LANGUAGE}}"
     - --tts-openai-url

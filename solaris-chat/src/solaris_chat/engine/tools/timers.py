@@ -9,9 +9,11 @@ from solaris_chat.engine import scheduler
 from solaris_chat.engine.tools import Tool, Visibility
 
 
-def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
+def build_timer_tools(db_path: str, uid_getter, room_getter=None) -> list[Tool]:
     """`uid_getter()` supplies the current turn's resident uid — tools are
-    built per profile, but a timer belongs to whoever asked for it."""
+    built per profile, but a timer belongs to whoever asked for it.
+    `room_getter()` supplies the room the turn came in on, so the alarm rings
+    where it was set (#1187)."""
 
     async def timer_set(args: dict[str, Any]) -> str:
         timer = scheduler.add_timer(
@@ -21,6 +23,7 @@ def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
             fire_at=args.get("at"),
             kind=str(args.get("kind") or "timer"),
             label=str(args.get("label") or ""),
+            room=room_getter() if room_getter else "",
         )
         return json.dumps(timer, ensure_ascii=False)
 
@@ -39,6 +42,8 @@ def build_timer_tools(db_path: str, uid_getter) -> list[Tool]:
             description=(
                 "Stellt Timer, Wecker oder Erinnerung. Entweder duration_s"
                 " (Timer ab jetzt) oder at (ISO-Zeitpunkt, Wecker/Erinnerung)."
+                " Es klingelt nur in dem Raum, in dem es gestellt wurde — sag"
+                " das dazu, damit klar ist, wo man es hört."
             ),
             parameters={
                 "type": "object",
