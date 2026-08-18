@@ -38,6 +38,7 @@ from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import (
     Toolbox,
     current_channel,
+    current_conversation,
     current_speaker_id_enabled,
     current_speaker_matched,
     estimate_tokens,
@@ -817,6 +818,9 @@ class EngineClient:
         channel = current_channel.get()
         speaker_matched = current_speaker_matched.get()
         speaker_id_enabled = current_speaker_id_enabled.get()
+        # Same reason (#1184): start_voice_enrollment keys its wizard row on the
+        # dialog this turn came from, and it runs in the gather child task.
+        conversation_key = current_conversation.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
 
@@ -870,6 +874,38 @@ class EngineClient:
         confirmed: set[tuple[str, str, str]] = set()
         confirmed_executed = False
         pending = self._pending.peek(pending_key) if pending_key else None
+        # Past its window the held action is gone (#1183). A yes that lands on
+        # nothing is answered deterministically — like the gate itself — so the
+        # resident is never left wondering whether the house just opened, and
+        # ends on a question so the microphone stays open for the repeat.
+        lapsed = self._pending.take_lapsed(pending_key) if pending_key else None
+        if lapsed is not None and confirm.is_affirmative(_last_user_text(messages)):
+            answer = (
+                f"Die Rückfrage „{lapsed.prompt}“ ist abgelaufen — ich habe"
+                " nichts ausgeführt. Sag mir bitte noch einmal, was ich tun soll?"
+            )
+            if persist:
+                store.append_message(
+                    self._db_path,
+                    session_id,
+                    "assistant",
+                    answer,
+                    conversation_id=conversation,
+                )
+            yield {"type": "assistant.delta", "data": {"delta": answer}}
+            yield {
+                "type": "run.completed",
+                "data": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": answer,
+                            "reasoning_content": "",
+                        }
+                    ]
+                },
+            }
+            return
         if pending is not None:
             reply = _last_user_text(messages)
             if confirm.is_negative(reply):
@@ -1086,6 +1122,7 @@ class EngineClient:
                 # short-lived token, so it must survive the gather task hop.
                 current_admin_identity.set(admin_identity)
                 current_channel.set(channel)
+                current_conversation.set(conversation_key)
                 current_speaker_matched.set(speaker_matched)
                 current_speaker_id_enabled.set(speaker_id_enabled)
                 ha_tools.card_sink.set(ha_cards)

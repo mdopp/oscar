@@ -13,6 +13,7 @@ held call asserts NO service was invoked; an executed one asserts exactly one.
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 
@@ -669,3 +670,67 @@ async def test_ephemeral_conversation_id_isolates_callers(db, soul, monkeypatch)
     # A's pending still sits under its own conversation key, untouched.
     assert client._pending.peek("conv-A") is not None
     assert client._pending.peek("conv-B") is None
+
+
+# -- #1183: a held action goes stale ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_is_not_fired_by_a_later_affirmative(db, soul, monkeypatch):
+    """A held action used to wait forever in the SHARED household session, so an
+    unrelated later turn that merely contained "genau" opened the garage (#1183).
+    Past its window it is gone — and the resident is told so, or a confirmation
+    that fired nothing would be indistinguishable from one that opened the house.
+    """
+    posts = _stub_ha(monkeypatch)
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _open_garage_call(),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            ChatResult(content="Diese Antwort darf nie kommen."),
+        ],
+        tools=_tools(),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
+    assert posts == []
+
+    class _TwoHoursLater:
+        """The resident walked off and never answered the question."""
+
+        @staticmethod
+        def monotonic() -> float:
+            return time.monotonic() + 7200.0
+
+    monkeypatch.setattr(confirm, "time", _TwoHoursLater, raising=False)
+
+    events = [
+        e async for e in client.chat_stream(sid, "genau, das habe ich auch gesagt")
+    ]
+    assert posts == [], "a stale pending action must never actuate"
+    assert client._pending.peek(sid) is None
+    answer = events[-1]["data"]["messages"][-1]["content"]
+    assert "abgelaufen" in answer and "nichts ausgeführt" in answer
+
+
+@pytest.mark.asyncio
+async def test_confirmation_inside_the_window_still_executes(db, soul, monkeypatch):
+    """The window must not make confirming unnatural: a plain "ja" right after
+    the question still opens the garage."""
+    posts = _stub_ha(monkeypatch)
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _open_garage_call(),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            ChatResult(content="Erledigt."),
+        ],
+        tools=_tools(),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
+    _ = [e async for e in client.chat_stream(sid, "ja")]
+    assert len(posts) == 1

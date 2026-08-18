@@ -28,6 +28,25 @@ _MAX_EXTRA_SAMPLE_TURNS = 3
 _YES_WORDS = ("ja", "yes", "ok", "einverstanden", "klar", "gerne", "sicher", "absolut")
 _NO_WORDS = ("nein", "no", "nicht")
 
+# The row a turn that carries no dialog handle falls back to (#1184).
+SHARED_SESSION_KEY = "default"
+
+
+def session_key(conversation_id: str | None) -> str:
+    """The enrolment dialog this turn belongs to.
+
+    Keyed on Home Assistant's per-conversation id — the only per-turn handle the
+    voice bridge has, since speaker-ID is off on this install and a uid is
+    therefore `household` for everyone. Two residents on two satellites are two
+    conversations, so one cannot answer the other's consent question.
+
+    A turn that arrives WITHOUT a conversation id is unidentifiable: it falls
+    back to the shared row, i.e. the pre-#1184 single-dialog behaviour. That is
+    deliberate — an unkeyed turn given its own row would open a wizard nothing
+    could ever reach again.
+    """
+    return (conversation_id or "").strip() or SHARED_SESSION_KEY
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -66,7 +85,9 @@ def init_db(db_path: str) -> None:
         conn.commit()
 
 
-def get_fsm_state(db_path: str, session_key: str = "default") -> dict[str, Any] | None:
+def get_fsm_state(
+    db_path: str, session_key: str = SHARED_SESSION_KEY
+) -> dict[str, Any] | None:
     if not Path(db_path).exists():
         return None
     try:
@@ -95,14 +116,19 @@ def get_fsm_state(db_path: str, session_key: str = "default") -> dict[str, Any] 
         return None
 
 
-def is_active(db_path: str, session_key: str = "default") -> bool:
-    state = get_fsm_state(db_path, session_key)
-    if state:
-        return True
-    return enroll_requests_store.has_any_active_request(db_path)
+def is_active(db_path: str, session_key: str = SHARED_SESSION_KEY) -> bool:
+    """True when THIS dialog is inside the wizard.
+
+    Scoped to the caller's dialog (#1184). It used to also return True whenever
+    ANY uid had an open enrol request, which routed every other resident's voice
+    turn into the enrolling resident's FSM — their speech answered its consent
+    step, and they got no normal service meanwhile. The wizard opens that
+    request itself, at its name step, so its own row is the authority.
+    """
+    return get_fsm_state(db_path, session_key) is not None
 
 
-def reset_fsm(db_path: str, session_key: str = "default") -> None:
+def reset_fsm(db_path: str, session_key: str = SHARED_SESSION_KEY) -> None:
     if not Path(db_path).exists():
         return
     try:
@@ -117,7 +143,7 @@ def reset_fsm(db_path: str, session_key: str = "default") -> None:
 
 
 def handle_turn(
-    db_path: str, text: str, uid_hint: str = "", session_key: str = "default"
+    db_path: str, text: str, uid_hint: str = "", session_key: str = SHARED_SESSION_KEY
 ) -> str:
     """Process one turn through the deterministic enrollment FSM. Returns spoken response text."""
     init_db(db_path)

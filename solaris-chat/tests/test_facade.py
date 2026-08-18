@@ -1912,3 +1912,68 @@ async def test_a_held_action_still_gets_its_no(aiohttp_client, db, soul):
     )
     await r.json()
     assert fake.calls != [], "the gate's pending action must still see the answer"
+
+
+async def test_a_bystander_turn_is_not_swallowed_by_another_dialogs_wizard(
+    aiohttp_client, db, soul
+):
+    """#1184: the enrolment FSM had one row for the whole box, so while Anna sat
+    at its consent step Bob's unrelated turn to another satellite was read as
+    HER answer — a yes-word in it consented to her biometric enrolment, and he
+    got no normal service. Keyed on HA's conversation id, his turn is his own.
+    """
+    from solaris_chat.engine import enrollment_fsm
+    from solaris_chat.engine.tools.register import build_register_tools
+
+    household, _ = _engine(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="",
+                tool_calls=[
+                    {"function": {"name": "start_voice_enrollment", "arguments": {}}}
+                ],
+            ),
+            ChatResult(content="Es ist 14:35."),
+        ],
+        tools=build_register_tools(db),
+    )
+    app = build_app(
+        engine=household,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        api_key="",
+    )
+    http = await aiohttp_client(app)
+
+    anna = await (
+        await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "solaris",
+                "stream": False,
+                "conversation_id": "conv-anna",
+                "messages": [{"role": "user", "content": "Richte mein Profil ein"}],
+            },
+        )
+    ).json()
+    assert "Ja oder Nein" in anna["message"]["content"]
+    assert enrollment_fsm.get_fsm_state(db, "conv-anna")["state"] == "consent"
+
+    bob = await (
+        await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "solaris",
+                "stream": False,
+                "conversation_id": "conv-bob",
+                "messages": [{"role": "user", "content": "ok, wie spät ist es"}],
+            },
+        )
+    ).json()
+    assert "14:35" in bob["message"]["content"]
+    assert "Zustimmung" not in bob["message"]["content"]
+    # Anna's consent step is untouched — his "ok" was never her answer.
+    assert enrollment_fsm.get_fsm_state(db, "conv-anna")["state"] == "consent"
