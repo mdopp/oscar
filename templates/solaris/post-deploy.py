@@ -289,19 +289,22 @@ exec \\
 # only `language` and drops them.
 #
 # This wrapper launches the stock server with one patch: a request's words are
-# appended to that connection's `initial_prompt`, BEHIND the static household
-# lead-in. Whisper keeps only the LAST 224 tokens, so the request's own words sit
-# where they survive truncation, the static lead-in is not evicted, and a request
-# that carries none leaves the loader untouched — byte-identical to #1142.
+# appended to the prompt that request is transcribed with, BEHIND the static
+# household lead-in. Whisper keeps only the LAST 224 tokens, so the request's own
+# words sit where they survive truncation, the static lead-in is not evicted, and
+# a request that carries none is byte-identical to #1142.
 # (`hotwords` would be the better lever for long audio, but the image's
 # FasterWhisperTranscriber.transcribe has a fixed signature with no hotwords
 # parameter, so reaching it would mean patching a second file for no gain on a
 # 3-second household command.)
 #
 # It sits two files deep in a third-party image carrying AutoUpdate=registry, so
-# it asserts its interception point at startup and REFUSES TO START when the
-# shape moved: a container systemd shows as failed is noticed; a server that
-# looks healthy and silently drops the words is not.
+# it asserts its interception point at startup — and when the shape moved it
+# starts the stock server WITHOUT the patch (#1193). The hints are an
+# enhancement; STT is the service. v3.6.0-ls59 restructured the prompt site and
+# the old fail-closed guard took the whole household's speech-to-text down with
+# it. Losing the words is a degradation worth logging loudly; losing STT is an
+# outage.
 WHISPER_HINTS_FILE = "whisper_hints.py"
 WHISPER_HINTS_MODULE = '''"""Per-request word hints for wyoming-faster-whisper (Solaris, #1157)."""
 
@@ -314,9 +317,12 @@ from wyoming_faster_whisper import __main__ as stock
 from wyoming_faster_whisper import __version__
 from wyoming_faster_whisper.dispatch_handler import DispatchEventHandler
 
-PROMPT_SITE = "initial_prompt=self._loader.initial_prompt"
+# Both transcription paths (batch at AudioStop, streaming at _commit_path) take
+# their prompt from this one coroutine, so patching it covers both.
+PROMPT_SITE = "initial_prompt=await self._initial_prompt("
 
 _stock_handle_event = DispatchEventHandler.handle_event
+_stock_initial_prompt = getattr(DispatchEventHandler, "_initial_prompt", None)
 
 
 def shape_problem():
@@ -324,24 +330,12 @@ def shape_problem():
     fields = {f.name for f in dataclasses.fields(Transcribe)}
     if not {"transcript_names", "transcript_terms"} <= fields:
         return "wyoming Transcribe carries no transcript_names/transcript_terms"
+    if _stock_initial_prompt is None:
+        return "DispatchEventHandler has no _initial_prompt to hook"
     seen = inspect.getsource(DispatchEventHandler).count(PROMPT_SITE)
     if seen != 2:
         return f"DispatchEventHandler reads {PROMPT_SITE} {seen}x, expected 2"
     return ""
-
-
-class HintedLoader:
-    """The shared loader as ONE connection sees it, with that request's words
-    appended to the static prompt. Wyoming gives every connection its own
-    handler and every request its own connection, so this cannot leak."""
-
-    def __init__(self, loader, words):
-        self._solaris_wrapped = loader
-        lead = (getattr(loader, "initial_prompt", None) or "").strip()
-        self.initial_prompt = (lead + " " + ", ".join(words) + ".").strip()
-
-    def __getattr__(self, name):
-        return getattr(self._solaris_wrapped, name)
 
 
 async def handle_event(self, event):
@@ -350,27 +344,39 @@ async def handle_event(self, event):
         raw = list(transcribe.transcript_names or []) + list(
             transcribe.transcript_terms or []
         )
-        words = [w for w in (str(x).strip() for x in raw) if w]
-        if words:
-            loader = getattr(self._loader, "_solaris_wrapped", self._loader)
-            self._loader = HintedLoader(loader, words)
+        # Reassigned on every Transcribe, so one connection's second request
+        # never inherits the first request's words.
+        self._solaris_words = [w for w in (str(x).strip() for x in raw) if w]
     return await _stock_handle_event(self, event)
+
+
+async def _initial_prompt(self, *args, **kwargs):
+    prompt = await _stock_initial_prompt(self, *args, **kwargs)
+    words = getattr(self, "_solaris_words", None)
+    if not words:
+        return prompt
+    lead = (prompt or "").strip()
+    return (lead + " " + ", ".join(words) + ".").strip()
 
 
 def main():
     problem = shape_problem()
     if problem:
+        # Degraded, never dead: the household keeps its speech-to-text and only
+        # loses the per-request words (solarisbay#1193).
         sys.stderr.write(
             f"solaris-hints: NOT APPLIED to wyoming-faster-whisper {__version__} "
-            f"- {problem}. Refusing to start: the mounted run script and hint "
-            "wrapper no longer match this image (solarisbay#1157).\\n"
+            f"- {problem}. Starting WITHOUT per-request hints: STT works, "
+            "transcript_names/transcript_terms are ignored until the wrapper is "
+            "updated for this image (solarisbay#1157).\\n"
         )
-        return 1
-    DispatchEventHandler.handle_event = handle_event
-    sys.stderr.write(
-        f"solaris-hints: active on wyoming-faster-whisper {__version__} - "
-        "per-request transcript_names/transcript_terms append to initial_prompt\\n"
-    )
+    else:
+        DispatchEventHandler.handle_event = handle_event
+        DispatchEventHandler._initial_prompt = _initial_prompt
+        sys.stderr.write(
+            f"solaris-hints: active on wyoming-faster-whisper {__version__} - "
+            "per-request transcript_names/transcript_terms append to initial_prompt\\n"
+        )
     sys.stderr.flush()
     stock.run()
     return 0

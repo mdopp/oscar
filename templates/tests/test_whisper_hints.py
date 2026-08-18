@@ -9,9 +9,10 @@ The stock linuxserver image ignores those fields, so the s6 run script Solaris
 already mounts (#1142) now launches a small wrapper module instead of
 `python3 -m wyoming_faster_whisper`. The wrapper runs the stock server with one
 patch — which means it lives or dies with upstream's shape, so it asserts that
-shape at startup and refuses to start when it moved. These tests exercise the
-wrapper against a stub of that shape (real files on disk: the assertion reads
-`inspect.getsource`)."""
+shape at startup and, when it moved, starts the stock server WITHOUT the patch
+(#1193: the hints are an enhancement, STT is the service). These tests exercise
+the wrapper against a stub of that shape (real files on disk: the assertion
+reads `inspect.getsource`)."""
 
 from __future__ import annotations
 
@@ -56,7 +57,40 @@ def _clean_stub_modules():
         sys.modules.pop(name, None)
 
 
-def _stub_tree(root, hint_fields=True, prompt_attr="initial_prompt"):
+def _dispatch_handler_src(prompt_hook=True, sites=2):
+    """The v3.6.0-ls59 handler, reduced to the two prompt sites the patch needs.
+
+    `prompt_hook=False` is the pre-3.6.0 shape (the prompt read straight off the
+    loader), i.e. an image whose interception point the wrapper cannot find."""
+    head = (
+        "SEEN = []\n\n\n"
+        "class DispatchEventHandler:\n"
+        "    def __init__(self, loader):\n"
+        "        self._loader = loader\n\n"
+    )
+    if not prompt_hook:
+        return head + (
+            "    async def handle_event(self, event):\n"
+            "        SEEN.append(dict(initial_prompt=self._loader.initial_prompt))\n"
+            "        return True\n"
+        )
+    commit = (
+        "\n    async def _commit_path(self):\n"
+        "        return dict(initial_prompt=await self._initial_prompt(wait=False))\n"
+        if sites >= 2
+        else ""
+    )
+    return head + (
+        "    async def handle_event(self, event):\n"
+        "        SEEN.append(dict(initial_prompt=await self._initial_prompt()))\n"
+        "        return True\n"
+        f"{commit}"
+        "\n    async def _initial_prompt(self, wait=True):\n"
+        "        return self._loader.initial_prompt\n"
+    )
+
+
+def _stub_tree(root, hint_fields=True, **handler):
     """A minimal on-disk stand-in for the image's wyoming + server packages.
 
     On disk, not in memory: the wrapper's shape assertion reads the handler with
@@ -104,21 +138,13 @@ def _stub_tree(root, hint_fields=True, prompt_attr="initial_prompt"):
     )
     (root / "wyoming_faster_whisper").mkdir()
     (root / "wyoming_faster_whisper" / "__init__.py").write_text(
-        '__version__ = "3.5.0"\n'
+        '__version__ = "3.6.0"\n'
     )
     (root / "wyoming_faster_whisper" / "__main__.py").write_text(
         "RAN = []\n\n\ndef run():\n    RAN.append(True)\n"
     )
     (root / "wyoming_faster_whisper" / "dispatch_handler.py").write_text(
-        "SEEN = []\n\n\n"
-        "class DispatchEventHandler:\n"
-        "    def __init__(self, loader):\n"
-        "        self._loader = loader\n\n"
-        "    async def handle_event(self, event):\n"
-        f"        SEEN.append(dict(initial_prompt=self._loader.{prompt_attr}))\n"
-        "        return True\n\n"
-        "    async def _commit_path(self):\n"
-        f"        return dict(initial_prompt=self._loader.{prompt_attr})\n"
+        _dispatch_handler_src(**handler)
     )
 
 
@@ -198,6 +224,12 @@ def test_cpu_path_has_no_wrapper(pd, monkeypatch, tmp_path):
 # -- the wrapper --------------------------------------------------------------
 
 
+def _prompt_seen():
+    from wyoming_faster_whisper.dispatch_handler import SEEN
+
+    return SEEN[-1]["initial_prompt"]
+
+
 def test_request_words_append_behind_the_static_prompt(pd, tmp_path, monkeypatch):
     mod = _wrapper(pd, tmp_path, monkeypatch)
     assert mod.main() == 0
@@ -217,12 +249,24 @@ def test_request_words_append_behind_the_static_prompt(pd, tmp_path, monkeypatch
     # Whisper keeps the LAST 224 tokens, so the request's own words go at the
     # end — the static #1142 lead-in survives, the request's words survive
     # truncation, and blanks never become an empty list entry.
-    assert handler._loader.initial_prompt == (
+    assert _prompt_seen() == (
         "Sprachbefehle im Haushalt. Die Geräte heißen: Leselicht. Thorgrim, Silbermark."
     )
-    # Everything else is still the one shared loader.
-    assert handler._loader.beam_size == 1
+    # The shared loader itself is never rewritten.
     assert loader.initial_prompt.endswith("Leselicht.")
+
+
+def test_the_streaming_path_gets_the_same_words(pd, tmp_path, monkeypatch):
+    # 3.6.0 asks for the prompt twice: at AudioStop for the batch transcriber and
+    # at _commit_path for a streaming session. Both must carry the words.
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    from wyoming_faster_whisper.dispatch_handler import DispatchEventHandler
+
+    handler = DispatchEventHandler(_Loader("Geräte: Leselicht."))
+    asyncio.run(handler.handle_event(_transcribe_event(transcript_terms=["Thorgrim"])))
+    committed = asyncio.run(handler._commit_path())
+    assert committed["initial_prompt"] == "Geräte: Leselicht. Thorgrim."
 
 
 def test_a_request_without_words_is_untouched(pd, tmp_path, monkeypatch):
@@ -234,7 +278,7 @@ def test_a_request_without_words_is_untouched(pd, tmp_path, monkeypatch):
     handler = DispatchEventHandler(loader)
     asyncio.run(handler.handle_event(_transcribe_event(language="de")))
     # Not merely equal — the same object: today's behaviour, byte for byte.
-    assert handler._loader is loader
+    assert _prompt_seen() is loader.initial_prompt
 
 
 def test_a_second_request_does_not_stack_onto_the_first(pd, tmp_path, monkeypatch):
@@ -245,41 +289,52 @@ def test_a_second_request_does_not_stack_onto_the_first(pd, tmp_path, monkeypatc
     handler = DispatchEventHandler(_Loader("Geräte: Leselicht."))
     for name in ("Thorgrim", "Yseult"):
         asyncio.run(handler.handle_event(_transcribe_event(transcript_names=[name])))
-    assert handler._loader.initial_prompt == "Geräte: Leselicht. Yseult."
+    assert _prompt_seen() == "Geräte: Leselicht. Yseult."
 
 
 def test_startup_names_the_version_it_matched(pd, tmp_path, monkeypatch, capsys):
     mod = _wrapper(pd, tmp_path, monkeypatch)
     assert mod.main() == 0
     line = capsys.readouterr().err
-    assert "solaris-hints: active on wyoming-faster-whisper 3.5.0" in line
+    assert "solaris-hints: active on wyoming-faster-whisper 3.6.0" in line
     from wyoming_faster_whisper.__main__ import RAN
 
     assert RAN == [True]
 
 
-def test_it_refuses_to_start_when_the_prompt_site_moved(
-    pd, tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize(
+    "drift, marker",
+    [
+        ({"prompt_hook": False}, "no _initial_prompt"),
+        ({"sites": 1}, "expected 2"),
+        ({"hint_fields": False}, "transcript_names"),
+    ],
+    ids=["hook-gone", "one-prompt-site", "fields-gone"],
+)
+def test_an_unknown_upstream_shape_still_starts_the_server(
+    pd, tmp_path, monkeypatch, capsys, drift, marker
 ):
-    # An unattended linuxserver bump (AutoUpdate=registry) can restructure the
-    # module this patch reaches into. Failing to start makes systemd show the
-    # container down; silently serving without the words would not.
-    mod = _wrapper(pd, tmp_path, monkeypatch, prompt_attr="prompt")
-    assert mod.main() == 1
+    # #1193: an unattended linuxserver bump (AutoUpdate=registry) restructured
+    # the module this patch reaches into, and the old fail-closed guard took the
+    # whole household's speech-to-text down with it. The hints are an
+    # enhancement; the server must come up regardless, and say so loudly.
+    mod = _wrapper(pd, tmp_path, monkeypatch, **drift)
+    assert mod.main() == 0
     err = capsys.readouterr().err
     assert "solaris-hints: NOT APPLIED" in err
-    assert "expected 2" in err
+    assert marker in err
+    assert "STT works" in err
     from wyoming_faster_whisper.__main__ import RAN
 
-    assert RAN == []
+    assert RAN == [True]
 
 
-def test_it_refuses_to_start_when_transcribe_lost_the_hint_fields(
-    pd, tmp_path, monkeypatch, capsys
-):
-    mod = _wrapper(pd, tmp_path, monkeypatch, hint_fields=False)
-    assert mod.main() == 1
-    assert "transcript_names" in capsys.readouterr().err
-    from wyoming_faster_whisper.__main__ import RAN
+def test_a_degraded_start_leaves_the_prompt_alone(pd, tmp_path, monkeypatch):
+    mod = _wrapper(pd, tmp_path, monkeypatch, prompt_hook=False)
+    assert mod.main() == 0
+    from wyoming_faster_whisper.dispatch_handler import DispatchEventHandler
 
-    assert RAN == []
+    loader = _Loader("Geräte: Leselicht.")
+    handler = DispatchEventHandler(loader)
+    asyncio.run(handler.handle_event(_transcribe_event(transcript_names=["Thorgrim"])))
+    assert _prompt_seen() == "Geräte: Leselicht."
