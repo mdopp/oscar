@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.39.2](https://github.com/mdopp/solarisbay/compare/v0.39.1...v0.39.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **autoloop:** count a batch by its issues not its units ([aeca24d](https://github.com/mdopp/solarisbay/commit/aeca24d8c50089082bcb04562b5dfc9d1f9e1196)), closes [#1192](https://github.com/mdopp/solarisbay/issues/1192)
+* **autoloop:** keep a security unit off the shared batch ([d687cba](https://github.com/mdopp/solarisbay/commit/d687cba2b521acda186033965d854796e87dd532)), closes [#1178](https://github.com/mdopp/solarisbay/issues/1178)
+* batch 2026-08-17b - loopback voice ports, per-room timers, skill drafting, contacts import isolation ([988e23a](https://github.com/mdopp/solarisbay/commit/988e23a7f1360c3ac02236d603e56f531acda2a1))
+* cap the gatekeeper audio buffer, pin schema-init, and tear down stale units ([7cbc9c6](https://github.com/mdopp/solarisbay/commit/7cbc9c646293346ee7c8b899a1706b603b18c9b6))
+* **chat:** give the household turn a tool that reaches the pending skills dir ([5a38b6e](https://github.com/mdopp/solarisbay/commit/5a38b6e0c7d4ce701f0d41da526a1941f861a8cd)), closes [#1188](https://github.com/mdopp/solarisbay/issues/1188)
+* **chat:** isolate per-card contacts import failures and key UID-less cards by person ([e055082](https://github.com/mdopp/solarisbay/commit/e05508268af2e18bcc07916d5abc9d094f5425db)), closes [#1189](https://github.com/mdopp/solarisbay/issues/1189) [#1190](https://github.com/mdopp/solarisbay/issues/1190)
+* **chat:** reduce notes tool paths to one vault-relative form ([d35428b](https://github.com/mdopp/solarisbay/commit/d35428bfedf5d4e0f88cbe9e1ef7fe23f02c1a3a)), closes [#1173](https://github.com/mdopp/solarisbay/issues/1173)
+* **chat:** ring a fired timer only where it was set ([164b109](https://github.com/mdopp/solarisbay/commit/164b1098aa630d1521dd827dd92446e3ba8f2c69)), closes [#1187](https://github.com/mdopp/solarisbay/issues/1187)
+* **db:** pin alembic and sqlalchemy in the schema-init image ([6d7af1c](https://github.com/mdopp/solarisbay/commit/6d7af1caef03df8cfac11fa3a971955dac32a203)), closes [#1172](https://github.com/mdopp/solarisbay/issues/1172)
+* **gatekeeper:** cap the per-connection audio buffer ([b4d61bc](https://github.com/mdopp/solarisbay/commit/b4d61bc5322a681e53ee59ee6f780d424286c23d)), closes [#1174](https://github.com/mdopp/solarisbay/issues/1174)
+* **template:** bind the CPU voice Wyoming ports to loopback ([7d80d9a](https://github.com/mdopp/solarisbay/commit/7d80d9ad16c223334474f089f2ce27aaef4a6dea)), closes [#1186](https://github.com/mdopp/solarisbay/issues/1186)
+* **template:** degrade the whisper hint wrapper instead of refusing to start ([b28737d](https://github.com/mdopp/solarisbay/commit/b28737d778ca8ab7fe37a4b64f19ff6d8928157f))
+* **template:** degrade the whisper hint wrapper instead of refusing to start ([88ef5fd](https://github.com/mdopp/solarisbay/commit/88ef5fd2a0716f77f1c0c4255084edf96cac493f)), closes [#1193](https://github.com/mdopp/solarisbay/issues/1193)
+* **template:** remove the wakeword-trainer unit when CDI is gone ([6fefed5](https://github.com/mdopp/solarisbay/commit/6fefed5edfad7c22a66ffa0e979a5479ddbfad9a)), closes [#1180](https://github.com/mdopp/solarisbay/issues/1180)
+* **template:** remove the wakeword-trainer unit when its flag is off ([a0de939](https://github.com/mdopp/solarisbay/commit/a0de939f89f584cfababce1ebb0b8569d1f53a3d)), closes [#1176](https://github.com/mdopp/solarisbay/issues/1176)
+
 ## [0.39.1](https://github.com/mdopp/solarisbay/compare/v0.39.0...v0.39.1) (2026-08-15)
 
 
