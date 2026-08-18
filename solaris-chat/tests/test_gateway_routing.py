@@ -68,12 +68,13 @@ def _db(tmp_path) -> str:
     return path
 
 
-def _app(household, admin):
+def _app(household, admin, tmp_path):
     return build_app(
         engine=household,
         engine_admin=admin,
         remote_user_header="Remote-User",
         default_uid="household",
+        solaris_db_path=_db(tmp_path),
     )
 
 
@@ -89,9 +90,9 @@ def _pref_app(household, tmp_path, *, pref="thorough"):
     )
 
 
-async def test_household_chat_routes_to_household_gateway(aiohttp_client):
+async def test_household_chat_routes_to_household_gateway(aiohttp_client, tmp_path):
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat", json={"input": "wie spät ist es?"}, headers=RESIDENT_HDRS
@@ -104,12 +105,12 @@ async def test_household_chat_routes_to_household_gateway(aiohttp_client):
     assert admin.turns == []
 
 
-async def test_resident_followup_turn_routes_to_household(aiohttp_client):
+async def test_resident_followup_turn_routes_to_household(aiohttp_client, tmp_path):
     # A resident reusing an existing (household) session id keeps every follow-up
     # turn on the household gateway — the pinned "Zuhause" chat (#237) is a normal
     # resident session and never leaks onto admin.
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat",
@@ -121,9 +122,11 @@ async def test_resident_followup_turn_routes_to_household(aiohttp_client):
     assert admin.turns == []
 
 
-async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_client):
+async def test_maintenance_session_create_and_turns_route_to_admin(
+    aiohttp_client, tmp_path
+):
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     # Admin opens the servicebay-maintenance session: created on the ADMIN
     # gateway with the live soul + maintenance marker, household untouched.
@@ -149,9 +152,10 @@ async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_clien
 
 async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
     aiohttp_client,
+    tmp_path,
 ):
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/sessions?persona=servicebay-maintenance", headers=RESIDENT_HDRS
@@ -161,11 +165,13 @@ async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
     assert admin.created == [] and household.created == []
 
 
-async def test_non_admin_admin_persona_turn_never_reaches_admin(aiohttp_client):
+async def test_non_admin_admin_persona_turn_never_reaches_admin(
+    aiohttp_client, tmp_path
+):
     # A non-admin sending the admin/maintenance persona on a chat turn is routed
     # to household, never admin — the Remote-Groups gate holds at the router.
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat",
@@ -177,11 +183,13 @@ async def test_non_admin_admin_persona_turn_never_reaches_admin(aiohttp_client):
     assert admin.created == []
 
 
-async def test_non_admin_with_known_admin_session_id_stays_household(aiohttp_client):
+async def test_non_admin_with_known_admin_session_id_stays_household(
+    aiohttp_client, tmp_path
+):
     # Even presenting a session id that lives on the admin gateway, a non-admin
     # is routed to household — knowing an id can't escalate the gateway choice.
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat",
@@ -193,12 +201,14 @@ async def test_non_admin_with_known_admin_session_id_stays_household(aiohttp_cli
     assert admin.turns == []
 
 
-async def test_admin_dropdown_persona_routes_new_chat_to_admin(aiohttp_client):
+async def test_admin_dropdown_persona_routes_new_chat_to_admin(
+    aiohttp_client, tmp_path
+):
     # The #278 dropdown's "Admin" option sends personality=servicebay-maintenance
     # on a fresh chat; an admin caller routes that create + turn to the admin
     # gateway (the dropdown selects the profile/gateway, server re-checks the gate).
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat",
@@ -211,11 +221,13 @@ async def test_admin_dropdown_persona_routes_new_chat_to_admin(aiohttp_client):
     assert household.created == [] and household.turns == []
 
 
-async def test_admin_household_persona_still_routes_to_household(aiohttp_client):
+async def test_admin_household_persona_still_routes_to_household(
+    aiohttp_client, tmp_path
+):
     # An admin choosing a normal household persona (e.g. technical) is a resident
     # chat — it must stay on the household gateway, not leak onto admin.
     household, admin = _FakeEngine(), _FakeEngine()
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/chat",
@@ -226,10 +238,10 @@ async def test_admin_household_persona_still_routes_to_household(aiohttp_client)
     assert household.turns and admin.turns == []
 
 
-async def test_stream_maintenance_session_routes_to_admin(aiohttp_client):
+async def test_stream_maintenance_session_routes_to_admin(aiohttp_client, tmp_path):
     household = _FakeEngine()
     admin = _FakeEngine(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
-    client = await aiohttp_client(_app(household, admin))
+    client = await aiohttp_client(_app(household, admin, tmp_path))
 
     resp = await client.post(
         "/api/sessions?persona=servicebay-maintenance", headers=ADMIN_HDRS

@@ -27,6 +27,40 @@ from solaris_chat.server import (
 )
 
 
+# engine_sessions as migration 0009 creates it, replayed locally: the chat
+# endpoints read a supplied session's `owner_uid` to refuse a cross-resident
+# session id (#1168), so a turn on an existing session needs a real db.
+_SESSIONS_SCHEMA = """
+CREATE TABLE engine_sessions (
+  id            TEXT PRIMARY KEY,
+  owner_uid     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  profile       TEXT NOT NULL DEFAULT 'household',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,
+  maintenance   INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+def _sessions_db(tmp_path, sessions=()):
+    import sqlite3
+
+    path = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SESSIONS_SCHEMA)
+    conn.executemany(
+        "INSERT INTO engine_sessions (id, owner_uid) VALUES (?, ?)", sessions
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
 def _assert_turns(turns, expected):
     """Assert forwarded `(session_id, text)` turns, tolerating the per-turn
     current-time line (#265) that now leads every user turn. Each expected
@@ -782,10 +816,13 @@ async def test_first_turn_create_title_is_non_bare_marker_unique(aiohttp_client)
     assert embedded[0] != embedded[1]
 
 
-async def test_subsequent_turn_reuses_session(aiohttp_client):
+async def test_subsequent_turn_reuses_session(aiohttp_client, tmp_path):
     fake = _FakeEngine()
     app = build_app(
-        engine=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 
@@ -800,14 +837,17 @@ async def test_subsequent_turn_reuses_session(aiohttp_client):
     assert fake.titles == []
 
 
-async def test_two_consecutive_turns_share_one_session(aiohttp_client):
+async def test_two_consecutive_turns_share_one_session(aiohttp_client, tmp_path):
     # The operator's #268 scenario: a 2nd turn ("welche lichter sind an", asked
     # twice) in the same chat. The browser sends back the session_id it got from
     # turn 1, so turn 2 reuses that warm engine session — one create, both turns
     # on the same id. A cold turn-2 TTFT is model eviction, not a session bug.
     fake = _FakeEngine()
     app = build_app(
-        engine=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 
@@ -1060,6 +1100,7 @@ async def test_chat_persists_attachment_and_history_reattaches(
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 
@@ -1209,6 +1250,7 @@ async def test_turn_over_cap_compacts_and_switches_session(aiohttp_client, tmp_p
         default_uid="household",
         context_window=32768,
         attachments_dir=str(tmp_path),
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 
@@ -1246,6 +1288,7 @@ async def test_turn_under_cap_does_not_compact(aiohttp_client, tmp_path):
         default_uid="household",
         context_window=32768,
         attachments_dir=str(tmp_path),
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
     resp = await client.post(
@@ -1301,6 +1344,7 @@ def _topics_db(tmp_path):
     path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_TOPICS_SCHEMA)
+    conn.executescript(_SESSIONS_SCHEMA)
     conn.execute(
         "INSERT INTO topics (slug, display_name, scope, owner_uid) "
         "VALUES ('finanzen', 'Finanzen', 'shared', NULL)"
@@ -1421,7 +1465,7 @@ async def test_ephemeral_existing_session_never_compacts(aiohttp_client, tmp_pat
         default_uid="household",
         context_window=32768,
         attachments_dir=str(tmp_path),
-        solaris_db_path=str(tmp_path / "solaris.db"),
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
     resp = await client.post(
@@ -3023,13 +3067,16 @@ async def test_household_create_unaffected_by_query_persona(aiohttp_client):
     assert fake.maintenance == [False]
 
 
-async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
+async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client, tmp_path):
     # Once a session exists, per-turn `personality` is ignored — a maintenance
     # session's locked prompt can't be switched to the household Solaris persona by
     # any client-supplied field on a follow-up turn.
     fake = _FakeEngine()
     app = build_app(
-        engine=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 

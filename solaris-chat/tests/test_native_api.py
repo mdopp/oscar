@@ -1456,3 +1456,58 @@ async def test_napi_defs_tool_valid_token_serves_catalog(aiohttp_client, tmp_pat
     assert tool["tool-api-path"] == "/api/portal/tasks?done=1"
     assert tool["tool-actions"] == ["task.set_status", "task.add"]
     assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
+
+
+# ---- /napi/action-callback: no admin action on the bypassed prefix (#1170) ---
+
+
+async def test_napi_admin_action_refused_even_with_spoofed_groups_header(
+    aiohttp_client, tmp_path
+):
+    # `/napi/` is Authelia-BYPASSED, so `Remote-Groups` on it is whatever the
+    # caller typed — NPM's forward-auth chain, the only thing that overwrites it,
+    # never runs. A device-token holder must therefore not be able to reach an
+    # admin action by asserting the admin group itself (#1170).
+    from solaris_chat.engine import action_cards
+
+    ran: list[dict] = []
+
+    async def handler(body):
+        ran.append(body)
+        return {"ok": True}
+
+    action_cards.register("u1170-admin", handler, admin=True)
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.post(
+        "/napi/action-callback",
+        json={"action_id": "u1170-admin", "confirmed": True},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Remote-Groups": "admins",
+            "Remote-User": "mdopp",
+        },
+    )
+    assert r.status == 403
+    assert (await r.json())["reason"] == "forbidden"
+    assert ran == []
+
+
+async def test_napi_non_admin_action_still_runs_for_device_token(
+    aiohttp_client, tmp_path
+):
+    # The prefix stays usable: a non-admin action (the import callbacks) fires
+    # for the authenticated device-token holder.
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.post(
+        "/napi/action-callback",
+        json={"action_id": "ping"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    assert (await r.json())["detail"] == "pong"

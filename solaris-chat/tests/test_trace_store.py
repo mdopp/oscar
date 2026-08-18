@@ -40,13 +40,20 @@ CREATE TABLE session_traces (
 );
 CREATE INDEX session_traces_session_idx
   ON session_traces (session_id, owner_uid);
+CREATE TABLE engine_sessions (
+  id        TEXT PRIMARY KEY,
+  owner_uid TEXT NOT NULL
+);
 """
 
 
-def _db(tmp_path) -> str:
+def _db(tmp_path, sessions=()) -> str:
     path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
+    conn.executemany(
+        "INSERT INTO engine_sessions (id, owner_uid) VALUES (?, ?)", sessions
+    )
     conn.commit()
     conn.close()
     return path
@@ -327,9 +334,43 @@ async def test_persisted_detail_survives_recorder_restart(aiohttp_client, tmp_pa
 
 async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
     # /__traces__/<id> serves the engine recorder's detail ring directly; an
-    # evicted/unknown id is a 404 the panel degrades on.
+    # evicted/unknown id is a 404 the panel degrades on. The ring is
+    # process-wide, so the read is owner-scoped like the persisted path (#1171):
+    # only the owner of the session the call ran in gets the body.
     recorder = TraceRecorder()
     _recorder_with("sess-1", recorder, n=1)
+
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=_db(tmp_path, sessions=[("sess-1", "mdopp")]),
+        trace_recorder=recorder,
+    )
+    client = await aiohttp_client(app)
+
+    r = await client.get("/__traces__/0", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    body = await r.json()
+    assert body["response"]["final"] == "ok"
+    assert body["request"]["model"] == "m"
+
+    r = await client.get("/__traces__/999", headers={"Remote-User": "mdopp"})
+    assert r.status == 404
+
+    # Another resident walking the ring ids sees nothing, not mdopp's prompt.
+    r = await client.get("/__traces__/0", headers={"Remote-User": "lena"})
+    assert r.status == 404
+
+
+async def test_trace_ring_detail_of_unknown_session_is_never_served(
+    aiohttp_client, tmp_path
+):
+    # Fail closed (#1171): a ring record whose session has no row (so no owner
+    # to compare against) is nobody's to read — not even the household default.
+    recorder = TraceRecorder()
+    _recorder_with("sess-orphan", recorder, n=1)
 
     app = build_app(
         engine=_FakeEngine(),
@@ -342,12 +383,6 @@ async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
     client = await aiohttp_client(app)
 
     r = await client.get("/__traces__/0", headers={"Remote-User": "mdopp"})
-    assert r.status == 200
-    body = await r.json()
-    assert body["response"]["final"] == "ok"
-    assert body["request"]["model"] == "m"
-
-    r = await client.get("/__traces__/999", headers={"Remote-User": "mdopp"})
     assert r.status == 404
 
 

@@ -1363,17 +1363,33 @@ def build_app(
     # exposed admin-only in /api/whoami; a household user never learns the id.
     shared_wartung_id = store.wartung_session_id(default_uid)
 
-    def effective_uid(uid: str, session_id: str) -> str:
+    def effective_uid(uid: str, session_id: str, *, admin: bool = False) -> str:
         """Admit any authenticated resident to the shared household row (#649).
 
         Owner-scoped reads/writes filter on `owner_uid`; the shared Zuhause is
         owned by `default_uid`, so a resident's real uid would 403/404 against
         it. Map their uid to the owner for that one session, leave every other
         session per-resident (privacy posture unchanged). The shared Wartung row
-        (#786) is likewise owned by default_uid — every admin acts in one row."""
-        if session_id in (shared_household_id, shared_wartung_id):
+        (#786) is likewise owned by default_uid — but only for an ADMIN caller
+        (#1169): its id is a fixed uuid5 anyone can compute, so mapping every
+        resident onto its owner handed them the admin ops conversation. `admin`
+        defaults to False so a call site that forgets it fails closed."""
+        if session_id == shared_household_id:
+            return default_uid
+        if session_id == shared_wartung_id and admin:
             return default_uid
         return uid
+
+    def owns_session(uid: str, session_id: str) -> bool:
+        """May this caller act in `session_id`? (#1168)
+
+        The chat endpoints were the outlier: `/api/sessions/<id>/events` and the
+        trace store already filter on `owner_uid`, but `/api/chat` took the
+        body's `session_id` on trust. A row that does not exist yet is nobody's
+        — the first turn into a not-yet-materialized shared row lands there — so
+        only a *different* owner is refused."""
+        owner = store.session_owner(solaris_db_path, session_id)
+        return owner is None or owner == uid
 
     def is_household_chat(uid: str, session_id: str, topic_slug: str) -> bool:
         """True when this turn belongs to the pinned household chat — by the
@@ -1774,7 +1790,13 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         steps = trace_store.list_session_trace(
-            solaris_db_path, session_id, effective_uid(uid, session_id)
+            solaris_db_path,
+            session_id,
+            effective_uid(
+                uid,
+                session_id,
+                admin=is_admin(request, remote_groups_header, admin_group),
+            ),
         )
         return web.json_response({"ok": True, "steps": steps})
 
@@ -1789,6 +1811,7 @@ def build_app(
         uid = effective_uid(
             resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             request.match_info["session_id"],
+            admin=is_admin(request, remote_groups_header, admin_group),
         )
         session_id = request.match_info["session_id"]
         if store.session_owner(solaris_db_path, session_id) != uid:
@@ -2157,7 +2180,15 @@ def build_app(
         # An admin-only action must not fire for a non-admin caller — checked
         # before the confirm-gate so a resident can't self-supply confirmed=true
         # to reach a privileged handler (#788/#789 SB-MCP deploy/exec).
-        if handler.admin and not is_admin(request, remote_groups_header, admin_group):
+        # On the proxy-bypassed `/napi/` prefix (#757) `Remote-Groups` is
+        # client-supplied — NPM's forward-auth chain, the only thing that
+        # overwrites it, does not run there — so it can never prove admin and an
+        # admin action is refused outright (#1170). Non-admin actions (the import
+        # callbacks) keep working for the device-token holder.
+        if handler.admin and (
+            request.path.startswith(NATIVE_PREFIX)
+            or not is_admin(request, remote_groups_header, admin_group)
+        ):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         if handler.destructive and not body.get("confirmed"):
             return web.json_response(
@@ -2187,6 +2218,19 @@ def build_app(
             if trace_recorder is not None and detail_id.isdigit()
             else None
         )
+        # The ring is process-wide and its ids are small integers, so an unscoped
+        # read let any resident walk other residents' prompt/response bodies
+        # (#1171). Scope it like the persisted path: the caller must own the
+        # session the call ran in; an unknown session is nobody's and stays 404.
+        if detail is not None:
+            ring_session = str(detail.get("session_id") or "")
+            ring_owner = store.session_owner(solaris_db_path, ring_session)
+            if ring_owner is None or ring_owner != effective_uid(
+                uid,
+                ring_session,
+                admin=is_admin(request, remote_groups_header, admin_group),
+            ):
+                detail = None
         if detail is None:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response(detail)
@@ -3069,7 +3113,12 @@ def build_app(
         session_id = request.match_info["session_id"]
         try:
             session = await engine.get_session(
-                session_id, effective_uid(uid, session_id)
+                session_id,
+                effective_uid(
+                    uid,
+                    session_id,
+                    admin=is_admin(request, remote_groups_header, admin_group),
+                ),
             )
         except EngineError:
             return web.json_response(
@@ -5612,7 +5661,10 @@ def build_app(
         # The shared Zuhause is owned by default_uid but any resident may act in
         # it (#649): owner_uid drives session routing/scope; the real `uid` stays
         # the typed turn's identity (timers/facts) via turn_uid below.
-        owner_uid = effective_uid(uid, session_id)
+        admin = is_admin(request, remote_groups_header, admin_group)
+        owner_uid = effective_uid(uid, session_id, admin=admin)
+        if session_id and not owns_session(owner_uid, session_id):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         # Household ("Zuhause") turns are fast-only: never think, never escalate.
         household = is_household_chat(owner_uid, session_id, topic_slug)
         effort = (
@@ -5621,7 +5673,7 @@ def build_app(
             else reasoning.choose_effort(
                 text,
                 selector=body.get("reasoning"),
-                admin=is_admin(request, remote_groups_header, admin_group),
+                admin=admin,
                 pref=other_model_pref,
             )
         )
@@ -5653,7 +5705,7 @@ def build_app(
                     ephemeral,
                     client,
                 )
-                owner_uid = effective_uid(uid, session_id)
+                owner_uid = effective_uid(uid, session_id, admin=admin)
             elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     owner_uid, session_id, client
@@ -5716,7 +5768,10 @@ def build_app(
         # The shared Zuhause is owned by default_uid but any resident may act in
         # it (#649): owner_uid drives session routing/scope; the real `uid` stays
         # the typed turn's identity (timers/facts) via turn_uid below.
-        owner_uid = effective_uid(uid, session_id)
+        admin = is_admin(request, remote_groups_header, admin_group)
+        owner_uid = effective_uid(uid, session_id, admin=admin)
+        if session_id and not owns_session(owner_uid, session_id):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         # Household ("Zuhause") turns are fast-only: never think, never escalate.
         household = is_household_chat(owner_uid, session_id, topic_slug)
         effort = (
@@ -5725,7 +5780,7 @@ def build_app(
             else reasoning.choose_effort(
                 text,
                 selector=body.get("reasoning"),
-                admin=is_admin(request, remote_groups_header, admin_group),
+                admin=admin,
                 pref=other_model_pref,
             )
         )
@@ -5775,7 +5830,7 @@ def build_app(
                     ephemeral,
                     client,
                 )
-                owner_uid = effective_uid(uid, session_id)
+                owner_uid = effective_uid(uid, session_id, admin=admin)
             elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     owner_uid, session_id, client
