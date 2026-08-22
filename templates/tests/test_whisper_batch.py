@@ -478,6 +478,21 @@ def test_it_refuses_to_listen_without_a_recordings_root(pd, tmp_path, monkeypatc
     assert mod.main() == 1
 
 
+def test_the_endpoint_listens_on_loopback_only(pd, tmp_path, monkeypatch):
+    # The container runs on the host network, so a wildcard bind hands the
+    # whole LAN an endpoint that transcribes the household's session
+    # recordings. Box-observed once the unit was finally running: `ss -lntp`
+    # showed `0.0.0.0:10301` next to whisper's `127.0.0.1:10300`.
+    monkeypatch.setenv("WHISPER_BATCH_ROOT", str(tmp_path))
+    monkeypatch.setenv("WHISPER_BATCH_PORT", "0")
+    mod = _module(pd, tmp_path, monkeypatch)
+    server = mod.serve()
+    try:
+        assert server.server_address[0] == "127.0.0.1"
+    finally:
+        server.server_close()
+
+
 def test_a_healthy_start_loads_the_model_on_cuda_and_serves(
     pd, tmp_path, monkeypatch, capsys
 ):
