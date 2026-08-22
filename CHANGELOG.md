@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.39.5](https://github.com/mdopp/solarisbay/compare/v0.39.4...v0.39.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **template:** bind the batch transcription endpoint to loopback ([73aef96](https://github.com/mdopp/solarisbay/commit/73aef969195e455b66b11be065a7f1b99551ab7a))
+* **template:** bind the batch transcription endpoint to loopback ([aa72ea5](https://github.com/mdopp/solarisbay/commit/aa72ea5469192ca983a66b8f14b996c19e046ef8))
+* **template:** remember the batch-whisper switch across deploys ([0578ac8](https://github.com/mdopp/solarisbay/commit/0578ac833072a6bdec6e76e6ec1fab89fd7e2ec2))
+* **template:** remember the batch-whisper switch across deploys ([002f635](https://github.com/mdopp/solarisbay/commit/002f63535c01a74ea558c88469d60b08059e44c5)), closes [#1200](https://github.com/mdopp/solarisbay/issues/1200)
+
 ## [0.39.4](https://github.com/mdopp/solarisbay/compare/v0.39.3...v0.39.4) (2026-08-18)
 
 
