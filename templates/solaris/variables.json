@@ -339,11 +339,12 @@
   },
   "WHISPER_BATCH_ENABLED": {
     "type": "select",
-    "default": "false",
+    "default": "unchanged",
     "options": [
+      "unchanged",
       "true",
       "false"
     ],
-    "description": "Stapel-Verschriftung (#1161): stellt einen ZWEITEN Whisper-Container auf der Grafikkarte bereit, der unter POST :10301 /transcribe zu einer Aufnahmedatei zeitgestempelte Abschnitte liefert — fuer stundenlange Mitschnitte, nicht fuer Sprachbefehle. Gemessen: large-v3-turbo braucht 2221 MiB VRAM und einen CPU-Kern, eine Vier-Stunden-Spur ~10 min, und der Haushalts-Sprachpfad wird dabei rund 3 s langsamer. Der Container laeuft nur, wenn es auf der Box eine CDI-GPU UND das Aufnahmeverzeichnis gibt; die Aufnahmen werden nur lesend eingehaengt. Auf `false` zurueckstellen entfernt die Unit wieder von der Box — nicht nur aus der naechsten Installation. Standardmaessig aus: nur einschalten, solange wirklich verschriftet wird."
+    "description": "Stapel-Verschriftung (#1161): stellt einen ZWEITEN Whisper-Container auf der Grafikkarte bereit, der unter POST :10301 /transcribe zu einer Aufnahmedatei zeitgestempelte Abschnitte liefert — fuer stundenlange Mitschnitte, nicht fuer Sprachbefehle. Gemessen: large-v3-turbo braucht 2221 MiB VRAM und einen CPU-Kern, eine Vier-Stunden-Spur ~10 min, und der Haushalts-Sprachpfad wird dabei rund 3 s langsamer. Der Container laeuft nur, wenn es auf der Box eine CDI-GPU UND das Aufnahmeverzeichnis gibt; die Aufnahmen werden nur lesend eingehaengt. `true` schaltet ihn ein, `false` entfernt die Unit wieder von der Box — nicht nur aus der naechsten Installation. `unchanged` (Vorgabe) laesst die Box so, wie sie zuletzt eingestellt wurde: ServiceBay merkt sich Template-Variablen nicht, und ohne dieses Gedaechtnis haette die naechste Installation ein eingeschaltetes `true` wieder abgeraeumt. Auf einer frisch installierten Box ist die Stapel-Verschriftung aus."
   }
 }

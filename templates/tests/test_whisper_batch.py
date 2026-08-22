@@ -117,7 +117,7 @@ def test_batch_run_script_derives_the_cuda_library_path(pd):
 def _install(pd, monkeypatch, tmp_path, enabled="true", gpu=True, recordings=True):
     root = tmp_path / "recordings"
     if recordings:
-        root.mkdir()
+        root.mkdir(exist_ok=True)
     installed, removed = {}, []
     monkeypatch.setattr(pd, "cdi_available", lambda: gpu)
     monkeypatch.setattr(
@@ -219,13 +219,50 @@ def test_remove_unit_is_a_noop_when_there_is_nothing_to_remove(
     assert pd.remove_unit("solaris-whisper-batch") is True
 
 
-def test_the_toggle_is_an_operator_variable_defaulting_to_off(pd):
+def test_the_toggle_is_an_operator_variable_defaulting_to_unchanged(pd):
     variables = json.loads(
         (TEMPLATES / "solaris" / "variables.json").read_text(encoding="utf-8")
     )
     toggle = variables["WHISPER_BATCH_ENABLED"]
-    assert toggle["default"] == "false"
-    assert sorted(toggle["options"]) == ["false", "true"]
+    # Not `false`: ServiceBay keeps no per-template variable, so a default that
+    # means "off" is re-applied by every later deploy (#1200).
+    assert toggle["default"] == "unchanged"
+    assert sorted(toggle["options"]) == ["false", "true", "unchanged"]
+
+
+def test_a_yes_survives_the_next_deploy_that_passes_no_variable(
+    pd, monkeypatch, tmp_path
+):
+    # The regression that took the accepted #1161 container off the box: the
+    # install that turns it on carries the variable, every deploy after it does
+    # not — and the "no" path removes the unit rather than skipping it.
+    result, installed, removed = _install(pd, monkeypatch, tmp_path)
+    assert result is True and removed == []
+    result, installed, removed = _install(
+        pd, monkeypatch, tmp_path, enabled="unchanged"
+    )
+    assert result is True
+    assert installed["unit"] == "solaris-whisper-batch"
+    assert removed == []
+
+
+def test_an_explicit_no_is_remembered_too(pd, monkeypatch, tmp_path):
+    _install(pd, monkeypatch, tmp_path)
+    result, _, removed = _install(pd, monkeypatch, tmp_path, enabled="false")
+    assert result is False and removed == ["solaris-whisper-batch"]
+    result, installed, removed = _install(
+        pd, monkeypatch, tmp_path, enabled="unchanged"
+    )
+    assert result is False and installed == {}
+    assert removed == ["solaris-whisper-batch"]
+
+
+def test_an_unset_box_stays_off(pd, monkeypatch, tmp_path):
+    result, installed, removed = _install(
+        pd, monkeypatch, tmp_path, enabled="unchanged"
+    )
+    assert result is False and installed == {}
+    assert removed == ["solaris-whisper-batch"]
 
 
 # -- the service module -------------------------------------------------------

@@ -411,6 +411,10 @@ WHISPER_BATCH_COMPUTE = "float16"
 # and only when the directory is actually there.
 WHISPER_RECORDINGS_ROOT = "/mnt/data/stacks/daggerheart-aufnahmen"
 WHISPER_BATCH_FILE = "whisper_batch.py"
+WHISPER_BATCH_FLAG_FILE = ".whisper-batch-enabled"
+# The tokens that count as the operator having decided. Anything else (the
+# `unchanged` default, an empty value) means "keep what the box has".
+WHISPER_BATCH_CHOICES = {"1", "true", "yes", "on", "0", "false", "no", "off"}
 
 WHISPER_BATCH_RUN_SCRIPT = (
     """#!/command/with-contenv bash
@@ -1657,6 +1661,37 @@ def install_whisper_unit(data_dir: str) -> bool:
     )
 
 
+def _whisper_batch_enabled(data_dir: str) -> bool:
+    """The operator's on/off choice, persisted at
+    <data_dir>/solarisbay/.whisper-batch-enabled.
+
+    ServiceBay keeps no per-template variable between installs, so a later
+    deploy resolves WHISPER_BATCH_ENABLED to the template default and the
+    previous "yes" is undone: box-observed on 2026-08-18, seven deploys each
+    logging `whisper-batch: disabled by variable`, which took the accepted
+    #1161 container off the box. So an explicit true/false is remembered (same
+    pattern as the household calendar uid, #1011) and the `unchanged` default
+    leaves the box as the operator last set it. Off until someone says yes."""
+    path = os.path.join(data_dir, "solarisbay", WHISPER_BATCH_FLAG_FILE)
+    choice = env("WHISPER_BATCH_ENABLED").strip().lower()
+    if choice in WHISPER_BATCH_CHOICES:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(choice + "\n")
+            os.chmod(path, 0o600)
+        except OSError as e:
+            jlog("warn", "voice-unit", "whisper-batch: could not persist", error=str(e))
+        return _truthy(choice)
+    try:
+        with open(path, encoding="utf-8") as f:
+            remembered = f.read().strip()
+    except OSError:
+        return False
+    jlog("info", "voice-unit", "whisper-batch: remembered choice", choice=remembered)
+    return _truthy(remembered)
+
+
 def install_whisper_batch_unit(data_dir: str) -> bool:
     """Write + activate the batch-transcription Quadlet — or take it off the box.
 
@@ -1665,7 +1700,7 @@ def install_whisper_batch_unit(data_dir: str) -> bool:
     operator who sets WHISPER_BATCH_ENABLED back to false means the container is
     gone, not that the next deploy leaves yesterday's one running."""
     recordings = env("WHISPER_BATCH_ROOT", WHISPER_RECORDINGS_ROOT)
-    if not _truthy(env("WHISPER_BATCH_ENABLED", "false")):
+    if not _whisper_batch_enabled(data_dir):
         skip = "disabled by variable"
     elif not cdi_available():
         skip = "no CDI GPU"
