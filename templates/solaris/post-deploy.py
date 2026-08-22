@@ -592,7 +592,11 @@ class SegmentHandler(BaseHTTPRequestHandler):
 
 
 def serve():
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), SegmentHandler)
+    # Loopback, not 0.0.0.0: the container is on the host network, so a
+    # wildcard bind puts an endpoint that reads the household's session
+    # recordings on the LAN (#1196, same fixup as Kokoro and the whisper
+    # Wyoming port). Its one caller is on this box.
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), SegmentHandler)
     server.daemon_threads = True
     _loaded["server"] = server
     return server
