@@ -268,22 +268,29 @@ def test_an_unset_box_stays_off(pd, monkeypatch, tmp_path):
 # -- the service module -------------------------------------------------------
 
 
-def _stub_faster_whisper(root, hotwords=True, segment_fields=("start", "end", "text")):
+def _stub_faster_whisper(
+    root, hotwords=True, vad=True, segment_fields=("start", "end", "text")
+):
     """A minimal on-disk stand-in for faster-whisper.
 
     On disk, not in memory: the startup assertion reads the model class with
     `inspect.getsource`, so a class conjured by `exec` would not exercise it.
     The token budget mirrors the box — max_length 448 → 223 tokens, and every
-    whitespace-separated chunk costs 3, the measured cost of a fantasy name."""
+    whitespace-separated chunk costs 3, the measured cost of a fantasy name.
+    A stubbed run is 90 s of audio of which 60 s are silence."""
     fields = "".join(f"    {name}: float\n" for name in segment_fields)
-    signature = (
-        "audio, language=None, beam_size=1, hotwords=None"
-        if hotwords
-        else "audio, language=None, beam_size=1"
-    )
+    signature = "audio, language=None, beam_size=1"
+    if hotwords:
+        signature += ", hotwords=None"
+    if vad:
+        signature += ", vad_filter=False, vad_parameters=None"
     (root / "faster_whisper").mkdir(parents=True)
     (root / "faster_whisper" / "__init__.py").write_text(
-        "from faster_whisper.transcribe import Segment, WhisperModel  # noqa: F401\n\n"
+        "from faster_whisper.transcribe import (  # noqa: F401\n"
+        "    Segment,\n"
+        "    TranscriptionInfo,\n"
+        "    WhisperModel,\n"
+        ")\n\n"
         '__version__ = "1.2.1"\n'
     )
     (root / "faster_whisper" / "transcribe.py").write_text(
@@ -293,6 +300,10 @@ def _stub_faster_whisper(root, hotwords=True, segment_fields=("start", "end", "t
         "class Segment:\n"
         f"{fields}"
         "\n\n"
+        "@dataclasses.dataclass\n"
+        "class TranscriptionInfo:\n"
+        "    duration: float\n"
+        "    duration_after_vad: float\n\n\n"
         "class _Encoding:\n"
         "    def __init__(self, ids):\n"
         "        self.ids = ids\n\n\n"
@@ -304,12 +315,16 @@ def _stub_faster_whisper(root, hotwords=True, segment_fields=("start", "end", "t
         "        self.max_length = 448\n"
         "        self.hf_tokenizer = HfTokenizer()\n\n"
         f"    def transcribe(self, {signature}):\n"
+        "        filtered = bool(locals().get('vad_filter'))\n"
         "        CALLS.append(dict(audio=audio, language=language,\n"
         "                          beam_size=beam_size,\n"
-        "                          hotwords=locals().get('hotwords')))\n"
+        "                          hotwords=locals().get('hotwords'),\n"
+        "                          vad_filter=locals().get('vad_filter'),\n"
+        "                          vad_parameters=locals().get('vad_parameters')))\n"
         "        segments = [Segment(i * 30.0, i * 30.0 + 29.0, 'text %d' % i)\n"
         "                    for i in range(3)]\n"
-        "        return iter(segments), dict(duration=90.0)\n"
+        "        return iter(segments), TranscriptionInfo(90.0,\n"
+        "                                                30.0 if filtered else 90.0)\n"
     )
 
 
@@ -431,6 +446,84 @@ def test_no_hotwords_leaves_them_unset(pd, tmp_path, monkeypatch):
 
     assert stub.CALLS[-1]["hotwords"] is None
     mod._loaded["server"].shutdown()
+
+
+# -- silence must not be decoded into the name register (#1204) ---------------
+#
+# On a per-speaker track most of a session is the other four talking, and
+# hotwords prime the decoder to emit the round's register when it hears nothing.
+# The caller cannot tell an invented name from a spoken one — only this side
+# sees the audio. Box-measured on 60 s of digital silence with 50 hotwords: two
+# invented segments without the filter, none with it.
+
+
+def test_silence_detection_is_on_for_a_caller_that_asks_for_nothing(
+    pd, tmp_path, monkeypatch
+):
+    # foundry-chronicle was written before this field existed and sends no
+    # `vad`; the default is what actually fixes its transcripts.
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    status, body = _post(port, {"path": str(recordings / "chunk-02.wav")})
+    assert status == 200
+    assert body["vad"] is True
+    import faster_whisper.transcribe as stub
+
+    assert stub.CALLS[-1]["vad_filter"] is True
+    assert stub.CALLS[-1]["vad_parameters"] == mod.VAD_PARAMETERS
+    mod._loaded["server"].shutdown()
+
+
+def test_a_caller_can_switch_the_silence_detection_off(pd, tmp_path, monkeypatch):
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    status, body = _post(port, {"path": str(recordings / "chunk-02.wav"), "vad": False})
+    assert status == 200
+    assert body["vad"] is False
+    assert body["silence_dropped_seconds"] == 0.0
+    import faster_whisper.transcribe as stub
+
+    assert stub.CALLS[-1]["vad_filter"] is False
+    mod._loaded["server"].shutdown()
+
+
+def test_the_response_says_how_much_audio_was_discarded_as_silence(
+    pd, tmp_path, monkeypatch
+):
+    # The point of the field: without a number the caller has to trust that the
+    # filter ran at all. 90 s in, 30 s of speech out ⇒ 60 s discarded.
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    status, body = _post(port, {"path": str(recordings / "chunk-02.wav")})
+    assert status == 200
+    assert body["audio_seconds"] == 90.0
+    assert body["silence_dropped_seconds"] == 60.0
+    # Additive only — foundry-chronicle is live against this response shape.
+    assert body["hotwords_dropped_count"] == 0 and body["hotwords_dropped"] == []
+    assert body["segments"][0] == {"start": 0.0, "end": 29.0, "text": "text 0"}
+    mod._loaded["server"].shutdown()
+
+
+def test_the_vad_thresholds_stay_at_the_values_measured_for_a_table(
+    pd, tmp_path, monkeypatch
+):
+    # The opposite failure is worse than the one being fixed: a tighter VAD
+    # clips the quiet start of a sentence at a table of six. Same reasoning as
+    # the household unit's (#1158), pinned here because the response hands the
+    # caller a figure these values decide and the image auto-updates.
+    mod = _module(pd, tmp_path, monkeypatch)
+    assert mod.VAD_PARAMETERS == {
+        "threshold": 0.5,
+        "min_silence_duration_ms": 2000,
+        "speech_pad_ms": 400,
+    }
+
+
+def test_it_refuses_to_start_when_the_silence_filter_left_the_model(
+    pd, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("WHISPER_BATCH_ROOT", str(tmp_path))
+    monkeypatch.setenv("WHISPER_BATCH_PORT", "10301")
+    mod = _module(pd, tmp_path, monkeypatch, vad=False)
+    assert mod.main() == 1
+    assert "takes no vad_filter" in capsys.readouterr().err
 
 
 def test_the_access_log_names_no_path_and_no_transcript(
