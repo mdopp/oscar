@@ -38,6 +38,7 @@ from pathlib import Path
 
 CACHE_DEFAULT = ".claude/state/autoloop-cache.json"
 NOTES_CAP = 15  # run-scoped scratch ring; durable history lives in git + issues
+TEXT_MAX = 2000  # free-text bound (note / verify detail) — room for a full checklist
 LOCK_STALE_S = 600  # a lock older than this is treated as abandoned
 CACHE_VERSION = 3
 
@@ -119,6 +120,13 @@ class Cache:
             "lock": None,  # {pid, since}
             "last_invocation": None,
         }
+
+
+def _clip(text: str, limit: int = TEXT_MAX) -> str:
+    """Bound free text, never silently — a clipped checklist must read as clipped."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [clipped, {len(text) - limit} chars dropped]"
 
 
 def prune_state(d: dict) -> dict:
@@ -333,7 +341,9 @@ def v_verify_set(c: Cache, a) -> None:
     # owed->verifying hop carries it to the Verify agent. Only an explicit
     # --detail replaces it, and only for the same sha (a new sha's detail is
     # about different changes).
-    detail = a.detail or (prev.get("detail", "") if prev.get("sha") == a.sha else "")
+    detail = _clip(a.detail) or (
+        prev.get("detail", "") if prev.get("sha") == a.sha else ""
+    )
     d["verify"] = {
         "sha": a.sha,
         "status": a.status,
@@ -377,7 +387,7 @@ def v_verify_get(c: Cache, a) -> None:
 
 def v_note(c: Cache, a) -> None:
     d = c.load()
-    d["notes"].append({"note": a.text[:280], "since": int(time.time())})
+    d["notes"].append({"note": _clip(a.text), "since": int(time.time())})
     c.save(d)  # prune_state caps the ring
     print(f"noted ({len(d['notes'])}/{NOTES_CAP})")
 
@@ -533,6 +543,27 @@ def v_selftest(c: Cache, a) -> None:
             d["notes"] = [{"note": str(i), "since": i} for i in range(NOTES_CAP + 20)]
             self.c.save(d)
             self.assertEqual(len(self.c.load()["notes"]), NOTES_CAP)
+
+        def test_note_keeps_a_full_checklist(self):
+            checklist = "step; " * 80  # 480 chars — the length that used to be cut
+            self._run(v_note, text=checklist)
+            self.assertEqual(self.c.load()["notes"][-1]["note"], checklist)
+
+        def test_note_marks_what_it_dropped(self):
+            self._run(v_note, text="x" * (TEXT_MAX + 37))
+            note = self.c.load()["notes"][-1]["note"]
+            self.assertIn("37 chars dropped", note)
+            self.assertTrue(note.startswith("x" * TEXT_MAX))
+
+        def test_verify_detail_marks_what_it_dropped(self):
+            self._run(
+                v_verify_set,
+                sha="abc",
+                status="owed",
+                detail="y" * (TEXT_MAX + 5),
+                pr=None,
+            )
+            self.assertIn("5 chars dropped", self.c.load()["verify"]["detail"])
 
         def test_done_units_dropped(self):
             d = self.c.load()
