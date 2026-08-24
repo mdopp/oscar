@@ -4053,14 +4053,35 @@ def _assign_pe_pipeline(token: str) -> None:
     status, states = _ha_get("/api/states", token)
     if status != 200 or not isinstance(states, list):
         return
-    selects = [
-        str(s.get("entity_id"))
+    candidates = [
+        s
         for s in states
         if isinstance(s, dict)
         and str(s.get("entity_id") or "").startswith("select.")
         and "voice" in str(s.get("entity_id"))
         and "assist" in str(s.get("entity_id"))
     ]
+    # The name pattern also catches the PE's acoustics knobs — end-of-speech
+    # detection ("Sprechpausen-Erkennung") and wake-word sensitivity — which
+    # cannot take a pipeline name and returned HTTP 500 on every deploy
+    # (#1208). Those are per-room tuning Solaris has no better answer for than
+    # the device default, so they stay at it, deliberately. The options a
+    # select offers is the honest test of whether it accepts the pipeline.
+    selects, skipped = [], []
+    for s in candidates:
+        entity = str(s.get("entity_id"))
+        options = (s.get("attributes") or {}).get("options")
+        if isinstance(options, list) and PIPELINE_NAME in options:
+            selects.append(entity)
+        else:
+            skipped.append(entity)
+    if skipped:
+        jlog(
+            "info",
+            "voice",
+            "PE selects left at their defaults — no Solaris option",
+            entities=",".join(sorted(skipped)),
+        )
     if not selects:
         jlog("info", "voice", "no PE pipeline select entity found — skipping assign")
         return
@@ -4088,7 +4109,12 @@ def wire_voice_pipeline(
         jlog("info", "voice", "no HA token — skipping voice pipeline wiring")
         return
     ensure_wyoming_entry(token, "whisper", "127.0.0.1", 10300)
-    ensure_wyoming_entry(token, "piper", "127.0.0.1", 10200)
+    # Solaris ships no piper — TTS is Kokoro/Martin on :10203 (#1207). A box
+    # that still runs one from elsewhere keeps its entry; an absent one is not
+    # a failure, so probe before registering instead of logging a red line on
+    # every deploy.
+    if _port_open("127.0.0.1", 10200):
+        ensure_wyoming_entry(token, "piper", "127.0.0.1", 10200)
     # Solaris's Martin voice (servicebay#1815): the wyoming_openai bridge only
     # runs on GPU boxes — register it when it listens, skip silently when not.
     if _port_open("127.0.0.1", 10203):
