@@ -457,7 +457,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import faster_whisper
-from faster_whisper.transcribe import Segment
+from faster_whisper.transcribe import Segment, TranscriptionInfo
 
 ROOT = os.environ.get("WHISPER_BATCH_ROOT", "")
 PORT = int(os.environ.get("WHISPER_BATCH_PORT") or 0)
@@ -465,6 +465,20 @@ MODEL = os.environ.get("WHISPER_BATCH_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("WHISPER_BATCH_COMPUTE", "float16")
 BEAM = int(os.environ.get("WHISPER_BATCH_BEAM") or 1)
 CACHE = os.environ.get("WHISPER_BATCH_CACHE", "/config")
+
+# Silero's knobs for a table of people talking for tens of minutes (#1204).
+# These are faster-whisper 1.2.1's own defaults, pinned rather than inherited:
+# the image carries AutoUpdate=registry, and the response now hands the caller a
+# silence figure these three values decide. They are also the three that decide
+# whether a quiet sentence survives, so none of them is tightened - 0.5 keeps a
+# player speaking away from the microphone, 2000 ms means only a real pause is
+# cut and never a breath mid-sentence, and the 400 ms pad keeps the soft onset
+# of the word that ends the pause.
+VAD_PARAMETERS = {
+    "threshold": 0.5,
+    "min_silence_duration_ms": 2000,
+    "speech_pad_ms": 400,
+}
 
 _loaded = {}
 
@@ -474,11 +488,16 @@ def shape_problem():
 
     The image carries AutoUpdate=registry, so faster-whisper moves under us
     unattended. Both things asserted here are load-bearing for a caller who
-    would otherwise notice weeks later: the hotword budget report, and the
-    per-segment timestamps a second project stores as its own ms columns."""
+    would otherwise notice weeks later: the hotword budget report, the silence
+    detection and the figure it reports, and the per-segment timestamps a second
+    project stores as its own ms columns."""
     params = inspect.signature(faster_whisper.WhisperModel.transcribe).parameters
-    if "hotwords" not in params:
-        return "faster_whisper.WhisperModel.transcribe takes no hotwords"
+    for needed in ("hotwords", "vad_filter", "vad_parameters"):
+        if needed not in params:
+            return f"faster_whisper.WhisperModel.transcribe takes no {needed}"
+    info = {f.name for f in dataclasses.fields(TranscriptionInfo)}
+    if not {"duration", "duration_after_vad"} <= info:
+        return "faster_whisper TranscriptionInfo no longer reports duration_after_vad"
     source = inspect.getsource(faster_whisper.WhisperModel)
     for needed in ("self.max_length", "self.hf_tokenizer"):
         if needed not in source:
@@ -524,24 +543,37 @@ def resolve_path(candidate):
     return full if os.path.isfile(full) else ""
 
 
-def transcribe_file(model, path, language, hotwords):
-    """Segments for ONE submitted file, timed relative to THAT file.
+def transcribe_file(model, path, language, hotwords, vad):
+    """Segments for ONE submitted file, timed relative to THAT file, and how
+    much of it the silence detection dropped.
 
     Stateless on purpose: the caller splits a session into 10-30 min chunks and
     adds each chunk's own offset. A service that invented an offset here would
     stack all five speaker tracks at the session start, and that is only noticed
-    in the finished protocol - by which time the recording is seven days gone."""
-    segments, _info = model.transcribe(
+    in the finished protocol - by which time the recording is seven days gone.
+
+    Silence is dropped before the decoder sees it (#1204). Hotwords prime the
+    decoder to emit the round's name register when it hears nothing, and on a
+    per-speaker track most of a session IS nothing - the other four talking.
+    The caller cannot tell an invented name from a spoken one; only this side
+    sees the audio, so the cut happens here and the amount is reported."""
+    segments, info = model.transcribe(
         path,
         language=language,
         beam_size=BEAM,
         hotwords=", ".join(hotwords) or None,
+        vad_filter=vad,
+        vad_parameters=VAD_PARAMETERS,
     )
-    return [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+    return (
+        [{"start": s.start, "end": s.end, "text": s.text} for s in segments],
+        round(info.duration, 3),
+        round(info.duration - info.duration_after_vad, 3),
+    )
 
 
 class SegmentHandler(BaseHTTPRequestHandler):
-    """POST /transcribe {"path": ..., "language": ..., "hotwords": [...]}."""
+    """POST /transcribe {"path", "language", "hotwords": [...], "vad": true}."""
 
     protocol_version = "HTTP/1.1"
 
@@ -565,8 +597,13 @@ class SegmentHandler(BaseHTTPRequestHandler):
             return
         words = [w for w in (str(x).strip() for x in request.get("hotwords") or []) if w]
         kept, dropped = fit_hotwords(model, words)
+        # Default ON: a caller that sends nothing - every caller written before
+        # this field existed - gets the silence detection, not the old behaviour.
+        vad = bool(request.get("vad", True))
         try:
-            segments = transcribe_file(model, path, request.get("language"), kept)
+            segments, audio, silence = transcribe_file(
+                model, path, request.get("language"), kept, vad
+            )
         except Exception as e:  # one bad file must not take the service down
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
@@ -576,6 +613,9 @@ class SegmentHandler(BaseHTTPRequestHandler):
                 "segments": segments,
                 "hotwords_dropped_count": len(dropped),
                 "hotwords_dropped": dropped,
+                "vad": vad,
+                "audio_seconds": audio,
+                "silence_dropped_seconds": silence,
             },
         )
 

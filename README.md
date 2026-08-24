@@ -101,6 +101,11 @@ is headed — zones, ADRs and the V1 backlog — is
   adopts the HA token, wires the **voice pipeline** (wyoming whisper/piper,
   the Solaris conversation agent, the Assist pipeline on the Voice PE) and
   mints the `servicebay_admin` MCP token.
+- **Batch transcription** (optional, `WHISPER_BATCH_ENABLED`) — a second
+  whisper container on the GPU serving timestamped segments for hours-long
+  recordings at `POST 127.0.0.1:10301/transcribe`. Its endpoint contract —
+  including the default-on silence detection and the discarded-silence figure it
+  reports — is [whisper-batch-api.md](docs/features/whisper-batch-api.md).
 - **Solaris stack** (`stacks/solarisbay/stack.yml`) — bundles the two
   templates so a ServiceBay operator can install with one click.
 - **Voice gatekeeper image source** (`voice-gatekeeper/`) — Python
