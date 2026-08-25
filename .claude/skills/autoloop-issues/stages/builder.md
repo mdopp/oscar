@@ -50,7 +50,9 @@ Solaris touches biometric speaker-ID, per-resident privacy, and gateway/HA crede
 ```bash
 git checkout main && git pull --ff-only && git checkout -b sec/issue-<N>-<slug>
 ```
-implement → fast gate → commit `Closes #<N>` → push → `gh pr create --draft` with a full body (What/Why/Risk/Rollback/Verification). Then `queue.py park <issue> review --comment "drafted #<pr> — <one-line flag>"` (labels `autoloop:review`, the durable pre-merge worklist) and **return — do not merge.** The loop never merges a draft; a human reviews and merges it. (More than 3 such drafts accumulating without review is orchestrator hard-exit #2.)
+implement → fast gate → commit `Closes #<N>` → push → `gh pr create --draft` with a full body (What/Why/Risk/Rollback/Verification). Then `queue.py park <issue> review --comment "drafted #<pr> — <one-line flag>"` (labels `autoloop:review`) and **return without merging** — *you*, the builder, never merge a draft.
+
+**But the draft is not the end of the work.** The orchestrator asks the operator about open drafts (checkpoint 2 in `SKILL.md`) and then dispatches a seal for the approved ones. So write the PR body for a reader who has been away for weeks and will answer a yes/no question about it: lead with the **real-world effect** ("Solaris may unlock the front door; every unlock asks for confirmation first"), not the diff. Give the orchestrator one plain sentence it can quote in that question.
 
 ### Lint-sweep unit
 Implement the one file/rule named. Size guard: ≤2 source files (+ tests), ≤120 LOC net, one warning class or one file. If even a bite-size fix won't fit → `queue.py park <issue> blocked --comment "<why>"` and return. Lint-sweep commits ride the batch branch (no `Closes #`); `queue.py note "lint-sweep: <file> <rule>"` at seal.
