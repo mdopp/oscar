@@ -240,7 +240,9 @@ export LD_LIBRARY_PATH="${cuda_lib_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 # drift has to be mirrored here by hand. Since #1157 the script launches the hint
 # wrapper below instead of `python3 -m wyoming_faster_whisper`; the wrapper runs
 # the stock server, so every flag — `--device cuda` included — still means what
-# upstream says it means.
+# upstream says it means. It also checks these flags against the installed CLI
+# before handing them over and drops the ones it no longer accepts (#1210), so
+# mirroring drift late costs a feature, not the household's STT.
 #
 # `--vad-filter` (#1158) is the other half of the prompt: priming the decoder on
 # the household's proper nouns also teaches it to emit them when it hears nothing,
@@ -310,6 +312,7 @@ WHISPER_HINTS_MODULE = '''"""Per-request word hints for wyoming-faster-whisper (
 
 import dataclasses
 import inspect
+import pathlib
 import sys
 
 from wyoming.asr import Transcribe
@@ -350,6 +353,47 @@ async def handle_event(self, event):
     return await _stock_handle_event(self, event)
 
 
+def cli_source():
+    """Every .py of the installed server package, or "" when unreadable."""
+    try:
+        root = pathlib.Path(inspect.getfile(stock)).resolve().parent
+    except TypeError:
+        return ""
+    parts = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            parts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+    return "".join(parts)
+
+
+def prune_unknown_flags(argv, source):
+    """(argv the installed CLI still accepts, flags dropped from it).
+
+    A flag no source file of the installed package names is dropped together
+    with its value: argparse would exit 2 on it and take STT down with it."""
+    if not source:
+        return list(argv), []
+    kept, dropped, skip_value = [], [], False
+    for i, arg in enumerate(argv):
+        if skip_value:
+            skip_value = False
+            continue
+        name = arg.split("=", 1)[0]
+        quoted = ('"' + name + '"', "'" + name + "'")
+        if name.startswith("--") and not any(q in source for q in quoted):
+            dropped.append(name)
+            skip_value = (
+                "=" not in arg
+                and i + 1 < len(argv)
+                and not argv[i + 1].startswith("-")
+            )
+            continue
+        kept.append(arg)
+    return kept, dropped
+
+
 async def _initial_prompt(self, *args, **kwargs):
     prompt = await _stock_initial_prompt(self, *args, **kwargs)
     words = getattr(self, "_solaris_words", None)
@@ -360,6 +404,19 @@ async def _initial_prompt(self, *args, **kwargs):
 
 
 def main():
+    argv, dropped = prune_unknown_flags(sys.argv[1:], cli_source())
+    if dropped:
+        # The mounted run script spells upstream's flags out verbatim and the
+        # image auto-updates, so a flag upstream drops would make argparse exit
+        # 2 before the server ever binds. Dropping it costs what that flag
+        # bought; refusing to start costs the household its STT (#1210).
+        sys.stderr.write(
+            f"solaris-whisper-flags: {' '.join(dropped)} NOT accepted by "
+            f"wyoming-faster-whisper {__version__} - dropped so STT still "
+            "starts. The mounted s6 run script has to be updated for this "
+            "image (solarisbay#1210).\\n"
+        )
+        sys.argv[1:] = argv
     problem = shape_problem()
     if problem:
         # Degraded, never dead: the household keeps its speech-to-text and only
@@ -3996,14 +4053,35 @@ def _assign_pe_pipeline(token: str) -> None:
     status, states = _ha_get("/api/states", token)
     if status != 200 or not isinstance(states, list):
         return
-    selects = [
-        str(s.get("entity_id"))
+    candidates = [
+        s
         for s in states
         if isinstance(s, dict)
         and str(s.get("entity_id") or "").startswith("select.")
         and "voice" in str(s.get("entity_id"))
         and "assist" in str(s.get("entity_id"))
     ]
+    # The name pattern also catches the PE's acoustics knobs — end-of-speech
+    # detection ("Sprechpausen-Erkennung") and wake-word sensitivity — which
+    # cannot take a pipeline name and returned HTTP 500 on every deploy
+    # (#1208). Those are per-room tuning Solaris has no better answer for than
+    # the device default, so they stay at it, deliberately. The options a
+    # select offers is the honest test of whether it accepts the pipeline.
+    selects, skipped = [], []
+    for s in candidates:
+        entity = str(s.get("entity_id"))
+        options = (s.get("attributes") or {}).get("options")
+        if isinstance(options, list) and PIPELINE_NAME in options:
+            selects.append(entity)
+        else:
+            skipped.append(entity)
+    if skipped:
+        jlog(
+            "info",
+            "voice",
+            "PE selects left at their defaults — no Solaris option",
+            entities=",".join(sorted(skipped)),
+        )
     if not selects:
         jlog("info", "voice", "no PE pipeline select entity found — skipping assign")
         return
@@ -4031,7 +4109,12 @@ def wire_voice_pipeline(
         jlog("info", "voice", "no HA token — skipping voice pipeline wiring")
         return
     ensure_wyoming_entry(token, "whisper", "127.0.0.1", 10300)
-    ensure_wyoming_entry(token, "piper", "127.0.0.1", 10200)
+    # Solaris ships no piper — TTS is Kokoro/Martin on :10203 (#1207). A box
+    # that still runs one from elsewhere keeps its entry; an absent one is not
+    # a failure, so probe before registering instead of logging a red line on
+    # every deploy.
+    if _port_open("127.0.0.1", 10200):
+        ensure_wyoming_entry(token, "piper", "127.0.0.1", 10200)
     # Solaris's Martin voice (servicebay#1815): the wyoming_openai bridge only
     # runs on GPU boxes — register it when it listens, skip silently when not.
     if _port_open("127.0.0.1", 10203):

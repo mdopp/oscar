@@ -492,9 +492,9 @@ def test_wire_skips_without_token(pd, monkeypatch):
 def test_wire_skips_agent_when_engine_down(pd, monkeypatch):
     wired = []
     monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
-    # Isolate the optional-bridge probe (:10203 openai/Martin): unpatched it
-    # makes a real socket connect, so a host with that port up wires a third
-    # "openai" entry and the assert flakes local-vs-CI (#609).
+    # Isolate the optional-bridge probes (:10203 openai/Martin, :10200 piper):
+    # unpatched they make a real socket connect, so a host with those ports up
+    # wires extra entries and the assert flakes local-vs-CI (#609).
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: False)
     monkeypatch.setattr(
@@ -503,7 +503,7 @@ def test_wire_skips_agent_when_engine_down(pd, monkeypatch):
         lambda *a: pytest.fail("engine down — no agent"),
     )
     pd.wire_voice_pipeline("tok", "8787", "key")
-    assert wired == ["whisper", "piper"]
+    assert wired == ["whisper"]
 
 
 # -- #407: custom "Solaris" wake-word install + pipeline wiring ---------------
@@ -761,3 +761,92 @@ def test_wire_skips_openwakeword_integration_without_model(pd, monkeypatch):
     monkeypatch.setattr(pd, "ensure_assist_pipeline", lambda *a, **k: None)
     pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
     assert "openwakeword" not in wired
+
+
+# -- #1207/#1208: a deploy log with no red line to explain away ---------------
+
+
+def test_wire_skips_piper_when_nothing_listens_on_10200(pd, monkeypatch):
+    # Solaris ships no piper; registering one that isn't there logged a failed
+    # config-flow on every single deploy (#1207).
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: False)
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert "piper" not in wired
+
+
+def test_wire_registers_piper_when_10200_answers(pd, monkeypatch):
+    # A box that does run a piper elsewhere keeps its TTS entry.
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: port == 10200)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: False)
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert wired == ["whisper", "piper"]
+
+
+def _pe_states():
+    """The Voice PE's selects as HA reports them: two take the pipeline name,
+    two are acoustics knobs whose options are nothing of the sort (#1208)."""
+    return [
+        {
+            "entity_id": "select.wohnzimmer_voice_assistant_assistent",
+            "attributes": {"options": ["preferred", "Solaris"]},
+        },
+        {
+            "entity_id": "select.wohnzimmer_voice_assistant_wake_word",
+            "attributes": {"options": ["okay_nabu", "Solaris"]},
+        },
+        {
+            "entity_id": "select.wohnzimmer_voice_assistant_sprechpausen_erkennung",
+            "attributes": {"options": ["aggressive", "default", "relaxed"]},
+        },
+        {
+            "entity_id": "select.wohnzimmer_voice_assistant_wake_word_sensitivity",
+            "attributes": {"options": ["slightly_sensitive", "moderately_sensitive"]},
+        },
+    ]
+
+
+def test_assign_pe_pipeline_skips_selects_without_a_solaris_option(pd, monkeypatch):
+    posted = []
+    monkeypatch.setattr(
+        pd, "_ha_get", lambda path, token, timeout=10.0: (200, _pe_states())
+    )
+    monkeypatch.setattr(
+        pd,
+        "_ha_post",
+        lambda path, token, payload, timeout=30.0: (posted.append(payload), (200, {}))[
+            1
+        ],
+    )
+    pd._assign_pe_pipeline("tok")
+    assert [p["entity_id"] for p in posted] == [
+        "select.wohnzimmer_voice_assistant_assistent",
+        "select.wohnzimmer_voice_assistant_wake_word",
+    ]
+    assert all(p["option"] == "Solaris" for p in posted)
+
+
+def test_assign_pe_pipeline_needs_the_options_list_not_the_name(pd, monkeypatch):
+    # Name-pattern matching is what produced the HTTP 500s: a select whose
+    # entity_id looks right but which offers no Solaris option is left alone.
+    states = [
+        {
+            "entity_id": "select.wohnzimmer_voice_assistant_sprechpausen_erkennung",
+            "attributes": {"options": ["aggressive", "default"]},
+        }
+    ]
+    monkeypatch.setattr(pd, "_ha_get", lambda path, token, timeout=10.0: (200, states))
+    monkeypatch.setattr(
+        pd,
+        "_ha_post",
+        lambda *a, **k: pytest.fail(
+            "must not set a select that cannot take a pipeline"
+        ),
+    )
+    pd._assign_pe_pipeline("tok")

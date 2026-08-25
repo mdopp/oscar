@@ -19,12 +19,34 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import pathlib
+import re
 import subprocess
 import sys
 
 import pytest
 
 TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
+
+# What the mounted run script actually execs, values and all.
+ARGV = [
+    "--uri",
+    "tcp://127.0.0.1:10300",
+    "--model",
+    "medium-int8",
+    "--device",
+    "cuda",
+    "--beam-size",
+    "1",
+    "--language",
+    "de",
+    "--vad-filter",
+    "--data-dir",
+    "/config",
+    "--download-dir",
+    "/config",
+    "--initial-prompt",
+    "Geräte: Leselicht.",
+]
 
 STUB_MODULES = (
     "solaris_whisper_hints",
@@ -90,7 +112,12 @@ def _dispatch_handler_src(prompt_hook=True, sites=2):
     )
 
 
-def _stub_tree(root, hint_fields=True, **handler):
+def _run_script_flags(pd):
+    """The flags the mounted s6 run script hands the wrapper."""
+    return sorted(set(re.findall(r"--[a-z][a-z-]*", pd.WHISPER_RUN_SCRIPT)))
+
+
+def _stub_tree(root, hint_fields=True, flags=None, **handler):
     """A minimal on-disk stand-in for the image's wyoming + server packages.
 
     On disk, not in memory: the wrapper's shape assertion reads the handler with
@@ -140,8 +167,14 @@ def _stub_tree(root, hint_fields=True, **handler):
     (root / "wyoming_faster_whisper" / "__init__.py").write_text(
         '__version__ = "3.6.0"\n'
     )
+    # The wrapper reads the installed package's own source to learn which CLI
+    # flags it still accepts, so the stub has to name them the way upstream does.
+    cli = "".join(f'    parser.add_argument("{flag}")\n' for flag in flags or ())
     (root / "wyoming_faster_whisper" / "__main__.py").write_text(
-        "RAN = []\n\n\ndef run():\n    RAN.append(True)\n"
+        "import argparse\nimport sys\n\nRAN = []\nARGV = []\n\n\n"
+        f"def _parser():\n    parser = argparse.ArgumentParser()\n{cli}"
+        "    return parser\n\n\n"
+        "def run():\n    RAN.append(True)\n    ARGV.append(list(sys.argv[1:]))\n"
     )
     (root / "wyoming_faster_whisper" / "dispatch_handler.py").write_text(
         _dispatch_handler_src(**handler)
@@ -156,9 +189,11 @@ class _Loader:
         self.beam_size = 1
 
 
-def _wrapper(pd, tmp_path, monkeypatch, **stub):
+def _wrapper(pd, tmp_path, monkeypatch, argv=None, **stub):
+    stub.setdefault("flags", _run_script_flags(pd))
     _stub_tree(tmp_path, **stub)
     monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["/solaris_whisper_hints.py", *(argv or ARGV)])
     path = tmp_path / "solaris_whisper_hints.py"
     path.write_text(pd.WHISPER_HINTS_MODULE)
     spec = importlib.util.spec_from_file_location("solaris_whisper_hints", path)
@@ -327,6 +362,58 @@ def test_an_unknown_upstream_shape_still_starts_the_server(
     from wyoming_faster_whisper.__main__ import RAN
 
     assert RAN == [True]
+
+
+# -- upstream CLI flag drift (#1210) ------------------------------------------
+
+
+def _served_argv():
+    from wyoming_faster_whisper.__main__ import ARGV as SERVED
+
+    return SERVED[-1]
+
+
+def test_the_run_scripts_flags_reach_the_server_untouched(pd, tmp_path, monkeypatch):
+    mod = _wrapper(pd, tmp_path, monkeypatch)
+    assert mod.main() == 0
+    assert _served_argv() == ARGV
+
+
+def test_a_flag_upstream_dropped_does_not_take_stt_down(
+    pd, tmp_path, monkeypatch, capsys
+):
+    # #1210: the mounted run script spells upstream's flags out verbatim and the
+    # image carries AutoUpdate=registry, so a flag that goes away arrives
+    # unannounced — and argparse would exit 2 before the server ever binds.
+    known = [f for f in _run_script_flags(pd) if f != "--vad-filter"]
+    mod = _wrapper(pd, tmp_path, monkeypatch, flags=known)
+    assert mod.main() == 0
+    served = _served_argv()
+    assert "--vad-filter" not in served
+    assert served == [a for a in ARGV if a != "--vad-filter"]
+    err = capsys.readouterr().err
+    assert "solaris-whisper-flags: --vad-filter NOT accepted" in err
+    assert "STT still starts" in err
+    from wyoming_faster_whisper.__main__ import RAN
+
+    assert RAN == [True]
+
+
+def test_a_dropped_flag_takes_its_value_with_it(pd, tmp_path, monkeypatch):
+    # A value left behind would be read as a positional and fail just as hard.
+    known = [f for f in _run_script_flags(pd) if f != "--initial-prompt"]
+    mod = _wrapper(pd, tmp_path, monkeypatch, flags=known)
+    assert mod.main() == 0
+    assert _served_argv() == ARGV[: ARGV.index("--initial-prompt")]
+
+
+def test_an_unreadable_server_package_changes_nothing(pd, tmp_path, monkeypatch):
+    # No source to check against is not evidence a flag is gone — hand the
+    # invocation over as-is rather than guess it apart.
+    mod = _wrapper(pd, tmp_path, monkeypatch, flags=[])
+    monkeypatch.setattr(mod, "cli_source", lambda: "")
+    assert mod.main() == 0
+    assert _served_argv() == ARGV
 
 
 def test_a_degraded_start_leaves_the_prompt_alone(pd, tmp_path, monkeypatch):
