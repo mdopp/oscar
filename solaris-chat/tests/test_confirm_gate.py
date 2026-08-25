@@ -18,16 +18,18 @@ import time
 import pytest
 
 from solaris_chat.engine import areas as areas_mod
-from solaris_chat.engine import confirm
+from solaris_chat.engine import confirm, tasks
 from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ollama import ChatResult
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools import ha as ha_mod
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
+from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 from solaris_chat.engine.trace import TraceRecorder
 
 from tests.test_engine import _SCHEMA, _client  # shared schema + client harness
+from tests.test_tasks import _SCHEMA as _TASK_SCHEMA
 from tests.test_engine import FakeOllama
 
 
@@ -734,3 +736,121 @@ async def test_confirmation_inside_the_window_still_executes(db, soul, monkeypat
     _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
     _ = [e async for e in client.chat_stream(sid, "ja")]
     assert len(posts) == 1
+
+
+# -- #1244: a task hard-delete is gated the same way ------------------------
+
+
+def _task_db(tmp_path) -> tuple[str, str]:
+    """A db carrying the engine tables PLUS the projection tables a task lives in."""
+    path = str(tmp_path / "tasks.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.executescript(_TASK_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path, str(tmp_path / "notes")
+
+
+def _delete_call(**arguments) -> ChatResult:
+    return ChatResult(
+        tool_calls=[{"function": {"name": "task_delete", "arguments": arguments}}]
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_delete_is_held_and_names_the_task(tmp_path, soul):
+    db, notes = _task_db(tmp_path)
+    tid = tasks.create_task(db_path=db, notes_dir=notes, uid="anna", title="Milch")
+    tools = build_choice_tools() + build_tasks_tools(
+        db, lambda: "anna", notes_dir=notes
+    )
+    client, _ = _client(
+        db,
+        soul,
+        [_delete_call(title="milch"), ChatResult(content="Frage gestellt.")],
+        tools=tools,
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "lösch die Aufgabe Milch")]
+
+    # Nothing was deleted on the turn the model asked for it.
+    assert [t["id"] for t in tasks.list_tasks(db, "anna")] == [tid]
+    # The held result NAMES the task, so the resident can catch a wrong match.
+    pending = client._pending.peek(sid)
+    assert pending is not None
+    assert (pending.domain, pending.service, pending.entity_id) == (
+        "task",
+        "delete",
+        tid,
+    )
+    assert "Milch" in pending.prompt and "löschen" in pending.prompt
+    qr = [e for e in events if e["type"] == "quick_replies"]
+    assert qr and qr[0]["data"]["options"] == ["ja", "nein"]
+
+
+@pytest.mark.asyncio
+async def test_task_delete_runs_only_after_a_yes(tmp_path, soul):
+    db, notes = _task_db(tmp_path)
+    tasks.create_task(db_path=db, notes_dir=notes, uid="anna", title="Milch")
+    tools = build_choice_tools() + build_tasks_tools(
+        db, lambda: "anna", notes_dir=notes
+    )
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _delete_call(title="milch"),
+            ChatResult(content="Soll ich die Aufgabe Milch wirklich löschen?"),
+            ChatResult(content="Gelöscht."),
+        ],
+        tools=tools,
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "lösch die Aufgabe Milch")]
+    assert len(tasks.list_tasks(db, "anna")) == 1
+
+    _ = [e async for e in client.chat_stream(sid, "ja")]
+    assert tasks.list_tasks(db, "anna", include_done=True) == []
+    assert client._pending.peek(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_task_delete_claiming_confirmation_is_still_held(tmp_path, soul):
+    """The model cannot opt out of the gate: a call that already carries the
+    engine's `confirmed` marker is intercepted and re-asked like any other."""
+    db, notes = _task_db(tmp_path)
+    tasks.create_task(db_path=db, notes_dir=notes, uid="anna", title="Milch")
+    tools = build_choice_tools() + build_tasks_tools(
+        db, lambda: "anna", notes_dir=notes
+    )
+    client, _ = _client(
+        db,
+        soul,
+        [_delete_call(title="milch", confirmed=True), ChatResult(content="Frage.")],
+        tools=tools,
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "lösch Milch, ist schon abgeklärt")]
+    assert len(tasks.list_tasks(db, "anna")) == 1
+    assert client._pending.peek(sid) is not None
+
+
+@pytest.mark.asyncio
+async def test_task_delete_unknown_target_errors_without_holding(tmp_path, soul):
+    db, notes = _task_db(tmp_path)
+    tasks.create_task(db_path=db, notes_dir=notes, uid="anna", title="Milch")
+    tools = build_choice_tools() + build_tasks_tools(
+        db, lambda: "anna", notes_dir=notes
+    )
+    client, _ = _client(
+        db,
+        soul,
+        [_delete_call(id="geraten"), ChatResult(content="Welche?")],
+        tools=tools,
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "lösch die Aufgabe")]
+    # A guessed id is an error naming the candidates — never a wrong delete (#1241).
+    assert len(tasks.list_tasks(db, "anna")) == 1
+    assert client._pending.peek(sid) is None

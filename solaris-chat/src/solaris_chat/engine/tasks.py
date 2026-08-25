@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.knowledge.records import ConceptRecord
 from solaris_chat.engine.knowledge.writer import write_concept
 
@@ -146,6 +146,87 @@ def update(*, db_path: str, uid: str, entity_id: str, title: str, due: str) -> b
     finally:
         conn.close()
     return True
+
+
+def delete_task(*, db_path: str, uid: str, entity_id: str) -> bool:
+    """Hard-delete a task: every projection row it owns plus its ingest marker.
+
+    Child-first like `projection.delete_note_by_okf_path` (`facts` →
+    `entity_aliases` → `event_entities` → `entities`) because `PRAGMA
+    foreign_keys = ON` rejects the parent while a child still points at it. That
+    helper itself can't be reused: it keys off a `concepts.okf_path` row and a
+    task is projection-only, so for a task it is a no-op.
+
+    The writer's `ingest_log` marker goes too — left behind, a re-created task
+    reusing the key would short-circuit as "unchanged" and never write. The row
+    is keyed by the record's `external_id`, which the entity id is a hash of, so
+    it is found by hashing back (tasks are few).
+
+    Returns False when the task isn't visible to the caller. The CalDAV VTODO is
+    NOT touched here — the caller cascades it BEFORE this runs, while the row
+    still carries the owner the calendar routing needs.
+    """
+    conn = projection.open_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE id = ? AND type = 'task'"
+            " AND resident_uid IN (?, ?)",
+            (entity_id, uid, projection.SHARED_UID),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM facts WHERE subject_entity_id = ?", (entity_id,))
+        conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
+        conn.execute("DELETE FROM event_entities WHERE entity_id = ?", (entity_id,))
+        conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+        for marker in conn.execute(
+            "SELECT external_id FROM ingest_log WHERE source = ?", (_SOURCE,)
+        ).fetchall():
+            if okf.deterministic_id(marker["external_id"]) == entity_id:
+                conn.execute(
+                    "DELETE FROM ingest_log WHERE source = ? AND external_id = ?",
+                    (_SOURCE, marker["external_id"]),
+                )
+                break
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
+def resolve_task(
+    db_path: str, uid: str, *, entity_id: str = "", title: str = ""
+) -> dict[str, Any]:
+    """Resolve a delete target to `{"id", "title"}`, or an `{"error", …}` dict.
+
+    Shared by the confirm gate — which needs the TITLE so the question names
+    what is about to be destroyed — and by the tool, so both act on one target.
+    An id that matches nothing errors with the visible titles instead of falling
+    back to a title guess: a guessed id reported as a success is #1241.
+    """
+    visible = list_tasks(db_path, uid, include_done=True)
+    if entity_id:
+        for t in visible:
+            if t["id"] == entity_id:
+                return {"id": t["id"], "title": t["title"]}
+        return {
+            "error": "keine Aufgabe mit dieser id",
+            "id": entity_id,
+            "candidates": [t["title"] for t in visible],
+        }
+    needle = title.strip().lower()
+    if not needle:
+        return {"error": "id oder title nötig"}
+    hits = [t for t in visible if needle in t["title"].lower()]
+    if not hits:
+        return {
+            "error": "keine Aufgabe passt",
+            "title": title,
+            "candidates": [t["title"] for t in visible],
+        }
+    if len(hits) > 1:
+        return {"error": "mehrdeutig", "candidates": [t["title"] for t in hits]}
+    return {"id": hits[0]["id"], "title": hits[0]["title"]}
 
 
 def list_tasks(

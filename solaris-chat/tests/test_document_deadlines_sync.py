@@ -339,6 +339,23 @@ async def test_cascade_status_done_deletes(tmp_path, monkeypatch):
     assert deletes[0]["uid"] == "solaris-task-t1"
 
 
+async def test_cascade_deleted_flag_removes_open_dated_vtodo(tmp_path, monkeypatch):
+    # A task about to be hard-deleted (#1244) is still OPEN with a due date, so
+    # the ordinary cascade would re-PUT it. `deleted=True` forces the DELETE,
+    # while the row — and therefore the owner routing — is still there.
+    puts, deletes, _ = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        "lena",
+        [("status", "open"), ("due", "2026-09-01"), ("title_text", "Zahnarzt")],
+    )
+    await cascade_task_event(db, "t1", _BASE, "solaris", "pw", deleted=True)
+    assert puts == []
+    assert len(deletes) == 1
+    assert deletes[0]["url"] == f"{_BASE}/lena/{_CALENDAR}/"
+    assert deletes[0]["uid"] == "solaris-task-t1"
+
+
 async def test_cascade_due_change_reputs(tmp_path, monkeypatch):
     # due-change → re-PUT under the SAME UID so the calendar app overwrites in place.
     puts, deletes, _ = _capture_cascade(monkeypatch)
