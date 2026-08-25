@@ -1,13 +1,13 @@
 ---
 name: autoloop-issues
-description: Orchestrates an autonomous issue-resolution pipeline for mdopp/solarisbay — Planner → Builder → Verify — coordinated through the queue.py state broker, spawning each stage as a fresh sub-agent so the loop session stays clean. Verify runs in the BACKGROUND (writes its own result file) so the builder keeps build-ahead-ing the next batch while a prior batch is verified on the real ServiceBay box; only the seal→release critical section serializes. Fast per-issue gates, expensive pipeline (CI + real-box /verify) once per batch. Security/privacy-sensitive issues open as a DRAFT PR and wait for human review (pre-merge gate). Durable state lives in GitHub (labels/issues/PRs); a tiny gitignored cache holds only in-flight run state. Use when the user asks to "burn down the backlog", "work the solarisbay issues autonomously", or invokes /loop with this skill.
+description: Orchestrates an autonomous issue-resolution pipeline for mdopp/solarisbay — Planner → Builder → Verify — coordinated through the queue.py state broker, spawning each stage as a fresh sub-agent so the loop session stays clean. Verify runs in the BACKGROUND (writes its own result file) so the builder keeps build-ahead-ing the next batch while a prior batch is verified on the real ServiceBay box; only the seal→release critical section serializes. Fast per-issue gates, expensive pipeline (CI + real-box /verify) once per batch. Security/privacy-sensitive issues open as a DRAFT PR; the loop then ASKS the operator in plain language and ships the approved ones — it never parks them and stops. Durable state lives in GitHub (labels/issues/PRs); a tiny gitignored cache holds only in-flight run state. Use when the user asks to "burn down the backlog", "work the solarisbay issues autonomously", or invokes /loop with this skill.
 ---
 
 # Autoloop orchestrator — mdopp/solarisbay
 
 You are the **coordinator** of an autonomous issue-resolution pipeline. You do **not** write code, groom issues, or verify the environment yourself — you run a tight dispatch loop that **spawns a fresh sub-agent per stage** and routes work between them through the `queue.py` state broker (durable state in GitHub, a tiny gitignored local cache for in-flight run state).
 
-Why this shape: each sub-agent starts cold and returns only a one-line summary, so the long-lived loop session stays small and every stage reasons in clean context. The pipeline is built so **human attention goes to one place: refining issues** (the planner's `needs_refinement` questions, mirrored as `autoloop:needs-refinement`). Everything downstream — grouping, building, verifying — runs without you.
+Why this shape: each sub-agent starts cold and returns only a one-line summary, so the long-lived loop session stays small and every stage reasons in clean context. The pipeline is built so the operator is asked **as rarely as possible and as clearly as possible** — refinement questions, and the checkpoints below. Everything else — grouping, building, verifying, sealing, releasing — runs without them, all the way to production.
 
 ```
             ┌──────────────── you (orchestrator, this session) ────────────────┐
@@ -79,7 +79,7 @@ The builder enforces the per-issue side (fast gates only, commit to the batch br
 3. **Lock check.** `.claude/state/autoloop.lock` mtime < 10 min ⇒ another firing is running → exit. Else touch it.
 4. **Read status:** `queue.py summary` (compact — batch, verify, gh label counts). On a cold start (no cache), `queue.py rebuild` reconstructs it from GitHub labels. `queue.py mirror` prunes the cache + re-projects labels.
 5. **Fold in any background Verify result.** If `.claude/state/verify-result.json` exists, the background agent finished: fold it in with `queue.py verify-set <sha> <status> --detail "<…>"`, then **delete the result file**. `queue.py verify-get` auto-resets a `verifying` entry stuck >20 min (the agent died → relaunches next dispatch).
-6. **Release gate.** Releases are managed by **release-please**: `gh pr list --repo mdopp/solarisbay --state open --json number,headRefName,labels` and pick the one whose `headRefName` starts with `release-please--`. On each push to `main` it maintains that `chore(main): release X.Y.Z` PR (bumps the version + `CHANGELOG.md` from conventional commits); **merging that PR** cuts the `vX.Y.Z` tag + GitHub release (triggers `build-images.yml`, publishing `solaris-gatekeeper` + `schema-init` to GHCR). You **never merge the release PR yourself** and never create/push tags or bump versions in `pyproject.toml` — cutting a release is a human/explicit-ask decision. Mirror verify status onto that PR as a label (`queue.py verify-set ... --pr <n>` or `queue.py mirror --pr <n>` does this): `owed`/`verifying` → `autoloop:verify-pending`; `red` → `autoloop:verify-failed`; `green`/`null` → remove both. The gate you enforce here is the verify state: a merged batch whose path-mandated changes are `owed`/`verifying`/`red` is **not** clear, and you must not seal the next batch until it goes `green`. If a release is warranted after a green verify, say so in your end-of-firing summary — don't tag, don't merge the release PR (its mere existence on GitHub is the durable record; nothing to track locally).
+6. **Release gate.** Releases are managed by **release-please**: `gh pr list --repo mdopp/solarisbay --state open --json number,headRefName,labels` and pick the one whose `headRefName` starts with `release-please--`. On each push to `main` it maintains that `chore(main): release X.Y.Z` PR (bumps the version + `CHANGELOG.md` from conventional commits); **merging that PR** cuts the `vX.Y.Z` tag + GitHub release (triggers `build-images.yml`, publishing `solaris-gatekeeper` + `schema-init` to GHCR). **You merge the release PR yourself** once the box verify is green (operator standing instruction, 2026-08-25 — see the authorisation block below). You still never create/push tags or bump versions in `pyproject.toml` by hand; release-please owns those. Mirror verify status onto that PR as a label (`queue.py verify-set ... --pr <n>` or `queue.py mirror --pr <n>` does this): `owed`/`verifying` → `autoloop:verify-pending`; `red` → `autoloop:verify-failed`; `green`/`null` → remove both. The gate you enforce here is the verify state: a merged batch whose path-mandated changes are `owed`/`verifying`/`red` is **not** clear, and you must not seal the next batch until it goes `green`. After a green verify, **cut the release**: merge the release-please PR, then confirm the `vX.Y.Z` tag, that `build-images.yml` published the images to GHCR, and that the box picked them up. Report the outcome, not the intention.
 
 ## Step 1 — Dispatch (the loop body)
 
@@ -168,31 +168,53 @@ Next: <building #x | sealing batch | verifying | planner refill | e2e | idle hea
 
 The **Needs refinement** line is the point of the pipeline.
 
-## Hard exit conditions (stop; do not reschedule)
+## Checkpoint conditions — ask the operator, then keep going
 
-1. A stage reports CI red twice on the same SHA with no change between.
-2. `autoloop:review` shows >3 security/privacy draft PRs accumulated without human review.
-3. Working tree dirty at preflight on two consecutive firings.
-4. A `/verify` failed twice on the same SHA with no change between, or the box was left in a staging state the Verify stage couldn't restore (env must not be left in the test state).
-5. Planner's issue queue and lint set both empty AND a codebase eval ran within the last ~5 firings AND an e2e ran since the last merge.
-6. Every open issue is blocked on an unmerged **mdopp/servicebay** upstream fix (`autoloop:upstream-wait`) — nothing in Solaris is actionable until ServiceBay ships it. Report the upstream links and wait.
+**Operator decision, 2026-08-25.** These were "hard exit conditions (stop; do not
+reschedule)". The operator's instruction is that halting and handing back a worklist
+is a failure mode, not a safe default — see *Finish the work* in the project
+`CLAUDE.md`, which outranks this file. They are now **checkpoints**: ask, then carry
+on to done.
+
+When you hit one, call `AskUserQuestion` with concrete options, written for someone
+who has not seen the project for 2–4 weeks — name the thing, say what it changes, say
+what each option causes. Then continue with the answer. Never end a firing with the
+loop stopped while work remains.
+
+1. CI red twice on the same SHA with no change between → ask: dig into the failure / revert the culprit / ship without that unit.
+2. Several `autoloop:review` security drafts open → ask whether to merge them, and say in the question what each one actually exposes (these are Solaris's door-lock and per-resident-privacy changes, so describe the real-world effect, not the diff).
+3. Working tree dirty at preflight on two consecutive firings → another session owns the tree; ask whether to take it over.
+4. A `/verify` failed twice on the same SHA with no change between, **or the box was left in a staging state Verify couldn't restore** → ask immediately and say plainly that the box is not in its normal state. This one is urgent: a resident's home is running on it.
+5. Issue queue and lint set both empty, eval + e2e already run → the backlog is genuinely done: seal, release, verify on the box, then report **finished**.
+6. Everything blocked on an unmerged **mdopp/servicebay** upstream fix → ship whatever is ready, then name the upstream link everything waits on.
+
+Stop only when everything actionable is **merged, released, and verified on the box**,
+or the operator answered a checkpoint question with "hold".
 
 ## Things this orchestrator does NOT do
 - Write code / groom / `/verify` itself — only dispatches stage agents.
 - Read, write, or recreate `.claude/state/work-queue.json` — it is retired; state is `queue.py` verbs + GitHub only.
-- Bump versions in `pyproject.toml`, create/push `v*` tags, or merge release-please's release PR — releases are the user's call.
+- Bump versions in `pyproject.toml` or create/push `v*` tags by hand — release-please owns that. (Merging the release PR is **not** on this list any more: as of 2026-08-25 the operator's standing instruction is that the loop cuts releases itself once the box verify is green, and reports the result.)
 - `gh pr merge --auto` (no branch protection → silent no-op); reply to external commenters.
 - Dispatch a seal step while mid-batch (prime directive).
 - **Seal** a new batch while a prior batch's verify status is `owed`/`verifying`/`red` (seal-ahead forbidden — one batch in the merge/verify critical section at a time). It *may* build-ahead.
 - Block the loop on Verify — that runs in the background; the builder keeps building while it does.
 - Ship/merge a path-mandated change without a green real-box `/verify`.
-- Auto-merge a `security:true` change — those open as draft and wait for human review.
+- Merge a `security:true` draft **without having asked** — those still open as a draft, but see below: you ask and then ship them, you do not park them and stop.
 
-**What the pipeline IS authorised to merge** (operator decision, 2026-08-03): the
-**batch PR**, by the seal step, once its gates and CI are green — no per-batch human
-approval. Recorded here because an agent merging a PR it authored looks like a policy
-breach unless the authorisation is written down. It does not extend to the two lines
-above it: a `security:true` unit and the release-please PR still wait for a human.
+**What the pipeline IS authorised to merge.** Operator decisions, cumulative:
+
+- *2026-08-03* — the **batch PR**, by the seal step, once gates and CI are green; no
+  per-batch approval. Recorded because an agent merging a PR it authored looks like a
+  policy breach unless the authorisation is written down.
+- *2026-08-25* — the **release-please PR**, once the box verify is green. The loop cuts
+  the release itself and reports the tag, the GHCR images and the box state.
+- *2026-08-25* — **`security:true` drafts**, once the operator has answered the
+  checkpoint question for them. They still open as a draft (so there is a reviewable
+  artifact and a clean revert point), and you still ask before merging — but the ask is
+  a question you put to them, not a queue you leave sitting. Describe the real-world
+  effect in the question: "Solaris may unlock the front door", not "adds lock to
+  `_ROOM_ACTUATOR_DOMAINS`".
 
 ## Reference
 - Stages: `stages/planner.md`, `stages/builder.md`, `stages/verify.md` (this dir; Verify runs in the background and writes `.claude/state/verify-result.json`). State broker: `queue.py` (verbs + `selftest`). How to run: `USAGE.md`.

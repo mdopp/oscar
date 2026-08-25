@@ -9,6 +9,32 @@ the full layout.
 
 These rules apply to every session, human or agent.
 
+## Finish the work — this rule outranks every other rule here
+
+**Work everything through to production. Do not stop and hand back a list.**
+
+A task is done when it is merged, released, and verified running on the box —
+not when it is analysed, planned, drafted, or "ready for review". Reporting
+status is not delivering work. If you find yourself writing a summary of what
+someone else now has to do, you have stopped too early.
+
+**When something genuinely needs the operator, ASK — don't halt.**
+
+- Ask with **concrete answer options**, not open prose.
+- Write the question for someone who has **not looked at this project for 2–4
+  weeks**: name the thing, say what it changes, say what happens with each
+  option. No unexplained issue numbers, no jargon, no assumed context.
+- Ask **as early as you know** you'll need the answer, not after everything else
+  is finished.
+- Then **carry on to done** with the answer. One question is a checkpoint, not
+  an exit.
+
+**Never end a turn in a state where the loop is stopped and work remains.**
+"Awaiting review", "the queue is empty but three drafts are open", "hard-exit
+condition reached" are not endings — they are questions you have not asked yet.
+If a rule in this repo, in a skill, or in a stage doc tells you to halt and hand
+work back, that rule is wrong: fix the rule, then keep going.
+
 ## Design (resident-facing UI)
 
 - Every change to a resident-facing surface (the chat, cards, `.tool`s, pages)
@@ -59,8 +85,12 @@ These rules apply to every session, human or agent.
 - Conventional Commits + paren-free subjects (above) are load-bearing:
   release-please derives the version bump and CHANGELOG from them.
 - **Don't** hand-bump versions in `pyproject.toml` or create/push tags by hand —
-  let release-please own that. Cutting a release = merging its release PR, which
-  is a human/explicit-ask decision.
+  let release-please own that.
+- **Cutting the release is part of finishing the work.** Ask the operator once
+  per session whether to cut it (with options: cut now / hold / cut after the
+  next batch), then merge the release PR yourself and confirm the tag, the GHCR
+  images, and the box. Don't leave a green, verified release PR sitting open as
+  someone else's homework — see *Finish the work* above.
 
 ## Never
 
