@@ -33,8 +33,15 @@ therefore cannot cleanly inject its own JS.
 
 **1. `.tools` become plugins via the existing defs system — a new `kind: tool`.**
 A `.tool` is a `templates/solaris/skills/<id>/SKILL.md` with frontmatter:
-`tool-id`, `tool-label`, `tool-api-path` (+ optional `tool-search-path`),
-`tool-actions: [action.id, …]`, and a **`tool-cell-schema`** (see below). The
+`tool-id`, `tool-label`, `tool-api-path` (+ optional `tool-search-path` and
+`tool-compose-path`), `tool-actions: [action.id, …]`, and a
+**`tool-cell-schema`** (see below). `tool-compose-path` (#1213) is the tool's own
+statement that it HAS a create path, and the deep link that opens it —
+`#/p/<tool-id>/new`; a consumer that can't render a card, such as an Android 1×1
+tile, offers a "create" tile only for tools that declare one. Its sibling
+`#/?tool=<tool-id>` opens the chat with that tool's card already open. Both
+resolve against the catalog, so a new `.tool` needs no app update; an
+unresolvable tool-id lands on `#/p/start`. The
 server auto-lists it at `/api/defs/tool` (mirroring `/api/defs/command`) and
 **auto-registers its declared actions** on load; the client fetches it at init
 and dispatches via a **tool registry** instead of the hardcoded

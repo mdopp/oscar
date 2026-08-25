@@ -7,6 +7,7 @@ tool-id: task
 tool-label: Aufgabe
 command: .task
 tool-api-path: /api/portal/tasks?done=1
+tool-compose-path: #/p/task/new
 tool-actions: task.set_status, task.add, task.update
 tool-cell-schema: {"title": "title", "meta": ["due"], "actions": ["task.set_status"]}
 tool-action-params: {"task.set_status": {"entity_id": "$id", "status": "done"}, "task.add": {"title": "$title", "due": "$due"}, "task.update": {"entity_id": "$id", "title": "$title", "due": "$due"}}

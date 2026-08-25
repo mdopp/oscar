@@ -7,6 +7,7 @@ tool-id: photo
 tool-label: Foto
 command: .photo
 tool-api-path: /api/photo
+tool-compose-path: #/p/photo/new
 tool-cell-schema: {"title": "name", "meta": ["people"]}
 version: 1.0.0
 author: Solaris

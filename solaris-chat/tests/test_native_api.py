@@ -1412,6 +1412,7 @@ def _write_tool_def(skills_dir: Path) -> None:
         "tool-label: Aufgabe\n"
         "command: .task\n"
         "tool-api-path: /api/portal/tasks?done=1\n"
+        "tool-compose-path: #/p/task/new\n"
         "tool-actions: task.set_status, task.add\n"
         'tool-cell-schema: {"title": "title", "meta": ["due"]}\n'
         "---\n\n# Task\n",
@@ -1454,6 +1455,9 @@ async def test_napi_defs_tool_valid_token_serves_catalog(aiohttp_client, tmp_pat
     tool = j["defs"][0]
     assert tool["tool-id"] == "task"
     assert tool["tool-api-path"] == "/api/portal/tasks?done=1"
+    # #1213: the compose declaration rides the device-token catalog too — it is
+    # what the app reads to decide whether to offer an "Erfassen" tile at all.
+    assert tool["tool-compose-path"] == "#/p/task/new"
     assert tool["tool-actions"] == ["task.set_status", "task.add"]
     assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
 

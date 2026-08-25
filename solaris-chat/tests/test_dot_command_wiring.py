@@ -27,7 +27,10 @@ def test_all_dot_commands_registered_and_dispatched():
     # through the client tool-registry (#1006): `ensureCard` looks the tool-id up
     # in `toolBuilders` instead of a hardcoded if/else chain.
     assert "var toolBuilders = {" in _HTML
-    assert "var build = toolBuilders[cmd];" in _HTML
+    # #1213: a tool with no specialised builder falls through to the generic
+    # schema-driven card, so a `.tool` shipped after this build still opens.
+    assert "var build = toolBuilders[cmd]" in _HTML
+    assert "(def ? function (el) { buildGenericToolCard(el, def); } : null)" in _HTML
     for cmd in ("task", "note", "doc", "contacts", "photo", "home", "energy"):
         assert _has(r'\["\.' + cmd + r'",'), f".{cmd} missing from DOT_COMMANDS"
         assert _has(r"\b" + cmd + r": (?:build|function)"), (
@@ -84,6 +87,41 @@ def test_shipped_tool_cell_schemas_are_renderer_agnostic():
         assert violations == [], (
             f"{d['tool-id']} cell-schema not renderer-agnostic: {violations}"
         )
+
+
+def test_shipped_tool_compose_paths_resolve():
+    # #1213: a tool declares its create path in its own frontmatter
+    # (`tool-compose-path`), and the lint rejects a declaration the router does
+    # not serve — a tile pointed at a non-resolving path would silently land on
+    # the start-page fallback instead of the create form it promised.
+    from pathlib import Path
+
+    from solaris_chat.skills import compose_path_violations, list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    by_id = {d["tool-id"]: d for d in list_tool_defs(pack)}
+    for tid, d in by_id.items():
+        violations = compose_path_violations(tid, d["tool-compose-path"])
+        assert violations == [], f"{tid} compose path does not resolve: {violations}"
+    # The tools with a create path declare it; the pure view tools do not, so the
+    # app never offers an "Erfassen" tile that would open nothing.
+    for tid in ("task", "note", "contacts", "doc", "photo"):
+        assert by_id[tid]["tool-compose-path"] == f"#/p/{tid}/new"
+    for tid in ("home", "energy"):
+        assert by_id[tid]["tool-compose-path"] == ""
+
+
+def test_compose_path_lint_rejects_a_path_the_router_cannot_serve():
+    # #1213: no declaration is clean (the tool has no create path); a declaration
+    # must be THIS tool's canonical route.
+    from solaris_chat.skills import compose_path_violations
+
+    assert compose_path_violations("task", "") == []
+    assert compose_path_violations("task", "#/p/task/new") == []
+    assert compose_path_violations("task", "#/p/note/new")  # another tool's route
+    assert compose_path_violations("task", "#/p/task")  # not the compose route
+    assert compose_path_violations("task", "/p/task/new")  # not a hash route
+    assert compose_path_violations("task", "#/p/task/new/")  # trailing slash
 
 
 def test_task_row_action_carries_a_declarative_param_map():
