@@ -653,9 +653,16 @@ ihr Ergebnis.**
   Gatekeeper als **Wyoming-STT-Entity** und die Assist-Pipeline nimmt ihn statt des
   nackten Whisper (`ensure_assist_pipeline(prefer_gatekeeper_stt=…)`). Der Gatekeeper
   transkribiert intern über denselben Whisper — die STT-Ausgabe ist identisch —,
-  löst zusätzlich den Sprecher auf und legt `{Transkript → uid, matched}` in
+  löst zusätzlich den Sprecher auf und legt `{Transkript, Raum → uid, matched}` in
   `solaris.db` ab. Die Engine-Facade liest diesen Stash auf dem Rohtranskript wieder
   aus (`voice_uid_stash.consume_speaker`).
+- **Der Schlüssel ist Transkript + Raum** (#1218). Auf dem Satelliten-Pfad kennen beide
+  Seiten den Raum — der Gatekeeper schickt ihn als `[room: X]`-Präfix, die Facade liest
+  ihn dort wieder heraus —, also sind zwei Räume zwei Zeilen. Wo nur eine Seite ihn
+  kennt (HA-STT-Pfad: der Peer des Gatekeepers ist HA, nicht der Satellit), bleibt das
+  Transkript allein der Schlüssel, und eine Kollision **schließt zu**: eine lebende
+  Zeile mit fremder uid wird auf `guest`/`matched=0` herabgestuft, ein mehrdeutiger
+  Treffer wird verworfen. Keiner der beiden Sprecher bekommt die Identität des anderen.
 - **Zwei getrennte Aussagen pro Zeile.** `uid` ist das *Routing* (wem gehört der Turn),
   `matched` ist die *Erkennungsaussage* des Gatekeepers. Nur `matched=1` schaltet die
   Klasse *Persönlich* frei — nicht die Existenz der Zeile und nicht der uid-Wert

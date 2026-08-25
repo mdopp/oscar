@@ -238,16 +238,17 @@ def add_facade_routes(
         # body's `user` (HA sends `household`) on a miss. Consume-once.
         # An originating-room prefix (`[room: X]`) injected by the gatekeeper or
         # an HA Voice PE per-device prompt is parsed out HERE: the room rides a
-        # contextvar so a device-less play defaults to it, and the marker is
-        # stripped from both the transcript and the replayed message so the model
-        # (and the uid-stash lookup, keyed on the raw whisper transcript) never
-        # sees it.
+        # contextvar so a device-less play defaults to it, the marker is stripped
+        # from both the transcript and the replayed message so the model never
+        # sees it, and the room itself is passed to the uid-stash lookup as the
+        # second half of its correlation key (#1218) — the transcript alone
+        # cannot tell two residents saying the same sentence apart.
         room, transcript = _split_room(_last_user(messages))
         # Unconditionally: an older replayed turn can carry a marker even when
         # the newest one does not.
         _strip_room_from_messages(messages)
         current_room.set(room)
-        speaker = consume_speaker(solaris_db_path, transcript)
+        speaker = consume_speaker(solaris_db_path, transcript, room)
         uid = (speaker.uid if speaker else "") or str(body.get("user") or default_uid)
         # Visibility gate (#1130, ADR-12 / G-6): everything on this route is
         # spoken out loud, so the tool's declared class decides whether it may
