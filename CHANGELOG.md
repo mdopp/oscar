@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.3](https://github.com/mdopp/solarisbay/compare/v0.42.2...v0.42.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **chat:** refuse a device command for an entity_id that does not exist ([a19a10b](https://github.com/mdopp/solarisbay/commit/a19a10b088f33aac540796c95743d8488c14f21d)), closes [#1241](https://github.com/mdopp/solarisbay/issues/1241)
+
 ## [0.42.2](https://github.com/mdopp/solarisbay/compare/v0.42.1...v0.42.2) (2026-08-25)
 
 
