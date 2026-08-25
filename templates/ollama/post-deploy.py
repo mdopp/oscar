@@ -263,6 +263,43 @@ def local_chat_tags(ollama_url: str) -> list[str]:
     return tags
 
 
+def warm_load_order(tags: list[str], fast_model: str) -> list[str]:
+    """Order the chat tags for warm-loading: the configured fast model first,
+    then the rest alphabetically.
+
+    Order is load-bearing (solarisbay#340, box-measured): with the small fast
+    model resident a 12b load co-exists, but loading 12b first makes the
+    subsequent fast-model load evict it, so the household hot path ends up
+    cold. The fast model is the hot path, so it goes first.
+
+    Never derive this order from the `size` field /api/tags reports
+    (solarisbay#1217, box-measured): gemma4:e4b is a per-layer-embedding model
+    whose on-disk weights report 9,608,350,718 while gemma4:12b reports
+    7,556,508,396 — yet resident `size_vram` is the reverse (~3.3 GB vs
+    ~8.4 GB). Disk size is not a proxy for VRAM cost, so identity from config
+    is the only signal that stays true.
+    """
+    ordered = sorted(set(tags))
+    want = _canonical_tag(fast_model)
+    fast = [t for t in ordered if _canonical_tag(t) == want]
+    if not fast:
+        jlog(
+            "warn",
+            "ollama:warm",
+            "configured fast model is not installed locally; warming in alphabetical order",
+            fast_model=fast_model,
+            tags=ordered,
+        )
+        return ordered
+    return fast + [t for t in ordered if t not in fast]
+
+
+def _canonical_tag(tag: str) -> str:
+    """`gemma4` and `gemma4:latest` name the same model to Ollama."""
+    tag = tag.strip()
+    return tag if ":" in tag else f"{tag}:latest"
+
+
 def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool:
     """Load `model` into VRAM with a 1-token generate so the first real turn
     after a deploy is warm. Every (re)deploy restarts the ollama unit and
@@ -622,6 +659,7 @@ def main() -> int:
     extra_models = [m.strip() for m in extra_models_raw.split(",") if m.strip()]
     vision_model = env("OLLAMA_VISION_MODEL", "")
     embed_model = env("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    fast_model = env("OLLAMA_FAST_MODEL", "gemma4:e4b")
     timeout = int(env("OLLAMA_READINESS_TIMEOUT_SECONDS", "600"))
     sb_api = env("SB_API_URL", "http://localhost:3000")
     sb_token = env("SB_API_TOKEN", "")
@@ -727,13 +765,10 @@ def main() -> int:
 
     # Warm-load the chat models so the first post-deploy turn doesn't pay
     # the cold reload. Source of truth = the locally installed tags
-    # (solarisbay#339: the env-derived list missed e2b). Order is load-bearing
-    # (solarisbay#340, box-measured): SMALL first — with e2b resident a 12b
-    # load co-exists (13.9/16.4 GiB), but loading 12b first makes the
-    # subsequent e2b load evict it (ollama's free-VRAM check is
-    # conservative). Small-first ends with everything resident.
+    # (solarisbay#339: the env-derived list arrived empty). Order comes from
+    # warm_load_order() — fast model first, never from a size field.
     warm_tags = local_chat_tags(ollama_url) or [m for m in (*extra_models, model) if m]
-    for warm in sorted(set(warm_tags), key=lambda t: ("e2b" not in t, t)):
+    for warm in warm_load_order(warm_tags, fast_model):
         warm_load_model(ollama_url, warm)
 
     register_http_check(sb_api, sb_token, ollama_url)

@@ -14,6 +14,11 @@
     "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in the Solaris Engine's model settings without a fresh download. Default `gemma4:e4b`: the Solaris household FAST_MODEL (the voice/chat hot path) — pulling it here makes the bundled stack work out of the box, since OLLAMA_DEFAULT_MODEL only ships the thorough gemma4:12b. Add `VladimirGav/gemma4-26b-16GB-VRAM:latest` or any other tag to pre-pull more. CAVEAT: the aggressive quantization of the 26B-VRAM variant strips vision and audio from its `Capabilities` block. Switching the active model to that tag gives up multimodal — keep `gemma4:12b` or `gemma4:e4b` for OCR / voice-note flows. Set to empty string to skip extras.",
     "default": "gemma4:e4b"
   },
+  "OLLAMA_FAST_MODEL": {
+    "type": "text",
+    "description": "Which pulled tag is the household's fast/hot-path chat model — keep it equal to the solaris template's FAST_MODEL. Post-deploy warm-loads this tag FIRST after every (re)deploy: with the small fast model already resident a gemma4:12b load co-exists, but warming 12b first evicts the fast model and the next voice turn pays a cold reload (#340, box-measured). Ordering is by this configured identity on purpose — the `size` field in Ollama's /api/tags is NOT a VRAM proxy and must never be sorted on: gemma4:e4b's per-layer-embedding weights report ~9.6 GB on disk but only ~3.3 GB resident, while gemma4:12b reports ~7.6 GB on disk and ~8.4 GB resident (#1217, box-measured). If this tag isn't installed locally, post-deploy logs a warning and warms alphabetically.",
+    "default": "gemma4:e4b"
+  },
   "OLLAMA_VISION_MODEL": {
     "type": "text",
     "description": "Optional second model pulled on first start, mainly historical now that the default OLLAMA_DEFAULT_MODEL (`gemma4:12b`) ships vision + audio natively. Leave blank in normal household installs — only set this if you've changed OLLAMA_DEFAULT_MODEL to a text-only tag and still want Solaris's `media-ingestion-multimodal` skill to have a vision backend. Suggested non-default tags: `qwen2.5vl:7b` (Apache-2, ~6 GB), `llava:13b` (~8 GB), `bakllava:7b` (~5 GB).",
