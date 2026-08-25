@@ -357,3 +357,20 @@ async def test_unparseable_feed_is_graceful(monkeypatch):
         )
     )
     assert out["ok"] is False and out["reason"] == "no_episode"
+
+
+async def test_feed_with_xxe_entity_is_rejected_gracefully(monkeypatch):
+    """A hostile feed's external entity is refused, not resolved (#1225)."""
+    feed = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        "<rss><channel><item><title>&xxe;</title>"
+        '<enclosure url="https://cdn/x.mp3"/></item></channel></rss>'
+    )
+    _stub(monkeypatch, feed=feed)
+    out = json.loads(
+        await _tool().handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.x"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "no_episode"

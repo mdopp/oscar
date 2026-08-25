@@ -17,9 +17,10 @@ import json
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from typing import Any
-from xml.etree import ElementTree
 
 import aiohttp
+from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 
 from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.engine.tools.ha import call_service_scoped
@@ -165,7 +166,9 @@ def build_media_tools(
                 feed_xml = await resp.text()
         try:
             episode = _newest_enclosure(feed_xml)
-        except ElementTree.ParseError:
+        # DefusedXmlException: the feed declared a DTD entity / external ref and
+        # was rejected — same "unusable feed" outcome as a malformed one.
+        except (ElementTree.ParseError, DefusedXmlException):
             episode = None
         if episode is None:
             return json.dumps(

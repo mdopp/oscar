@@ -18,11 +18,11 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urljoin
-from xml.etree import ElementTree as ET
 
 import re
 
 import aiohttp
+from defusedxml import ElementTree as ET
 
 # Characters unsafe in a DAV resource path segment; the UID becomes the filename.
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
