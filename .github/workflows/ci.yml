@@ -160,18 +160,19 @@ jobs:
       - run: semgrep scan --config p/python --config p/security-audit --severity ERROR --error --metrics off
 
   audit:
-    name: pip-audit (report-only)
+    name: pip-audit
     runs-on: ubuntu-latest
-    # Gates 1+4: CVE scan of declared deps. Report-only first; ratchet to
-    # blocking on high/critical (remove continue-on-error, add --vulnerability-service)
-    # once the baseline is clean. Dependabot (.github/dependabot.yml) opens the
-    # update PRs the autoloop routes as a filler track.
-    continue-on-error: true
+    # Gates 1+4: CVE scan of declared deps. Blocking as of #1224 — the baseline
+    # is clean, and a report-only run of this job had never audited anything
+    # (it aborted at the database install under the wrong Python, red but
+    # ignored). Dependabot (.github/dependabot.yml) opens the update PRs the
+    # autoloop routes as a filler track.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          # database/pyproject.toml declares requires-python >= 3.12.
+          python-version: "3.12"
       - run: pip install pip-audit
       - run: pip install -e .
         working-directory: voice-gatekeeper
