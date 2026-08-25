@@ -17,6 +17,7 @@ import sqlite3
 from collections.abc import AsyncIterator
 
 import pytest
+from defusedxml.common import EntitiesForbidden
 
 from solaris_chat.engine.ingest import DavIngest
 from solaris_chat.engine.ingest.dav_client import CalEvent, Contact
@@ -302,6 +303,7 @@ def test_empty_collections_are_a_noop(env):
 
 from solaris_chat.engine.ingest.dav_client import (  # noqa: E402
     HttpDavClient,
+    _propfind_members,
     parse_vcard,
     parse_vevent,
 )
@@ -496,6 +498,18 @@ def test_http_client_iter_contacts_only_reads(monkeypatch):
     contacts = asyncio.run(_collect(client.iter_contacts()))
     assert len(contacts) == 1 and contacts[0].name == "Anna Müller"
     assert set(_FakeSession.methods) <= {"PROPFIND", "GET"}
+
+
+def test_propfind_multistatus_with_xxe_entity_is_refused():
+    """A hostile DAV multistatus's external entity is refused, not resolved (#1225)."""
+    xml = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE multistatus [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        '<multistatus xmlns="DAV:"><response><href>&xxe;</href>'
+        "</response></multistatus>"
+    )
+    with pytest.raises(EntitiesForbidden):
+        _propfind_members(xml, "https://radicale/cal/")
 
 
 def test_http_client_inert_half_yields_nothing(monkeypatch):

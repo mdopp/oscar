@@ -12,6 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
 dependencies = [
   "aiohttp>=3.9",
+  # XXE/entity-expansion-hardened ElementTree for the two parsers that read
+  # network-sourced XML: DAV multistatus responses and podcast RSS feeds (#1225).
+  "defusedxml>=0.7",
   # Official MCP SDK — the admin profile's servicebay_admin toolbox and the
   # client end of the gatekeeper's room tool server. On the 2.x line (#1106):
   # the transport helper is `streamable_http_client`, it takes an
