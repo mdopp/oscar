@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.1](https://github.com/mdopp/solarisbay/compare/v0.42.0...v0.42.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **chat:** return the full card dict from /napi/portal/active ([45fc19f](https://github.com/mdopp/solarisbay/commit/45fc19fbe10c50fcb1e29f26c4ae2c8640177b67)), closes [#1233](https://github.com/mdopp/solarisbay/issues/1233)
+
 ## [0.42.0](https://github.com/mdopp/solarisbay/compare/v0.41.0...v0.42.0) (2026-08-25)
 
 
