@@ -371,6 +371,8 @@ async def test_addable_groups_by_room_and_marks_state(
                 {"friendly_name": "Garagentor", "device_class": "garage"},
             )
             | {"room": "Garage"},
+            ha.card_spec("lock.zuhause", "locked", {"friendly_name": "Haustür"})
+            | {"room": "Flur"},
         ]
 
     async def _fake_runnables(url, token):
@@ -413,6 +415,11 @@ async def test_addable_groups_by_room_and_marks_state(
     assert rooms["Garage"][0]["sensitive"] is True
     assert rooms["Garage"][0]["pinned"] is False
     assert rooms["Küche"][0]["sensitive"] is False
+    # #1212: a lock is offered too, flagged sensitive (the whole domain is), and
+    # keeps the bolt state — never an open/closed door claim.
+    assert rooms["Flur"][0]["entity_id"] == "lock.zuhause"
+    assert rooms["Flur"][0]["sensitive"] is True
+    assert rooms["Flur"][0]["state"] == "locked"
     # Automationen group: scenes/scripts/automations as pinnable action cards.
     autos = {a["entity_id"]: a for a in j["automations"]}
     assert autos["scene.abend"]["kind"] == "action"

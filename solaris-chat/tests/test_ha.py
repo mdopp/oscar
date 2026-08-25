@@ -221,6 +221,58 @@ async def test_fetch_addable_runnables_keeps_runnable_domains(monkeypatch):
     assert out[1]["name"] == "automation.morning"
 
 
+async def test_fetch_addable_cards_offers_lock_but_not_button(monkeypatch):
+    # #1212: a lock is selectable in the start-page picker (it was filtered out
+    # before, so the widget config could not list it at all). `button` stays out
+    # by explicit decision — a door-opener press has no confirm rule.
+    states = [
+        {
+            "entity_id": "lock.zuhause",
+            "state": "locked",
+            "attributes": {"friendly_name": "Haustür"},
+        },
+        {
+            "entity_id": "button.zuhause_unlatch",
+            "state": "unknown",
+            "attributes": {"friendly_name": "Falle öffnen"},
+        },
+        {
+            "entity_id": "light.kitchen",
+            "state": "on",
+            "attributes": {"friendly_name": "Küche"},
+        },
+    ]
+    _stub(monkeypatch, states=states)
+    cards = await ha_mod.fetch_addable_cards(
+        "http://ha", "tok", {"lock.zuhause": "Flur"}
+    )
+    by_id = {c["entity_id"]: c for c in cards}
+    assert "lock.zuhause" in by_id
+    assert "button.zuhause_unlatch" not in by_id
+    lock = by_id["lock.zuhause"]
+    assert lock["domain"] == "lock"
+    assert lock["room"] == "Flur"
+    # The bolt state verbatim — never an open/closed door claim (there is no
+    # door sensor), so a consumer cannot render one.
+    assert lock["state"] == "locked"
+
+
+async def test_fetch_addable_cards_keeps_lock_unknown_distinct(monkeypatch):
+    # #1212: MQTT delivers state via retained messages — after a broker restart
+    # there may be none. `unknown` must survive as its own state and must never
+    # be flattened into "locked".
+    states = [
+        {
+            "entity_id": "lock.zuhause",
+            "state": "unknown",
+            "attributes": {"friendly_name": "Haustür"},
+        }
+    ]
+    _stub(monkeypatch, states=states)
+    cards = await ha_mod.fetch_addable_cards("http://ha", "tok", {})
+    assert cards[0]["state"] == "unknown"
+
+
 @pytest.mark.parametrize(
     "entity_id,service",
     [

@@ -108,7 +108,8 @@ _ACTION_VERBS: dict[str, str] = {
     "set_cover_position": "verstellen",
     "set_cover_tilt_position": "verstellen",
     "open": "öffnen",
-    "unlock": "entsperren",
+    "lock": "abschließen",
+    "unlock": "aufschließen",
     "alarm_disarm": "entschärfen",
 }
 

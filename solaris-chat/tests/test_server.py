@@ -3386,6 +3386,76 @@ async def test_ha_call_runs_confirmed_sensitive_cover(aiohttp_client, monkeypatc
     assert seen == {"entity": "cover.garage", "service": "cover.open_cover"}
 
 
+@pytest.mark.parametrize("service", ["lock.lock", "lock.unlock"])
+async def test_ha_call_gates_then_runs_lock(aiohttp_client, monkeypatch, service):
+    # #1212: `lock` is a reachable card domain now, but the WHOLE domain is
+    # confirm-gated (confirm.SENSITIVE_DOMAINS) — a bare tap 403s and never
+    # reaches HA; the same call proceeds with the explicit confirmed=true.
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, eid, svc, d=None):
+        seen.update(entity=eid, service=svc)
+        return {"ok": True}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call", json={"entity_id": "lock.zuhause", "service": service}
+    )
+    assert resp.status == 403
+    assert (await resp.json())["error"] == "sensitive_action"
+    assert seen == {}  # never reached the HA helper
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "lock.zuhause", "service": service, "confirmed": True},
+    )
+    assert resp.status == 200
+    assert seen == {"entity": "lock.zuhause", "service": service}
+
+
+async def test_ha_call_rejects_button_domain(aiohttp_client, monkeypatch):
+    # #1212: `button` stays off the allowlist by explicit decision — the lock's
+    # unlatch ("Falle öffnen") is a button.press and no SENSITIVE_* rule covers
+    # it, so letting it through would open the door on a mistap, unconfirmed.
+    called = False
+
+    async def _fake_call(*a, **k):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={
+            "entity_id": "button.zuhause_unlatch",
+            "service": "button.press",
+            "confirmed": True,
+        },
+    )
+    assert resp.status == 400
+    assert (await resp.json())["error"] == "unsupported_domain"
+    assert called is False
+
+
 async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
     app = build_app(
         engine=_FakeEngine(),

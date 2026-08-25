@@ -2304,7 +2304,8 @@ def build_app(
         """Card-action endpoint (#476): run a scoped HA service on one entity.
 
         Phase 2 surfaced toggles on light/switch; phase 3 (#477) adds the slider/
-        colour/climate controls, so cover and climate cards may act too. The
+        colour/climate controls, so cover and climate cards may act too; #1212
+        adds `lock` so a lock card can lock/unlock. The
         helper applies the same allowlist as the `ha_call_service` tool (blocked
         domains, name regex, domain==entity). Owner-scoped: any authenticated
         resident, no client-side HA token. Returns the new state to confirm.
@@ -2319,7 +2320,16 @@ def build_app(
             return web.json_response({"ok": False, "error": "bad_json"}, status=400)
         entity_id = str(body.get("entity_id") or "")
         service = str(body.get("service") or "")
-        if entity_id.split(".", 1)[0] not in ("light", "switch", "cover", "climate"):
+        # `button` stays OFF this list by explicit decision, not oversight (#1212):
+        # a door-opener's `button.press` unlatches the door and no SENSITIVE_*
+        # rule covers it, so a mistap would let someone in unconfirmed.
+        if entity_id.split(".", 1)[0] not in (
+            "light",
+            "switch",
+            "cover",
+            "climate",
+            "lock",
+        ):
             return web.json_response(
                 {"ok": False, "error": "unsupported_domain"}, status=400
             )
@@ -3469,11 +3479,14 @@ def build_app(
     def _entity_card_sensitive(card: dict[str, Any]) -> bool:
         """True when a one-tap action on this entity card is confirm-gated (#702).
 
-        A garage/door/gate cover's toggle is sensitive; the card is added with a
-        lock badge and its tap requires an explicit confirm the server re-checks
-        (`/api/ha/call` with `confirmed=true`). Other domains are not gated."""
-        return card.get("domain") == "cover" and confirm.is_sensitive(
-            "cover", "toggle", card.get("device_class")
+        A garage/door/gate cover's toggle is sensitive, and every `lock` action is
+        (#1212 — the whole domain is in SENSITIVE_DOMAINS); such a card is added
+        with a lock badge and its tap requires an explicit confirm the server
+        re-checks (`/api/ha/call` with `confirmed=true`). Asking `is_sensitive`
+        with the neutral `toggle` service keeps this one rule for both: a
+        light/switch/climate/media_player toggle stays ungated."""
+        return confirm.is_sensitive(
+            str(card.get("domain") or ""), "toggle", card.get("device_class")
         )
 
     async def _ha_call_is_sensitive(entity_id: str, service: str) -> bool:

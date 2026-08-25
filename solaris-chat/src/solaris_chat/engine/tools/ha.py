@@ -35,14 +35,27 @@ card_sink: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Con
 # card (state + unit); binary_sensor/cover.garage an open/closed status; the
 # actionable light/switch a current-state badge (controls are later phases).
 # media_player (#541) cards the playing/paused state + transport/volume controls.
+# lock (#1212) cards HA's own locked/unlocked state verbatim — the house has no
+# door sensor, so a lock card states the BOLT, never "open/closed", and a missing
+# retained MQTT message stays the distinct `unknown` HA state.
 _CARD_DOMAINS = frozenset(
-    {"sensor", "binary_sensor", "cover", "light", "switch", "climate", "media_player"}
+    {
+        "sensor",
+        "binary_sensor",
+        "cover",
+        "light",
+        "switch",
+        "climate",
+        "media_player",
+        "lock",
+    }
 )
 # A room query ("zeig mir das Wohnzimmer") cards the room's ACTUATORS — the
 # controllable card domains, not the read-only sensors (#540). Sensor data
-# stays on-demand via ha_list_entities.
+# stays on-demand via ha_list_entities. `button` is deliberately absent (#1212):
+# a door-opener's press unlatches the door and no confirm rule covers it.
 _ROOM_ACTUATOR_DOMAINS = frozenset(
-    {"light", "switch", "cover", "climate", "media_player"}
+    {"light", "switch", "cover", "climate", "media_player", "lock"}
 )
 # Attributes the phase-3 controls (sliders/colour/climate) read off the card-spec
 # so the frontend can feature-gate them without a second HA round-trip (#477).
@@ -274,9 +287,9 @@ async def fetch_addable_cards(
 ) -> list[dict[str, Any]] | None:
     """Card-specs for the house's controllable actuators, for the start-page
     picker (#669). One read-only `/api/states`; keeps only the actuator domains
-    (light/switch/cover/climate/media_player — the same set a room query cards),
-    builds each entity's card-spec and annotates it with its room. Returns None
-    on any HA error; entities without an area carry room "".
+    (light/switch/cover/climate/media_player/lock — the same set a room query
+    cards), builds each entity's card-spec and annotates it with its room.
+    Returns None on any HA error; entities without an area carry room "".
     """
     headers = {"Authorization": f"Bearer {hass_token}"}
     url = hass_url.rstrip("/")
