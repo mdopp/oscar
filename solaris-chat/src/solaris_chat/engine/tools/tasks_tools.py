@@ -78,6 +78,41 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
             await cascade_task_event_configured(db_path, tid)
         return json.dumps({"ok": ok, "status": status})
 
+    async def task_delete(args: dict[str, Any]) -> str:
+        uid = _caller()
+        # The engine's confirm gate stamps `confirmed` after the resident said
+        # yes; it is not part of the tool's schema and the model cannot obtain
+        # it, because the gate intercepts EVERY task_delete before dispatch. A
+        # call arriving without it (a favourite run, which bypasses the loop)
+        # deletes nothing.
+        if not args.get("confirmed"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "needs_confirmation": True,
+                    "error": "Löschen muss bestätigt werden",
+                },
+                ensure_ascii=False,
+            )
+        target = await asyncio.to_thread(
+            tasks.resolve_task,
+            db_path,
+            uid,
+            entity_id=str(args.get("id") or "").strip(),
+            title=str(args.get("title") or "").strip(),
+        )
+        if "error" in target:
+            return json.dumps({"ok": False, **target}, ensure_ascii=False)
+        # CalDAV first: the VTODO's collection is routed from the task's owner,
+        # which is only readable while the row still exists.
+        await cascade_task_event_configured(db_path, target["id"], deleted=True)
+        ok = await asyncio.to_thread(
+            tasks.delete_task, db_path=db_path, uid=uid, entity_id=target["id"]
+        )
+        return json.dumps(
+            {"ok": ok, "deleted": target["title"] if ok else ""}, ensure_ascii=False
+        )
+
     return [
         Tool(
             name="task_add",
@@ -135,6 +170,26 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
                 },
             },
             handler=task_done,
+            visibility=Visibility.HOUSEHOLD,
+        ),
+        Tool(
+            name="task_delete",
+            description=(
+                "Löscht eine Aufgabe ENDGÜLTIG von der Liste — nur wenn der"
+                " Nutzer sie wirklich weghaben will ('lösch die Aufgabe X',"
+                " 'X soll ganz weg', 'war ein Versehen'). Ist sie nur erledigt,"
+                " nimm task_done. Die Rückfrage stellt das System selbst; gib"
+                " sie wörtlich weiter und warte auf ja/nein. Per title (aus"
+                " task_list) oder id."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "id": {"type": "string"},
+                },
+            },
+            handler=task_delete,
             visibility=Visibility.HOUSEHOLD,
         ),
     ]

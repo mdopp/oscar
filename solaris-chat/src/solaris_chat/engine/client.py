@@ -31,7 +31,9 @@ from zoneinfo import ZoneInfo
 
 from solaris_chat import favorites_store
 from solaris_chat.engine import confirm, grounding, remember, store
+from solaris_chat.engine import tasks as tasks_svc
 from solaris_chat.engine.bus import SessionBus
+from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
@@ -744,6 +746,60 @@ class EngineClient:
             ensure_ascii=False,
         )
 
+    async def _gate_task_delete(
+        self,
+        args: dict[str, Any],
+        confirmed: set[tuple[str, str, str]],
+        session_id: str | None,
+        quick_replies: list[str],
+        uid: str,
+    ) -> str | None:
+        """Hold an unconfirmed task hard-delete (#1244).
+
+        The delete is irreversible, so the confirmation IS the safety net and is
+        enforced here, at dispatch — the model cannot opt out of it by claiming
+        the resident already agreed. The target is resolved BEFORE the question
+        is asked: an id or title that matches nothing comes back as an error
+        naming the candidates, and nothing is ever held or deleted for it.
+        """
+        caller = uid or projection.SHARED_UID
+        target = await asyncio.to_thread(
+            tasks_svc.resolve_task,
+            self._db_path,
+            caller,
+            entity_id=str(args.get("id") or "").strip(),
+            title=str(args.get("title") or "").strip(),
+        )
+        if "error" in target:
+            return json.dumps({"ok": False, **target}, ensure_ascii=False)
+        # Dispatch the RESOLVED id, never the model's fuzzy title, and stamp the
+        # engine-only confirmation marker the tool refuses to act without.
+        args.clear()
+        args.update({"id": target["id"], "confirmed": True})
+        key = (confirm.TASK_DOMAIN, confirm.TASK_DELETE_SERVICE, target["id"])
+        if key in confirmed:
+            return None
+        prompt = confirm.task_delete_prompt(target["title"])
+        if session_id:
+            self._pending.stash(
+                session_id,
+                confirm.PendingAction(
+                    domain=key[0],
+                    service=key[1],
+                    entity_id=key[2],
+                    data=None,
+                    prompt=prompt,
+                    tool="task_delete",
+                    tool_args=dict(args),
+                ),
+            )
+        quick_replies.clear()
+        quick_replies.extend(["ja", "nein"])
+        return json.dumps(
+            {"ok": False, "needs_confirmation": True, "prompt": prompt},
+            ensure_ascii=False,
+        )
+
     async def _suggest_answers(self, question: str) -> list[str]:
         """Generate 2-4 likely user answers to a question (u87 chat fallback).
 
@@ -917,30 +973,27 @@ class EngineClient:
             else:
                 self._pending.take(pending_key)
                 confirmed.add((pending.domain, pending.service, pending.entity_id))
-                tc = {
-                    "function": {"name": "ha_call_service", "arguments": pending.args()}
-                }
-                yield {"type": "tool.started", "data": {"tool": "ha_call_service"}}
+                held_tool = pending.tool
+                tc = {"function": {"name": held_tool, "arguments": pending.args()}}
+                yield {"type": "tool.started", "data": {"tool": held_tool}}
                 if uid:
                     current_uid.set(uid)
                 current_session.set(session_id)
                 t0 = time.monotonic()
-                output = await self._profile.toolbox.dispatch(
-                    "ha_call_service", pending.args()
-                )
+                output = await self._profile.toolbox.dispatch(held_tool, pending.args())
                 tool_wall_s = time.monotonic() - t0
                 self._recorder.record_tool(
                     session_id=session_id,
                     profile=self._profile.name,
-                    tool_name="ha_call_service",
+                    tool_name=held_tool,
                     wall_s=tool_wall_s,
                     arguments=pending.args(),
                     output=output,
                 )
-                self._count_usage(uid, "ha_call_service", pending.args(), output)
+                self._count_usage(uid, held_tool, pending.args(), output)
                 yield {
                     "type": "tool.completed",
-                    "data": {"tool": "ha_call_service", "wall_s": tool_wall_s},
+                    "data": {"tool": held_tool, "wall_s": tool_wall_s},
                 }
                 if persist:
                     store.append_message(
@@ -962,7 +1015,7 @@ class EngineClient:
                     {"role": "assistant", "content": "", "tool_calls": [tc]}
                 )
                 messages.append(
-                    {"role": "tool", "content": output, "tool_name": "ha_call_service"}
+                    {"role": "tool", "content": output, "tool_name": held_tool}
                 )
                 confirmed_executed = True
 
@@ -1094,6 +1147,10 @@ class EngineClient:
                 if name == "ha_call_service" and isinstance(args, dict):
                     held = await self._gate_sensitive(
                         args, confirmed, pending_key, quick_replies
+                    )
+                elif name == "task_delete" and isinstance(args, dict):
+                    held = await self._gate_task_delete(
+                        args, confirmed, pending_key, quick_replies, uid
                     )
                 dispatch_plan.append({"name": name, "args": args, "held": held})
 

@@ -126,6 +126,21 @@ def confirm_prompt(domain: str, service: str, entity_id: str) -> str:
     return f"Soll ich {name} wirklich {verb}?"
 
 
+# A task hard-delete is irreversible (no tombstone, no undo) — it is gated by
+# the same machinery as a lock, with `task`/`delete` standing in for the HA
+# domain/service so the gate's identity triple still works (#1244).
+TASK_DOMAIN = "task"
+TASK_DELETE_SERVICE = "delete"
+
+
+def task_delete_prompt(title: str) -> str:
+    """The "Soll ich … löschen?" question for a held task delete.
+
+    NAMES the task: the delete can't be undone, so a misheard or mis-resolved
+    title has to be catchable by the resident before the row is gone."""
+    return f"Soll ich die Aufgabe „{title}“ wirklich endgültig löschen?"
+
+
 def is_sensitive(domain: str, service: str, device_class: str | None = None) -> bool:
     """True when a ha_call_service domain+service can open/unsecure the house.
 
@@ -159,15 +174,24 @@ def is_negative(text: str) -> bool:
 
 @dataclass
 class PendingAction:
-    """A sensitive ha_call_service held for confirmation."""
+    """A sensitive action held for confirmation.
+
+    `tool` + `tool_args` are what actually gets dispatched on a yes; the
+    (domain, service, entity_id) triple stays the gate's identity key, so the
+    action being executed isn't re-held. A `ha_call_service` derives its args
+    from the triple; another gated tool (task_delete) carries its own."""
 
     domain: str
     service: str
     entity_id: str
     data: dict[str, Any] | None
     prompt: str
+    tool: str = "ha_call_service"
+    tool_args: dict[str, Any] | None = None
 
     def args(self) -> dict[str, Any]:
+        if self.tool_args is not None:
+            return dict(self.tool_args)
         out: dict[str, Any] = {
             "domain": self.domain,
             "service": self.service,

@@ -257,6 +257,7 @@ async def cascade_task_event(
     username: str,
     password: str,
     household_uid: str = "",
+    deleted: bool = False,
 ) -> None:
     """Re-sync the SINGLE VTODO for one task, immediately (#997, #1127).
 
@@ -268,6 +269,10 @@ async def cascade_task_event(
     the deterministic UID match the nightly full sync exactly, so a re-PUT
     overwrites in place. Never raises. Disabled (no-op) when the base URL /
     credentials are unset.
+
+    `deleted=True` forces the DELETE branch for a task that is ABOUT to be
+    removed (#1244): the row must still be there, because the collection is
+    routed off its owner, but it must not be re-PUT on the way out.
     """
     if not (base_url and username and password):
         return
@@ -284,7 +289,7 @@ async def cascade_task_event(
         conn.close()
     uid = f"{_TASK_UID_PREFIX}{entity_id}"
     day = None
-    if row is not None and facts.get("status", "open") == "open":
+    if not deleted and row is not None and facts.get("status", "open") == "open":
         day = _parse_iso(facts.get("due", ""))
     target = calendar_target_uid(
         row["resident_uid"] if row is not None else projection.SHARED_UID,
@@ -308,7 +313,9 @@ async def cascade_task_event(
         log.error("engine.deadlines_sync.cascade_failed", uid=uid, error=str(e))
 
 
-async def cascade_task_event_configured(db_path: str, entity_id: str) -> None:
+async def cascade_task_event_configured(
+    db_path: str, entity_id: str, *, deleted: bool = False
+) -> None:
     """`cascade_task_event` with the DAV config drawn from the running settings —
     the one-liner the task write paths call after a DB change. No-op when unset."""
     from solaris_chat.config import settings
@@ -320,4 +327,5 @@ async def cascade_task_event_configured(db_path: str, entity_id: str) -> None:
         settings.sync_dav_username,
         settings.sync_dav_password,
         settings.household_calendar_uid,
+        deleted=deleted,
     )
