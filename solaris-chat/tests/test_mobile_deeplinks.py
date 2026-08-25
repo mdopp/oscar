@@ -44,7 +44,9 @@ def test_ask_param_household_deep_link():
     assert "history.replaceState(null" in _HTML  # consume once
     assert "pendingTopic = HOUSEHOLD_TOPIC;" in _HTML
     assert "runTurn(text, []);" in _HTML
-    assert "if (!consumeAskParam()) routeFromLocation();" in _HTML
+    assert (
+        "if (!consumeAskParam() && !consumeToolParam()) routeFromLocation();" in _HTML
+    )
     # The chosen scheme is documented in a code comment for the Android app.
     assert "#/?ask=<urlencodierter-text>" in _HTML
 
@@ -87,3 +89,59 @@ def test_state_route_registered_for_browser_session():
     # the /napi/ device-token twin) so the deep-link route can fetch the card.
     server_src = (STATIC_DIR.parent / "server.py").read_text(encoding="utf-8")
     assert 'app.router.add_get("/api/portal/state", portal_state)' in server_src
+
+
+def test_tool_compose_route_is_catalog_driven():
+    # #1213 (contract with mdopp/solaris-android#71): `#/p/<tool-id>/new` opens
+    # the create path of ANY tool in /api|/napi/defs/tool. Catalog-driven — the
+    # route resolves the id against the registry, so a `.tool` shipped after this
+    # build works with no PWA rebuild and no app update; there is no per-tool
+    # branch like the hand-written notes/documents doorways.
+    assert (
+        "if (/^[^/]+\\/new$/.test(type)) { openToolCompose(type.slice(0, -4)); return; }"
+        in _HTML
+    )
+    assert "function openToolCompose(toolId)" in _HTML
+    # Only a tool that DECLARES a compose path is opened — the same declaration
+    # the app reads to decide whether to offer the tile at all.
+    assert (
+        'if (!def || !def["tool-compose-path"]) { toolDeepLinkFallback(); return; }'
+        in _HTML
+    )
+    # The card comes from the shared dot-command entry, not a new page per tool.
+    assert "dotcmd.openTool(toolId)" in _HTML
+    assert "function openTool(toolId)" in _HTML
+    assert "openTool: openTool" in _HTML
+
+
+def test_tool_chat_card_param_is_consumed_once():
+    # #1213: `#/?tool=<tool-id>` opens the chat with that tool's card already
+    # open, consumed ONCE via history.replaceState — the same one-shot mechanism
+    # as `?ask=` (#766), so a reload can't re-fire it.
+    assert "function consumeToolParam()" in _HTML
+    assert 'get("tool")' in _HTML
+    assert "history.replaceState(null" in _HTML
+    assert "openToolChat(toolId)" in _HTML
+    assert "function openToolChat(toolId)" in _HTML
+    # The chosen scheme is documented in a code comment for the Android app.
+    assert "#/?tool=<tool-id>" in _HTML
+    # `?ask=` no longer strips a hash it isn't going to act on, or it would eat
+    # the `?tool=` param before consumeToolParam ever sees it.
+    assert "if (!text) return false;" in _HTML
+
+
+def test_unknown_tool_id_falls_back_to_start_page():
+    # #1213: a home-screen tile outlives the tool it points at (uninstall,
+    # renamed id). Both routes then land on `#/p/start` — never a blank router
+    # state, never a dead end.
+    assert 'var TOOL_DEEPLINK_FALLBACK = "#/p/start";' in _HTML
+    assert (
+        "function toolDeepLinkFallback() { location.hash = TOOL_DEEPLINK_FALLBACK; }"
+        in _HTML
+    )
+    assert "if (!toolRegistry[toolId]) { toolDeepLinkFallback(); return; }" in _HTML
+    # An id that is in the catalog but whose card won't build also falls back.
+    assert _HTML.count("if (!dotcmd.openTool(toolId)) toolDeepLinkFallback();") == 2
+    # The routes wait for the catalog instead of racing its first load.
+    assert "var toolRegistryReady = loadToolRegistry();" in _HTML
+    assert _HTML.count("toolRegistryReady.then(function () {") == 2

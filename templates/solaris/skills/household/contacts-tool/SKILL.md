@@ -7,6 +7,7 @@ tool-id: contacts
 tool-label: Kontakt
 command: .contacts
 tool-api-path: /api/portal/persons
+tool-compose-path: #/p/contacts/new
 tool-actions: contact.add, person.update
 tool-cell-schema: {"title": "name", "meta": ["phone", "email"]}
 version: 1.0.0

@@ -6,6 +6,7 @@ scope: household
 tool-id: note
 tool-label: Notiz
 command: .note
+tool-compose-path: #/p/note/new
 tool-actions: note.add
 tool-cell-schema: {"title": "label"}
 version: 1.0.0

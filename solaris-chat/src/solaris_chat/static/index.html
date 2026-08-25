@@ -4783,7 +4783,18 @@
             });
           });
       }
-      loadToolRegistry();
+      // The deep-link routes (#1213) resolve a tool-id against the catalog, so
+      // they must wait for the first load instead of racing it.
+      var toolRegistryReady = loadToolRegistry();
+      // A dot-command maps to its def by tool-id; a def whose `command` differs
+      // from "." + tool-id is still reachable, so nothing has to be re-typed.
+      function toolForCommand(cmd) {
+        if (toolRegistry[cmd]) return toolRegistry[cmd];
+        for (var id in toolRegistry) {
+          if (toolRegistry[id].command === "." + cmd) return toolRegistry[id];
+        }
+        return null;
+      }
 
       // ---- Slash-command autocomplete (#181) ----
       // Built-in browser commands plus the typeable user/inline commands
@@ -4883,12 +4894,18 @@
           card = null; kind = "";
         }
         function parse(v) {
-          var m = /^\.([a-zäöü]*)([ \n]([\s\S]*))?$/i.exec(v);
+          // Digits/`-`/`_` are allowed so a catalog tool-id that isn't a plain
+          // word still types and deep-links (#1213); `known()` still gates it.
+          var m = /^\.([a-z0-9äöüß_-]*)([ \n]([\s\S]*))?$/i.exec(v);
           if (!m) return null;
           return { cmd: (m[1] || "").toLowerCase(), sawSpace: m[2] != null, rest: m[3] || "" };
         }
         function known(cmd) {
-          return DOT_COMMANDS.some(function (c) { return c[0].slice(1) === cmd; });
+          // Catalog-driven (#1213): a `.tool` that ships after this build isn't in
+          // DOT_COMMANDS, but it is in the registry — so it is typeable and
+          // deep-linkable without a PWA rebuild.
+          return DOT_COMMANDS.some(function (c) { return c[0].slice(1) === cmd; })
+            || !!toolForCommand(cmd);
         }
 
         function renderMenu(cmd) {
@@ -4943,13 +4960,17 @@
         };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
-          var build = toolBuilders[cmd];
+          var def = toolForCommand(cmd);
+          // A tool with no specialised builder renders the generic schema-driven
+          // card off its def (#1213) — that is what lets a newly built `.tool`
+          // open from a tile with no rebuild here.
+          var build = toolBuilders[cmd]
+            || (def ? function (el) { buildGenericToolCard(el, def); } : null);
           if (!build) return;
           clearCard(); kind = cmd;
           card = document.createElement("div");
           card.className = "msg sol dot-card dot-" + cmd;
           var head = document.createElement("div"); head.className = "dc-head";
-          var def = toolRegistry[cmd];
           head.textContent = DC_HEAD[cmd] || (def && def["tool-label"]) || cmd;
           card.appendChild(head);
           build(card);
@@ -5551,7 +5572,10 @@
         }
 
         function updateCard(cmd, rest) {
-          if (cmd === "task" && card && card._title) {
+          // `card._tool` marks a generic schema-driven card (the reference `.task`
+          // and every catalog tool without a specialised builder), so the
+          // create-line + live filter work for a tool this build never heard of.
+          if (card && card._tool && card._title) {
             var parsed = extractDate(rest);
             if (parsed) { card._due.value = parsed.iso; card._dueAuto = true; }
             else if (card._dueAuto) { card._due.value = ""; card._dueAuto = false; }
@@ -5603,6 +5627,20 @@
           closeMenu();
           if (!known(p.cmd)) { clearCard(); return; }
           ensureCard(p.cmd); updateCard(p.cmd, p.rest);
+        }
+
+        // Deep-link entry (#1213): open a catalog tool's live card the same way
+        // typing its dot-command does — the composer is primed with the command
+        // so the resident just keeps typing to create/filter. Both deep-link
+        // routes go through here, which is why neither grows a per-tool page.
+        // Returns false when the tool-id isn't in the catalog (uninstalled tool →
+        // the router falls back to the start page instead of a blank view).
+        function openTool(toolId) {
+          var def = toolRegistry[toolId];
+          if (!def) return false;
+          input.value = (def.command || "." + toolId) + " ";
+          autosize(); refresh(); input.focus();
+          return card != null;
         }
 
         // Returns true when the current input line was a dot-command we handled
@@ -5669,7 +5707,7 @@
           if (!menu.hidden && e.target !== input && !menu.contains(e.target)) closeMenu();
         });
 
-        return { refresh: refresh, handleKey: handleKey, close: closeMenu, clearCard: clearCard, submitFromInput: submitFromInput };
+        return { refresh: refresh, handleKey: handleKey, close: closeMenu, clearCard: clearCard, submitFromInput: submitFromInput, openTool: openTool };
       })();
 
       // ---- #tag / @person mention autosuggest (#279) ----
@@ -7132,6 +7170,12 @@
         if (type.indexOf(SB_APPROVAL_ROUTE) === 0) {
           openApprovalPage(type.slice(SB_APPROVAL_ROUTE.length)); return;
         }
+        // Erfassen deep link (#1213): `#/p/<tool-id>/new` opens the create path
+        // of ANY tool in the catalog — the Android 1×1 "Erfassen" tile. It is
+        // catalog-driven, so a `.tool` built after this build works with no
+        // rebuild here and no app update, as long as its def declares a
+        // tool-compose-path.
+        if (/^[^/]+\/new$/.test(type)) { openToolCompose(type.slice(0, -4)); return; }
         // Energie is no longer a standalone page — it lives in the `.energy`
         // dot-command (renderEnergyPage/renderEnergyFlow/… still exist). A stale
         // #/p/energy link falls back to the Geräte start page (#973).
@@ -7168,6 +7212,37 @@
           renderTasksPage(card);
           return;
         }
+      }
+
+      // ---- Katalog-getriebene Tool-Deep-Links (#1213) ----
+      // Two routes the Android home screen opens, both resolved against
+      // /api/defs/tool rather than a hand-written page per tool:
+      //   #/p/<tool-id>/new  — Erfassen: open that tool's create path
+      //   #/?tool=<tool-id>  — Chat mit geöffneter Karte
+      // A tile outlives the tool it points at (uninstall, renamed id), so an
+      // unresolvable tool-id must never leave the resident on an empty screen:
+      // it lands on the start page, the same place the app's other tiles land.
+      var TOOL_DEEPLINK_FALLBACK = "#/p/start";
+      function toolDeepLinkFallback() { location.hash = TOOL_DEEPLINK_FALLBACK; }
+      // Compose (B): only a tool that DECLARES a create path is opened here —
+      // that declaration is what the app reads to decide whether to offer the
+      // tile at all, so honouring it keeps both sides on the same answer.
+      function openToolCompose(toolId) {
+        toolRegistryReady.then(function () {
+          var def = toolRegistry[toolId];
+          if (!def || !def["tool-compose-path"]) { toolDeepLinkFallback(); return; }
+          newSession();
+          if (!dotcmd.openTool(toolId)) toolDeepLinkFallback();
+        });
+      }
+      // Chat mit Karte (C): a fresh 1:1 chat with the tool's card already open,
+      // so the resident can both look and ask in one place.
+      function openToolChat(toolId) {
+        toolRegistryReady.then(function () {
+          if (!toolRegistry[toolId]) { toolDeepLinkFallback(); return; }
+          newSession();
+          if (!dotcmd.openTool(toolId)) toolDeepLinkFallback();
+        });
       }
 
       // #769: a page focused on ONE device — reuses renderHaCard on the same
@@ -11471,12 +11546,12 @@
         var hash = window.location.hash || "";
         var m = hash.match(/^#\/\?(.*)$/);
         if (!m) return false;
-        var ask = new URLSearchParams(m[1]).get("ask");
+        var text = (new URLSearchParams(m[1]).get("ask") || "").trim();
+        // Not ours — leave the URL intact for the other hash-param consumers.
+        if (!text) return false;
         // Consume the param ONCE: strip it from the URL before sending so a
         // re-render / back-forward / reload can't re-fire the same message.
         history.replaceState(null, "", window.location.pathname + window.location.search);
-        var text = (ask || "").trim();
-        if (!text) return false;
         // Same path as a manually typed household turn: a fresh session pre-bound
         // to HOUSEHOLD_TOPIC (#242/#700), the user bubble, then the streamed turn.
         newSession();
@@ -11487,10 +11562,28 @@
         return true;
       }
 
+      // Chat-mit-Karte deep link (#1213): the Android 1×1 tile opens the chat
+      // with one tool's card already showing, via the hash param
+      // `#/?tool=<tool-id>` — the same one-shot mechanism as `?ask=` above, so a
+      // reload can't re-fire it. The tool-id comes from /napi/defs/tool, so a
+      // tool built after this build needs no app update.
+      // Scheme: https://chat.dopp.cloud/#/?tool=<tool-id>
+      function consumeToolParam() {
+        var hash = window.location.hash || "";
+        var m = hash.match(/^#\/\?(.*)$/);
+        if (!m) return false;
+        var toolId = (new URLSearchParams(m[1]).get("tool") || "").trim();
+        if (!toolId) return false;
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        openToolChat(toolId);
+        return true;
+      }
+
       Promise.all([loadPersonalities(), loadWhoami(), loadTopics()])
         .then(loadSessions).then(function () {
-          // ?ask deep link wins over normal hash routing when present (#766).
-          if (!consumeAskParam()) routeFromLocation();
+          // ?ask / ?tool deep links win over normal hash routing when present
+          // (#766, #1213).
+          if (!consumeAskParam() && !consumeToolParam()) routeFromLocation();
         }).then(syncTabbar);
     })();
   </script>

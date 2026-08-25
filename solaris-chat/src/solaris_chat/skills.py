@@ -201,6 +201,34 @@ def cell_schema_violations(
     return out
 
 
+# The catalog-driven compose deep link (#1213, cross-repo contract with
+# mdopp/solaris-android#71). `tool-compose-path` is the app-facing sibling of
+# `tool-api-path`: a tool states in its own frontmatter that it HAS a create path
+# and where the PWA opens it, so a native consumer offers a "create" tile only
+# for tools that can serve one instead of linking into a dead end. There is
+# exactly ONE shape the router resolves — anything else would land the tile on
+# the `#/p/start` fallback, so a mistyped declaration is rejected here rather
+# than shipped as a tile that quietly goes to the wrong page.
+TOOL_COMPOSE_ROUTE = "#/p/{tool_id}/new"
+
+
+def compose_path_violations(tool_id: str, compose_path: str) -> list[str]:
+    """Lint a def's declared `tool-compose-path` — empty means clean.
+
+    No declaration is clean (the tool simply has no create path). A declaration
+    must be the canonical route for THIS tool-id; a path that names another tool,
+    or any other shape, does not resolve in the router."""
+    if not compose_path:
+        return []
+    expected = TOOL_COMPOSE_ROUTE.format(tool_id=tool_id)
+    if compose_path != expected:
+        return [
+            f"tool-compose-path '{compose_path}' does not resolve; "
+            f"the router serves '{expected}'"
+        ]
+    return []
+
+
 def _json_field(meta: dict[str, str], key: str) -> dict[str, Any]:
     raw = meta.get(key, "").strip()
     try:
@@ -219,7 +247,8 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
     pack's no-PyYAML flat parser. The client (#1005) dispatches on these instead
     of the hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the
     actions; `tool-action-params` (#1214) lets a renderer build an action's
-    callback body straight from the row it drew.
+    callback body straight from the row it drew; `tool-compose-path` (#1213)
+    declares whether the tool has a create path at all, and where.
     """
     actions = [a.strip() for a in meta.get("tool-actions", "").split(",") if a.strip()]
     cell_schema = _json_field(meta, "tool-cell-schema")
@@ -230,6 +259,7 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
         "command": meta.get("command", ""),
         "tool-api-path": meta.get("tool-api-path", ""),
         "tool-search-path": meta.get("tool-search-path", ""),
+        "tool-compose-path": meta.get("tool-compose-path", ""),
         "tool-actions": actions,
         "tool-cell-schema": cell_schema,
         "tool-action-params": action_params,

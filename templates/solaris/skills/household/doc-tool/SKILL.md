@@ -7,6 +7,7 @@ tool-id: doc
 tool-label: Dokument
 command: .doc
 tool-api-path: /api/portal/documents/search
+tool-compose-path: #/p/doc/new
 tool-actions: doc.classify
 tool-cell-schema: {"title": "title", "meta": ["category"]}
 version: 1.0.0
