@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.41.0](https://github.com/mdopp/solarisbay/compare/v0.40.0...v0.41.0) (2026-08-25)
+
+
+### Features
+
+* **chat:** make the lock domain reachable for native widgets ([#1216](https://github.com/mdopp/solarisbay/issues/1216)) ([55c974a](https://github.com/mdopp/solarisbay/commit/55c974ad79f501bac4c16d737ad303b83f03dec7)), closes [#1212](https://github.com/mdopp/solarisbay/issues/1212)
+
+
+### Bug Fixes
+
+* **chat:** parse network-sourced XML with defusedxml ([#1226](https://github.com/mdopp/solarisbay/issues/1226)) ([044d9e4](https://github.com/mdopp/solarisbay/commit/044d9e4987425cc3b83d7563745ae4af42a39149)), closes [#1225](https://github.com/mdopp/solarisbay/issues/1225)
+* **ci:** run pip-audit under python 3.12 and make it blocking ([cb330fe](https://github.com/mdopp/solarisbay/commit/cb330fece7c584f294301ee5fbbbe1d2d74c072b)), closes [#1224](https://github.com/mdopp/solarisbay/issues/1224)
+* **gatekeeper:** stop a same-transcript race from swapping resident identity ([#1219](https://github.com/mdopp/solarisbay/issues/1219)) ([344af55](https://github.com/mdopp/solarisbay/commit/344af5583c01f7117321a6b3be268e6594aa386d)), closes [#1218](https://github.com/mdopp/solarisbay/issues/1218)
+
 ## [0.40.0](https://github.com/mdopp/solarisbay/compare/v0.39.5...v0.40.0) (2026-08-25)
 
 
