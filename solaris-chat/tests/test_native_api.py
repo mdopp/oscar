@@ -386,7 +386,8 @@ def _patch_active(monkeypatch):
     """Stub the single bulk actuator+state fetch `portal_active` filters over.
 
     An on light and an open cover are active; an off switch and an unavailable
-    device must be excluded."""
+    device must be excluded. The active cards carry the control attributes
+    `card_spec` puts on every card (#1233)."""
 
     async def _cards(url, tok, entity_area):
         return [
@@ -396,6 +397,10 @@ def _patch_active(monkeypatch):
                 "room": "Küche",
                 "domain": "light",
                 "state": "on",
+                "brightness": 180,
+                "rgb_color": [255, 170, 80],
+                "supported_color_modes": ["color_temp", "hs"],
+                "color_mode": "hs",
             },
             {
                 "entity_id": "cover.g",
@@ -403,6 +408,7 @@ def _patch_active(monkeypatch):
                 "room": "Garage",
                 "domain": "cover",
                 "state": "open",
+                "current_position": 60,
             },
             {
                 "entity_id": "switch.b",
@@ -467,9 +473,16 @@ async def test_napi_active_valid_token_returns_only_active(
     # on light + open cover in; off switch + unavailable device out.
     assert ids == {"light.k", "cover.g"}
     item = next(e for e in j["active"] if e["entity_id"] == "light.k")
-    assert set(item) == {"entity_id", "name", "room", "domain", "state"}
     assert item["name"] == "Küche" and item["room"] == "Küche"
     assert item["domain"] == "light" and item["state"] == "on"
+    # The control attributes must survive: the widget renders brightness and
+    # colour off this payload — a 5-key subset makes them unrenderable (#1233).
+    assert item["brightness"] == 180
+    assert item["rgb_color"] == [255, 170, 80]
+    assert item["supported_color_modes"] == ["color_temp", "hs"]
+    assert item["color_mode"] == "hs"
+    cover = next(e for e in j["active"] if e["entity_id"] == "cover.g")
+    assert cover["current_position"] == 60
 
 
 async def test_napi_active_ha_unconfigured_is_503(aiohttp_client, tmp_path):
