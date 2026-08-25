@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 
 import pytest
 from solaris_chat.engine import store
@@ -957,14 +958,18 @@ async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
 # -- #350: transcript-keyed uid side-channel (approach b) -------------------
 
 
-def _stash(db: str, transcript: str, uid: str, *, matched: bool) -> None:
+def _stash(
+    db: str, transcript: str, uid: str, *, matched: bool, room: str = ""
+) -> None:
     """Write the row the gatekeeper would write. `matched` is keyword-only and
     has no default: the recognition claim is always stated, never inherited
-    from the uid (#1152)."""
+    from the uid (#1152). `room` is the second half of the correlation key
+    (#1218) and defaults to the HA-STT path's "gatekeeper doesn't know"."""
     conn = sqlite3.connect(db)
     conn.execute(
-        "INSERT INTO voice_uid_stash (transcript, uid, matched) VALUES (?, ?, ?)",
-        (transcript, uid, 1 if matched else 0),
+        "INSERT INTO voice_uid_stash (transcript, room, uid, matched) "
+        "VALUES (?, ?, ?, ?)",
+        (transcript, room, uid, 1 if matched else 0),
     )
     conn.commit()
     conn.close()
@@ -1144,6 +1149,105 @@ def test_consume_speaker_ignores_but_reaps_expired_row(db):
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
     conn.close()
+
+
+# -- #1218: the transcript alone can't tell two residents apart -------------
+
+
+def _count(db: str) -> int:
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0]
+    conn.close()
+    return n
+
+
+def test_consume_speaker_room_gives_each_resident_their_own_row(db):
+    # Two satellites, one sentence, two rooms: the room is the second half of
+    # the key, so neither turn can be handed the other resident's identity.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna", matched=True, room="küche")
+    _stash(db, "Licht an", "bob", matched=True, room="bad")
+
+    assert voice_uid_stash.consume_speaker(db, "Licht an", "Küche") == (
+        voice_uid_stash.StashedSpeaker("anna", matched=True)
+    )
+    # bob's row survived anna's consume-once and is still his.
+    assert voice_uid_stash.consume_speaker(db, "Licht an", "bad") == (
+        voice_uid_stash.StashedSpeaker("bob", matched=True)
+    )
+    assert _count(db) == 0
+
+
+def test_consume_speaker_races_two_residents_under_one_transcript(db):
+    # The race itself: two turns consume concurrently. Each must come away
+    # with its own room's row — never the other resident's uid+claim.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna", matched=True, room="küche")
+    _stash(db, "Licht an", "bob", matched=True, room="bad")
+    got: dict[str, object] = {}
+    barrier = threading.Barrier(2)
+
+    def consume(room: str) -> None:
+        barrier.wait()
+        got[room] = voice_uid_stash.consume_speaker(db, "Licht an", room)
+
+    threads = [threading.Thread(target=consume, args=(r,)) for r in ("küche", "bad")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert got == {
+        "küche": voice_uid_stash.StashedSpeaker("anna", matched=True),
+        "bad": voice_uid_stash.StashedSpeaker("bob", matched=True),
+    }
+
+
+def test_consume_speaker_fails_closed_when_the_room_cannot_separate_two_rows(db):
+    # The HA-STT path: the facade has no room prefix, so both rows are equally
+    # plausible. Neither resident's identity may be handed out — the answer is
+    # the unknown speaker, and both rows are burned so the second turn can't
+    # pick up the loser.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna", matched=True, room="küche")
+    _stash(db, "Licht an", "bob", matched=True, room="bad")
+
+    speaker = voice_uid_stash.consume_speaker(db, "Licht an")
+    assert speaker == voice_uid_stash.StashedSpeaker("guest", matched=False)
+    assert speaker.matched is False
+    assert _count(db) == 0
+    assert voice_uid_stash.consume_speaker(db, "Licht an") is None
+
+
+def test_consume_speaker_refuses_a_row_from_a_different_room(db):
+    # Both ends named a room and they disagree: this is not that turn's row.
+    # It stays put for the turn it belongs to; this one falls back to the
+    # household default.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna", matched=True, room="küche")
+
+    assert voice_uid_stash.consume_speaker(db, "Licht an", "bad") is None
+    assert _count(db) == 1
+    assert voice_uid_stash.consume_speaker(db, "Licht an", "küche") == (
+        voice_uid_stash.StashedSpeaker("anna", matched=True)
+    )
+
+
+@pytest.mark.parametrize(("stashed", "asked"), [("", "Küche"), ("küche", ""), ("", "")])
+def test_consume_speaker_still_resolves_when_one_end_has_no_room(db, stashed, asked):
+    # The gatekeeper's peer on the HA-STT path is HA, not the satellite, so it
+    # has no room to write; HA may still inject a `[room: X]` prefix. One end
+    # not knowing must not break attribution when there is only one candidate.
+    from solaris_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna", matched=True, room=stashed)
+    assert voice_uid_stash.consume_speaker(db, "Licht an", asked) == (
+        voice_uid_stash.StashedSpeaker("anna", matched=True)
+    )
 
 
 # -- #1152: `matched` is the claim; nothing else may stand in for it ---------

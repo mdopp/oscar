@@ -242,13 +242,15 @@ class GatekeeperHandler(AsyncEventHandler):
         log.info("gatekeeper.transcript", trace_id=self.trace_id)
 
         speaker = await self._resolve_speaker()
+        endpoint = f"voice-pe:{self.client_id or 'unknown'}"
+        location = await self._resolve_location()
         # A satellite turn carries its uid in the facade POST, but `user` only
         # routes the conversation — the visibility gate reads the stash. Publish
         # a genuine match here too, or PERSONAL can never unlock on satellite
-        # hardware however confident the match was (#1146).
-        await self._stash_speaker(transcript, speaker)
-        endpoint = f"voice-pe:{self.client_id or 'unknown'}"
-        location = await self._resolve_location()
+        # hardware however confident the match was (#1146). The room goes into
+        # the correlation key: `converse` sends it as the `[room: X]` prefix the
+        # facade parses back out, so two satellites can't collide (#1218).
+        await self._stash_speaker(transcript, speaker, room=location)
         response = await self._solaris.converse(
             text=transcript,
             uid=speaker.uid,
@@ -598,7 +600,9 @@ class GatekeeperHandler(AsyncEventHandler):
         await asyncio.to_thread(touch_last_seen, settings.solaris_db_path, uid)
         return SpeakerResolution(uid, attributed=True, matched=True)
 
-    async def _stash_speaker(self, transcript: str, speaker: SpeakerResolution) -> None:
+    async def _stash_speaker(
+        self, transcript: str, speaker: SpeakerResolution, *, room: str | None = None
+    ) -> None:
         """Publish this turn's speaker to the engine facade over the
         transcript-keyed side-channel — and only when speaker-ID reached a
         verdict.
@@ -622,12 +626,14 @@ class GatekeeperHandler(AsyncEventHandler):
             transcript,
             speaker.uid,
             matched=speaker.matched,
+            room=room,
         )
         log.info(
             "gatekeeper.speaker.stash",
             trace_id=self.trace_id,
             uid=speaker.uid,
             matched=speaker.matched,
+            room=room or "",
         )
 
     async def _resolve_location(self) -> str | None:

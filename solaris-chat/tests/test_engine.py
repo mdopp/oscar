@@ -70,10 +70,12 @@ CREATE TABLE engine_timers (
   room       TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE voice_uid_stash (
-  transcript TEXT PRIMARY KEY,
+  transcript TEXT NOT NULL,
+  room       TEXT NOT NULL DEFAULT '',
   uid        TEXT NOT NULL,
   matched    INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (transcript, room)
 );
 CREATE TABLE session_traces (
   session_id        TEXT NOT NULL,
