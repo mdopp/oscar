@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.0](https://github.com/mdopp/solarisbay/compare/v0.41.0...v0.42.0) (2026-08-25)
+
+
+### Features
+
+* **solaris-chat:** catalog-driven deep-links for .tool tiles ([f22f5e7](https://github.com/mdopp/solarisbay/commit/f22f5e7d46cc7d43f9c1ae066c0ba6d2b038a1c2)), closes [#1213](https://github.com/mdopp/solarisbay/issues/1213)
+
 ## [0.41.0](https://github.com/mdopp/solarisbay/compare/v0.40.0...v0.41.0) (2026-08-25)
 
 
