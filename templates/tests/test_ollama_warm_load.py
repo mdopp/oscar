@@ -49,10 +49,10 @@ def test_warm_load_posts_one_token_generate(pd, monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(pd.urllib.request, "urlopen", fake_urlopen)
-    assert pd.warm_load_model("http://127.0.0.1:11434", "gemma4:e2b") is True
+    assert pd.warm_load_model("http://127.0.0.1:11434", "gemma4:e4b") is True
     url, body = calls[0]
     assert url.endswith("/api/generate")
-    assert body["model"] == "gemma4:e2b"
+    assert body["model"] == "gemma4:e4b"
     assert body["options"]["num_predict"] == 1
 
 
@@ -61,21 +61,15 @@ def test_warm_load_fails_soft(pd, monkeypatch):
         raise OSError("down")
 
     monkeypatch.setattr(pd.urllib.request, "urlopen", boom)
-    assert pd.warm_load_model("http://127.0.0.1:11434", "gemma4:e2b") is False
+    assert pd.warm_load_model("http://127.0.0.1:11434", "gemma4:e4b") is False
 
 
 def test_main_warms_after_pulls(pd):
     src = (TEMPLATES / "ollama" / "post-deploy.py").read_text(encoding="utf-8")
-    assert src.index("def main") < src.index("warm_load_model(ollama_url, warm)")
-    # Ground truth = locally installed tags (solarisbay#339); env list only as
-    # fallback. Small-first is load-bearing (solarisbay#340): with e2b resident
-    # a 12b load co-exists; the reverse order evicts 12b.
-    assert "local_chat_tags(ollama_url)" in src
-    assert "(*extra_models, model)" in src
-    assert '"e2b" not in t' in src
+    assert src.index("def main") < src.index("warm_load_order(warm_tags, fast_model)")
 
 
-def test_local_chat_tags_skips_embed_models(pd, monkeypatch):
+def _tags_resp(models):
     class _Resp:
         status = 200
 
@@ -86,18 +80,71 @@ def test_local_chat_tags_skips_embed_models(pd, monkeypatch):
             return False
 
         def read(self):
-            return json.dumps(
-                {
-                    "models": [
-                        {"name": "gemma4:12b"},
-                        {"name": "gemma4:e2b"},
-                        {"name": "nomic-embed-text:latest"},
-                    ]
-                }
-            ).encode()
+            return json.dumps({"models": models}).encode()
 
-    monkeypatch.setattr(pd.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
-    assert pd.local_chat_tags("http://x") == ["gemma4:12b", "gemma4:e2b"]
+    return lambda req, timeout=0: _Resp()
+
+
+def test_local_chat_tags_skips_embed_models(pd, monkeypatch):
+    monkeypatch.setattr(
+        pd.urllib.request,
+        "urlopen",
+        _tags_resp(
+            [
+                {"name": "gemma4:12b"},
+                {"name": "gemma4:e4b"},
+                {"name": "nomic-embed-text:latest"},
+            ]
+        ),
+    )
+    assert pd.local_chat_tags("http://x") == ["gemma4:12b", "gemma4:e4b"]
+
+
+# The tags actually shipped today, with the sizes /api/tags really reports
+# (box-measured, solarisbay#1217). They are MISLEADING: e4b's per-layer-
+# embedding weights are the larger download (9.6 GB) but the smaller resident
+# footprint (~3.3 GB vs 12b's ~8.4 GB). Any ordering derived from `size` —
+# ascending or descending — gets one of the two cases below wrong; only
+# ordering by the configured fast-model identity passes both.
+_REAL_SIZES = [
+    {"name": "gemma4:e4b", "size": 9608350718},
+    {"name": "gemma4:12b", "size": 7556508396},
+]
+_INVERTED_SIZES = [
+    {"name": "gemma4:e4b", "size": 7556508396},
+    {"name": "gemma4:12b", "size": 9608350718},
+]
+
+
+@pytest.mark.parametrize("models", [_REAL_SIZES, _INVERTED_SIZES])
+def test_fast_model_warms_first_whatever_api_tags_reports_as_size(
+    pd, monkeypatch, models
+):
+    monkeypatch.setattr(pd.urllib.request, "urlopen", _tags_resp(models))
+    tags = pd.local_chat_tags("http://x")
+    assert pd.warm_load_order(tags, "gemma4:e4b") == ["gemma4:e4b", "gemma4:12b"]
+
+
+def test_warm_load_order_puts_the_rest_after_the_fast_model(pd):
+    order = pd.warm_load_order(
+        ["gemma4:12b", "gemma4:e4b", "qwen3:8b", "gemma4:e4b"], "gemma4:e4b"
+    )
+    assert order == ["gemma4:e4b", "gemma4:12b", "qwen3:8b"]
+
+
+def test_warm_load_order_matches_an_untagged_fast_model(pd):
+    assert pd.warm_load_order(["gemma4:12b", "mymodel:latest"], "mymodel") == [
+        "mymodel:latest",
+        "gemma4:12b",
+    ]
+
+
+def test_warm_load_order_falls_back_alphabetically_and_logs(pd, capsys):
+    order = pd.warm_load_order(["gemma4:12b", "qwen3:8b"], "gemma4:e4b")
+    assert order == ["gemma4:12b", "qwen3:8b"]
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["level"] == "warn"
+    assert logged["args"]["fast_model"] == "gemma4:e4b"
 
 
 def test_local_chat_tags_fails_soft(pd, monkeypatch):
