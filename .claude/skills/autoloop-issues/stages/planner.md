@@ -36,7 +36,24 @@ Break into bite-size child issues filed in the repo: each independently shippabl
 Enqueue each unit with `queue.py plan '{"id":…,"kind":"cluster"|"issue"|"lint-sweep","issues":[…],"theme":…,"region":…,"scope":…,"acceptance":…,"gate":"normal"|"verify","security":true|false}'` (it labels the member issues `autoloop:queued`). `scope` = one line on what to do; `acceptance` = how the builder knows it's done. `id` should sort into Step 4's order (e.g. zero-padded priority prefix) since `queue.py next` picks by ascending `id`.
 
 ## Step 4 — Selection order
-Highest-priority bucket any member lands in: `good first issue` > `bug` > `phase-0` > `phase-1` > `documentation` > everything else, ascending issue number within a bucket (`candidates --order` already returns them in this order — assign unit `id`s that preserve it).
+
+**Anything another project is waiting on comes first.** If an issue says another project
+needs this, it outranks everything below — that team is stalled until we ship, so one
+unit here unblocks more work than any local fix. You know it because **the issue says
+so**: it names another repo, links an issue there, or someone from that project asked.
+Don't infer it, don't maintain a list of projects — read what's written.
+
+Then the normal buckets: `good first issue` > `bug` > `phase-0` > `phase-1` >
+`documentation` > everything else, ascending issue number within a bucket
+(`candidates --order` already returns them in this order — assign unit `id`s that
+preserve it, with the waiting-on-us ones sorting first).
+
+**The other direction is the same rule.** When you find that another project needs
+something from us, or we need something from them, **write it as an issue in that
+repo** (`gh issue create --repo <owner>/<repo>`, symptom + repro + starting-point
+files, no fix-plan) and link it from ours. That is how their loop learns about it —
+exactly how you'd want them to tell us. Filing the issue is the whole handoff; never
+open a cross-repo PR.
 
 ## Step 5 — Queue empty? Choose a filler track
 Don't exit; don't blindly default to lint.
@@ -46,6 +63,12 @@ Don't exit; don't blindly default to lint.
 - **(d) End-to-end validation on the box** — the loop's ultimate goal: confirm Solaris works *as a whole* on the real ServiceBay box, not just one change. Run the golden-path smoke (below) and route any failure cross-repo (Step 2's servicebay rule). Prefer this after a batch of Solaris changes has merged. Record the date via `queue.py note "e2e YYYY-MM-DD: <result>"` — the orchestrator's "e2e ran since the last merge" check (hard-exit #5) reads this ring.
 
 **Autonomous default order:** (d) if Solaris artifacts merged since the last e2e note; else (b) if any `autoloop:blocked`/`autoloop:upstream-wait` issues are open; else (c) if no eval noted in the last ~5 firings; else (a). Record the choice with `queue.py note`.
+
+**Before any filler track, check whether we are blocking someone.** Skim the open
+issues for ones that say another project is waiting (Step 4). If one is parked as
+`needs-refinement` and the blocked project only needs a decision, that question is
+worth asking the operator now rather than doing lint instead — a filler track is what
+you do when nobody is waiting on us, not when someone is.
 
 ## Step 6 — Labels are set as you go (no manual mirror)
 `queue.py plan`/`park` set the `autoloop:*` labels + comments directly and GitHub is the source of truth, so there is no separate file→label reconcile step. Run `queue.py mirror` once at the end to prune the cache and drop any stale label projection.

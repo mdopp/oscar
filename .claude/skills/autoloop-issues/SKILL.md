@@ -89,6 +89,12 @@ Then pick **exactly one** foreground stage this tick, by the first matching rule
 
 1. **Builder — seal** — if a `batch` exists and (`batch.count >= 8` **or** `queue.py next` returns nothing) and it isn't merged yet **and** verify status is clear (`green`/`null` — *not* `owed`/`verifying`/`red`). Builder runs full gates + CI (where CI applies), merges, sets verify to `owed` if any merged file is path-mandated. **Seal-ahead is forbidden:** if verify is `owed`/`verifying`/`red`, a prior batch is still in merge/verify — do **not** seal; build-ahead instead (rule 2), or idle-wait (Step 3).
 2. **Builder — build** — if `queue.py next` returns a planned unit and `batch.count < 8`. Builder implements the next unit onto the batch branch with fast gates only. **This is the build-ahead path** — eligible even while a background Verify runs, because building touches neither `main` nor the box.
+**Before all three: is another project waiting on us?** If an open issue says another
+project needs something from us, that work comes first — that team is stalled until we
+ship it. You know it because the issue says so; don't infer it and don't keep a list of
+projects. Same rule outbound: when something belongs to another project, file an issue
+*there* — that is how their loop finds out.
+
 3. **Planner** — if there's no actionable unit. Planner refills: groom + cluster open issues, decompose epics, park refinement/awaiting-user/upstream-waits (security issues become `security:true` units that route to the draft gate, not parked), or (queue dry) enqueue lint-sweep units, run a codebase eval, or run **end-to-end validation on the box** + route failures cross-repo to mdopp/servicebay.
 
 Never jump to seal while mid-batch (`count < 8` and planned units remain) — that's the prime-directive violation. Keep building. If the only thing left is to wait on a background Verify (batch built out to 8, nothing to plan), don't dispatch a foreground stage — go to Step 3 and schedule a short wakeup.
