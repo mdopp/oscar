@@ -2771,7 +2771,7 @@
       // icon tint, the big state label and the level-bar fill. Off/disabled → grey.
       var HC_ACCENT = {
         light: "#FFC107", cover: "#7E9CFF", switch: "#66BB6A",
-        climate: "#FF8A65", sensor: "#FFC107",
+        climate: "#FF8A65", sensor: "#FFC107", lock: "#FFB74D",
       };
       function hcAccent(domain) { return HC_ACCENT[domain] || "#FFC107"; }
       // Icon + big-state colour: greyed when offline; a light additionally reads
@@ -2784,6 +2784,10 @@
           if (String(c.state) !== "on") return "#9E9E9E";
           if (Array.isArray(c.rgb_color) && c.rgb_color.length >= 3) return rgbToHex(c.rgb_color);
         }
+        // A lock reads inverted (#1212): abgeschlossen is the calm/secured state
+        // (grey), anything else — aufgeschlossen, klemmt, mid-motion — wears the
+        // accent so an unsecured door stands out instead of blending in.
+        if (domain === "lock") return String(c.state) === "locked" ? "#9E9E9E" : hcAccent(domain);
         return hcAccent(domain);
       }
       // Inline domain icon (24-grid path, tinted via currentColor). Reuses the
@@ -2794,12 +2798,24 @@
         switch: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
         climate: '<path d="M13 5a3 3 0 0 0-6 0v7.2a5 5 0 1 0 6 0zm-3 12.5a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/>',
         sensor: '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4a1 1 0 0 1 1 1v5l3.5 2-1 1.7L11 13V7a1 1 0 0 1 1-1z"/>',
+        lock: '<path d="M12 2a4 4 0 0 0-4 4v3H6v13h12V9h-2V6a4 4 0 0 0-4-4zm0 2a2 2 0 0 1 2 2v3h-4V6a2 2 0 0 1 2-2zm0 9a2 2 0 0 1 1 3.7V19h-2v-2.3A2 2 0 0 1 12 13z"/>',
       };
       function hcIconSvg(domain) {
         return HC_ICON[domain] || HC_ICON.sensor;
       }
+      // Lock wording (#1212), the ONE source both card renderers read. The house
+      // has no door sensor, so a lock only ever states the BOLT — never
+      // "offen/zu", which would claim the door is shut when it may be ajar. An
+      // unknown/unavailable state never reaches here: those render as the greyed
+      // "nicht verfügbar" card, so a missing MQTT value can't look abgeschlossen.
+      var HC_LOCK_STATE = {
+        locked: "abgeschlossen", unlocked: "aufgeschlossen",
+        locking: "schließt ab …", unlocking: "schließt auf …",
+        jammed: "klemmt", open: "entriegelt",
+      };
       // Big state label per domain (German), matching the widget wording.
       function hcBigState(c, st) {
+        if (c.domain === "lock") return HC_LOCK_STATE[st] || st || "—";
         var d = c.domain;
         if (d === "light") {
           if (st === "on") {
@@ -3718,6 +3734,7 @@
 
       // German status label for a read-only badge card, keyed off domain + state.
       function haStateLabel(domain, state) {
+        if (domain === "lock") return HC_LOCK_STATE[state] || state || "—";
         if (domain === "binary_sensor" || domain === "cover") {
           if (state === "on" || state === "open") return "offen";
           if (state === "off" || state === "closed") return "geschlossen";
