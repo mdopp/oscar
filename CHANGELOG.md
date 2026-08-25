@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.40.0](https://github.com/mdopp/solarisbay/compare/v0.39.5...v0.40.0) (2026-08-25)
+
+
+### Features
+
+* **skill:** declare each tool-action's params in the .tool catalog ([77d4f0b](https://github.com/mdopp/solarisbay/commit/77d4f0b95470c575545fd8742c1d63395c1b65e7)), closes [#1214](https://github.com/mdopp/solarisbay/issues/1214)
+
+
+### Bug Fixes
+
+* **autoloop:** stop queue.py from silently clipping verify checklists ([aa5bcbb](https://github.com/mdopp/solarisbay/commit/aa5bcbb13a5a4c4ff0e8c46e876be78bff1bb4d0)), closes [#1211](https://github.com/mdopp/solarisbay/issues/1211)
+* keep deploys and schema bumps degrading instead of dying ([18f9346](https://github.com/mdopp/solarisbay/commit/18f93467b2589098b358e772d2f42e21101f1ae9))
+* **template:** batch transcription gets a settable, reportable silence filter ([9213237](https://github.com/mdopp/solarisbay/commit/92132378f8564a3cb52065e41f2ffca88a470bcb))
+* **template:** drop upstream whisper flags the image no longer accepts instead of dying ([a4f7c6f](https://github.com/mdopp/solarisbay/commit/a4f7c6f4bbdf5d4394b7b97c8f3472c38a1ea44b)), closes [#1210](https://github.com/mdopp/solarisbay/issues/1210)
+* **template:** let the batch caller ask for silence detection and read what it dropped ([090c702](https://github.com/mdopp/solarisbay/commit/090c702f3b64734923d96ca2f2b9f26887ddeb44)), closes [#1204](https://github.com/mdopp/solarisbay/issues/1204)
+* **template:** order ollama warm-load by the configured fast model ([7c60c63](https://github.com/mdopp/solarisbay/commit/7c60c6363d1ee174806cc7806153adf99deb77b1))
+* **template:** order ollama warm-load by the configured fast model ([eaef016](https://github.com/mdopp/solarisbay/commit/eaef016929dffc67a9e5dd62f91c79e1eaecbac4)), closes [#1217](https://github.com/mdopp/solarisbay/issues/1217)
+* **template:** stop the post-deploy logging a failed probe and two HTTP 500s ([6ec1ae5](https://github.com/mdopp/solarisbay/commit/6ec1ae59f34c62edf69890022995403ebe0fe9a5)), closes [#1207](https://github.com/mdopp/solarisbay/issues/1207) [#1208](https://github.com/mdopp/solarisbay/issues/1208)
+* **template:** warm-load the fast chat model before the big one ([7cc9c6f](https://github.com/mdopp/solarisbay/commit/7cc9c6f7ddfca4ad74a938b8823aecbb2eb92e47)), closes [#1217](https://github.com/mdopp/solarisbay/issues/1217)
+
+
+### Reverts
+
+* **template:** un-invert the ollama warm-load order fix ([#1221](https://github.com/mdopp/solarisbay/issues/1221)) ([f286c18](https://github.com/mdopp/solarisbay/commit/f286c1844d7854d945de8206b897ca439f55aff1))
+
 ## [0.39.5](https://github.com/mdopp/solarisbay/compare/v0.39.4...v0.39.5) (2026-08-22)
 
 
