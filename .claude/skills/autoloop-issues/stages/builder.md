@@ -73,6 +73,8 @@ A full-suite/coverage failure the fast gate missed → identify the culprit comm
 ### 2. One PR for the whole batch
 `gh pr create` with a real body (no `--fill`): **What** (the batch's themes), **Why** (one `Closes #<N>` per issue), **Risk**, **Rollback**, **Verification** checklist (full gates + real-box `/verify` if path-mandated).
 
+**The batch PR title must NOT be a Conventional Commit.** Use a plain descriptive title — `Batch 2026-08-25b: ollama warm-load order` — never `fix(template): …`. Step 3 merges with `--merge`, and GitHub writes the PR title into the merge commit body, so a conventional title is parsed by release-please as *another* commit: every batch then lands in `CHANGELOG.md` twice, once as the umbrella title and once as each commit it contains. This is retroactive — 0.39.4, 0.39.5 and 0.40.0 all shipped duplicated entries before the rule existed. The commits inside the batch stay conventional; only the PR title changes.
+
 ### 3. Merge gate (`main` is unprotected → `--auto` no-ops; gate manually)
 **Operator authorisation, recorded 2026-08-03.** The repository owner has explicitly
 authorised the seal step to merge the batch PR itself, without a per-batch human
