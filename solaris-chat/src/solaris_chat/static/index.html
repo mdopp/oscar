@@ -3830,6 +3830,11 @@
             tnum.className = "st-num";
             tnum.textContent = secs;
             row.appendChild(tool); row.appendChild(tnum);
+            if (s.detail_id != null) {
+              row.classList.add("is-openable");
+              row.title = "Open the arguments and result of this tool call";
+              row.addEventListener("click", function () { openTraceDetail(s.detail_id); });
+            }
             rows.appendChild(row);
             return;
           }
@@ -3900,6 +3905,16 @@
         function preview(text) { return (text || "").replace(/\s+/g, " ").slice(0, 80); }
         function pretty(v) { try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); } }
 
+        // A tool step's body is its arguments + result, not an LLM exchange —
+        // the whole point is seeing WHAT a tool was called with when it went
+        // wrong, so both start expanded.
+        if (d.arguments !== undefined || d.result !== undefined) {
+          head("tool: " + (d.tool_name || "?"));
+          sec("arguments", "", pretty(d.arguments), true);
+          var res = typeof d.result === "string" ? d.result : pretty(d.result);
+          sec("result", preview(res), res, true);
+          return;
+        }
         var req = d.request || {};
         var resp = d.response || {};
         var msgs = req.messages || [];

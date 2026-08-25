@@ -1729,24 +1729,10 @@ def build_app(
                 # Persist the detail body WITH the step (#451) under a stable
                 # per-step key, so the modal still resolves after a reload /
                 # engine restart — the recorder's ring id restarts at 0 per
-                # process and would otherwise 404. Tool steps carry no body.
+                # process and would otherwise 404. A tool step has no LLM body;
+                # `step_row` gives it its arguments + result instead (#1241).
                 detail = trace_recorder.detail(rec["id"]) if "id" in rec else None
-                steps.append(
-                    {
-                        "model": rec.get("model"),
-                        "profile": rec.get("profile"),
-                        "wall_s": rec.get("wall_s"),
-                        "prompt_tokens": rec.get("prompt_tokens"),
-                        "completion_tokens": rec.get("completion_tokens"),
-                        "context_free": rec.get("context_free"),
-                        "finish_reason": rec.get("finish_reason"),
-                        "n_tools": rec.get("n_tools"),
-                        "detail_id": f"{trace_id}:{order}" if detail else None,
-                        "step_kind": rec.get("step_kind"),
-                        "tool_name": rec.get("tool_name"),
-                        "detail_json": json.dumps(detail) if detail else None,
-                    }
-                )
+                steps.append(trace_store.step_row(rec, detail, f"{trace_id}:{order}"))
             # The turn's read-only HA cards (#475) ride the same trace_id as a
             # synthetic step, so the frontend re-attaches them to this turn's
             # bubble on reload alongside the step trace. detail_json carries the

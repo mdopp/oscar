@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextvars
 import json
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -655,6 +656,11 @@ async def fetch_camera_snapshot(
     return image, content_type
 
 
+# `entity_id -> (exists, closest real candidates)`, satisfied by
+# `EntityRegistry.check_entity`; passed in rather than imported so the tools stay
+# decoupled from the registry (like the media/radio area fallbacks).
+EntityCheck = Callable[[str], Awaitable[tuple[bool, list[str]]]]
+
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _BLOCKED_DOMAINS = frozenset(
@@ -773,7 +779,11 @@ async def call_service_scoped(
     return {"ok": True}
 
 
-def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
+def build_ha_tools(
+    hass_url: str,
+    hass_token: str,
+    check_entity: EntityCheck | None = None,
+) -> list[Tool]:
     url = hass_url.rstrip("/")
     headers = {
         "Authorization": f"Bearer {hass_token}",
@@ -785,6 +795,30 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         snap = await areas.snapshot()
         return json.dumps({"rooms": snap.rooms}, ensure_ascii=False)
 
+    async def unknown_entity(entity_id: str) -> str | None:
+        """A model-facing error naming the real candidates, or None when the id
+        is real (or unverifiable).
+
+        HA answers 200 with an empty body for a service call on an entity that
+        never existed — byte-identical to a real entity already in the target
+        state — so a guessed id sails through as `success: true` and the model
+        tells the resident it acted (#1241). The registry holds the real set;
+        checking it BEFORE the call is what makes the failure visible.
+        """
+        if check_entity is None or not entity_id:
+            return None
+        known, candidates = await check_entity(entity_id)
+        if known:
+            return None
+        return json.dumps(
+            {
+                "error": f"unknown entity_id: {entity_id} — nothing was done, "
+                "retry with one of the candidates",
+                "candidates": candidates,
+            },
+            ensure_ascii=False,
+        )
+
     async def call_service(args: dict[str, Any]) -> str:
         domain = str(args.get("domain") or "")
         service = str(args.get("service") or "")
@@ -793,6 +827,8 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             return '{"error": "invalid domain or service name"}'
         if domain in _BLOCKED_DOMAINS:
             return f'{{"error": "domain {domain} is not allowed"}}'
+        if err := await unknown_entity(entity_id):
+            return err
         service = _SERVICE_ALIASES.get(domain, {}).get(service, service)
         payload: dict[str, Any] = {"entity_id": entity_id} if entity_id else {}
         data = args.get("data")
@@ -813,6 +849,11 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         entity_id = str(args.get("entity_id") or "")
         if not re.match(r"^[a-z_]+\.[a-z0-9_]+$", entity_id):
             return '{"error": "invalid entity_id"}'
+        # Same registry check as the action path: HA 404s an unknown state read,
+        # but a bare "unknown entity" leaves the model guessing again — the
+        # candidates are what let it reach the right device on the retry.
+        if err := await unknown_entity(entity_id):
+            return err
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
             async with client.get(
                 f"{url}/api/states/{entity_id}", headers=headers

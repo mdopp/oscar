@@ -123,7 +123,9 @@ def build_engine_clients(
     registry = EntityRegistry(hass_url, hass_token)
 
     ha_tools: list[Tool] = (
-        build_ha_tools(hass_url, hass_token) if hass_url and hass_token else []
+        build_ha_tools(hass_url, hass_token, check_entity=registry.check_entity)
+        if hass_url and hass_token
+        else []
     )
     # Quick-reply chips (#555): offered on any profile that holds a conversation,
     # so household and guest both get the offer_choices tool.

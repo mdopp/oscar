@@ -19,6 +19,7 @@ trace.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,41 @@ _STEP_FIELDS = (
     "tool_name",
     "detail_json",
 )
+
+
+def step_row(
+    rec: dict[str, Any], detail: dict[str, Any] | None, detail_id: str
+) -> dict[str, Any]:
+    """One persisted step from a recorder record + its exact-content body.
+
+    A tool step carries no LLM body, so nothing at all was stored for it and a
+    failed tool call could not be diagnosed from the trace afterwards (#1241) —
+    it now persists the arguments the tool ran with and its (already capped)
+    result. That body rides the SAME `detail_id`/`detail_json` channel as the LLM
+    bodies, so it inherits their privacy posture unchanged: per-resident
+    `owner_uid` scoping, and fetched only on demand — `list_session_trace` never
+    inlines it into the panel payload.
+    """
+    if rec.get("step_kind") == "tool":
+        detail = {
+            "tool_name": rec.get("tool_name"),
+            "arguments": rec.get("arguments"),
+            "result": rec.get("output"),
+        }
+    return {
+        "model": rec.get("model"),
+        "profile": rec.get("profile"),
+        "wall_s": rec.get("wall_s"),
+        "prompt_tokens": rec.get("prompt_tokens"),
+        "completion_tokens": rec.get("completion_tokens"),
+        "context_free": rec.get("context_free"),
+        "finish_reason": rec.get("finish_reason"),
+        "n_tools": rec.get("n_tools"),
+        "detail_id": detail_id if detail else None,
+        "step_kind": rec.get("step_kind"),
+        "tool_name": rec.get("tool_name"),
+        "detail_json": json.dumps(detail) if detail else None,
+    }
 
 
 def _connect(db_path: str) -> sqlite3.Connection:

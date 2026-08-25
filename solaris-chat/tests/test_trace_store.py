@@ -9,6 +9,7 @@ per-message trace_id, persists them, and serves them at
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from solaris_chat import trace_store
@@ -399,3 +400,44 @@ async def test_endpoint_empty_when_no_trace(aiohttp_client, tmp_path):
     r = await client.get("/api/sessions/none/trace", headers={"Remote-User": "mdopp"})
     body = await r.json()
     assert body == {"ok": True, "steps": []}
+
+
+def test_step_row_persists_tool_arguments_and_result(tmp_path):
+    # A tool step used to persist nothing but its name, so a failed tool call
+    # could not be diagnosed from the trace at all (#1241) — the args and the
+    # result had to be reconstructed from HA history. They now ride the same
+    # detail_json channel as the LLM bodies: fetched on demand by detail_id,
+    # per-resident scoped, never inlined into the panel list.
+    db = _db(tmp_path)
+    rec = {
+        "step_kind": "tool",
+        "tool_name": "ha_call_service",
+        "wall_s": 0.42,
+        "arguments": {"domain": "light", "service": "turn_on", "entity_id": "light.x"},
+        "output": '{"error": "unknown entity_id: light.x"}',
+    }
+    steps = [trace_store.step_row(rec, None, "tr-a:0")]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert got[0]["step_kind"] == "tool"
+    assert got[0]["detail_id"] == "tr-a:0"
+    assert "detail_json" not in got[0]  # resident content stays out of the list
+
+    body = json.loads(trace_store.detail_for(db, "mdopp", "tr-a:0"))
+    assert body["tool_name"] == "ha_call_service"
+    assert body["arguments"]["entity_id"] == "light.x"
+    assert "unknown entity_id" in body["result"]
+    assert trace_store.detail_for(db, "other", "tr-a:0") is None
+
+
+def test_step_row_keeps_llm_detail_body(tmp_path):
+    # The LLM step is unchanged: its recorded body is what gets persisted, and a
+    # step with no body keeps a null detail_id.
+    detail = {"request": {"model": "m"}, "response": {"final": "ok"}}
+    row = trace_store.step_row({"step_kind": "llm", "model": "m"}, detail, "tr-a:1")
+    assert row["detail_id"] == "tr-a:1"
+    assert json.loads(row["detail_json"]) == detail
+    bodyless = trace_store.step_row({"step_kind": "llm", "model": "m"}, None, "tr-a:2")
+    assert bodyless["detail_id"] is None
+    assert bodyless["detail_json"] is None

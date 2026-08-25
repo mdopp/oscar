@@ -12,6 +12,7 @@ import json
 import pytest
 
 from solaris_chat.engine import areas as areas_mod
+from solaris_chat.engine import registry as registry_mod
 from solaris_chat.engine.tools import ha as ha_mod
 from solaris_chat.engine.tools.ha import build_ha_tools
 
@@ -38,8 +39,12 @@ class _Resp:
             raise RuntimeError(self.status)
 
 
-def _stub(monkeypatch, *, states=None, history=None, calls=None):
-    """Stub aiohttp.ClientSession; record GET urls/params and POST bodies."""
+def _stub(monkeypatch, *, states=None, history=None, calls=None, post_body=None):
+    """Stub aiohttp.ClientSession; record GET urls/params and POST bodies.
+
+    `post_body` is what HA answers a service call with — the real one is `[]`
+    with status 200, for a live entity and a non-existent one alike (#1241).
+    """
     gets: list[tuple[str, dict]] = []
 
     class _Session:
@@ -61,7 +66,7 @@ def _stub(monkeypatch, *, states=None, history=None, calls=None):
         def post(self, posturl, *, json, **k):
             if calls is not None:
                 calls.append((posturl, json))
-            return _Resp({"ok": True})
+            return _Resp({"ok": True} if post_body is None else post_body)
 
         def ws_connect(self, _url):
             # No HA WS in these REST tests — the area registry fails open to an
@@ -70,11 +75,20 @@ def _stub(monkeypatch, *, states=None, history=None, calls=None):
 
     monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
     monkeypatch.setattr(areas_mod.aiohttp, "ClientSession", _Session)
+    monkeypatch.setattr(registry_mod.aiohttp, "ClientSession", _Session)
     return gets
 
 
 def _tool(name):
     tools = build_ha_tools("http://ha", "tok")
+    return next(t for t in tools if t.name == name)
+
+
+def _checked_tool(name):
+    """The tool wired to a real registry, as `build_engine_clients` wires it —
+    so an entity_id is checked against HA's actual entity set before use."""
+    check = registry_mod.EntityRegistry("http://ha", "tok").check_entity
+    tools = build_ha_tools("http://ha", "tok", check_entity=check)
     return next(t for t in tools if t.name == name)
 
 
@@ -1052,3 +1066,121 @@ def test_card_spec_omits_updated_at_ms_without_last_updated():
     card = card_spec("light.kitchen", "on", {})
     assert card is not None
     assert "updated_at_ms" not in card  # legacy path → guard stays inert
+
+
+# The house the resident actually has: the "Sofalicht" is light.dimmer_2_5, and
+# there is no light.sofalicht for the model to hit (#1241).
+_HOUSE = [
+    {"entity_id": "light.dimmer_2_5", "attributes": {"friendly_name": "Sofalicht"}},
+    {
+        "entity_id": "light.dimmer_2_3",
+        "attributes": {"friendly_name": "Esszimmertischlicht"},
+    },
+    {"entity_id": "switch.kaffee", "attributes": {"friendly_name": "Kaffeemaschine"}},
+]
+
+
+async def test_call_service_rejects_hallucinated_entity_id(monkeypatch):
+    # HA answers 200 with an empty body for a service call on an entity that
+    # never existed — byte-identical to a real one already in the target state.
+    # Without the registry check the model got {"success": true} and told the
+    # resident "Klar." while nothing had happened (#1241).
+    calls: list = []
+    _stub(monkeypatch, states=_HOUSE, calls=calls, post_body=[])
+
+    out = json.loads(
+        await _checked_tool("ha_call_service").handler(
+            {"domain": "light", "service": "turn_on", "entity_id": "light.sofalicht"}
+        )
+    )
+
+    assert "success" not in out
+    assert "light.sofalicht" in out["error"]
+    # and it names the real device, so the model retries instead of apologising
+    assert out["candidates"][0].startswith("light.dimmer_2_5 | Sofalicht")
+    assert all(c.startswith("light.") for c in out["candidates"])
+    assert calls == []  # nothing was ever sent to HA
+
+
+async def test_call_service_still_acts_on_a_real_entity_id(monkeypatch):
+    calls: list = []
+    _stub(monkeypatch, states=_HOUSE, calls=calls, post_body=[])
+
+    out = json.loads(
+        await _checked_tool("ha_call_service").handler(
+            {"domain": "light", "service": "turn_on", "entity_id": "light.dimmer_2_5"}
+        )
+    )
+
+    assert out == {"success": True, "service": "light.turn_on"}
+    assert calls == [
+        ("http://ha/api/services/light/turn_on", {"entity_id": "light.dimmer_2_5"})
+    ]
+
+
+async def test_call_service_without_entity_id_is_unaffected(monkeypatch):
+    # A service that takes no target (e.g. a script run) has nothing to check.
+    calls: list = []
+    _stub(monkeypatch, states=_HOUSE, calls=calls, post_body=[])
+    out = json.loads(
+        await _checked_tool("ha_call_service").handler(
+            {"domain": "script", "service": "turn_on", "data": {"x": 1}}
+        )
+    )
+    assert out["success"] is True
+    assert calls[0][1] == {"x": 1}
+
+
+async def test_call_service_fails_open_when_the_registry_is_empty(monkeypatch):
+    # HA unreachable/absent ⇒ no entity set to check against. Device control
+    # must not go down over a registry blip; the call itself surfaces a failure.
+    calls: list = []
+    _stub(monkeypatch, states=[], calls=calls, post_body=[])
+    out = json.loads(
+        await _checked_tool("ha_call_service").handler(
+            {"domain": "light", "service": "turn_on", "entity_id": "light.dimmer_2_5"}
+        )
+    )
+    assert out["success"] is True
+    assert len(calls) == 1
+
+
+async def test_get_state_rejects_hallucinated_entity_id(monkeypatch):
+    _stub(monkeypatch, states=_HOUSE)
+    out = json.loads(
+        await _checked_tool("ha_get_state").handler({"entity_id": "light.sofalicht"})
+    )
+    assert "state" not in out
+    assert out["candidates"][0].startswith("light.dimmer_2_5 | Sofalicht")
+
+
+def test_suggest_entities_prefers_the_guessed_domain_then_the_name():
+    index = {
+        "light.dimmer_2_5": "Sofalicht",
+        "light.dimmer_2_3": "Esszimmertischlicht",
+        "sensor.sofalicht_power": "Sofalicht Leistung",
+    }
+    got = registry_mod.suggest_entities("light.sofalicht", index)
+    assert got[0] == "light.dimmer_2_5 | Sofalicht"
+    assert "sensor.sofalicht_power | Sofalicht Leistung" not in got
+    # an unknown domain falls back to the whole house, close matches only
+    assert (
+        registry_mod.suggest_entities("lamp.sofalicht", index)[0]
+        == "light.dimmer_2_5 | Sofalicht"
+    )
+    assert registry_mod.suggest_entities("lamp.zzzz", index) == []
+
+
+async def test_call_service_rechecks_ha_before_refusing_a_new_device(monkeypatch):
+    # The index is TTL-cached, so a device added since the last refresh would
+    # otherwise be refused as "unknown" for minutes. A miss re-reads HA once.
+    house = list(_HOUSE)
+    calls: list = []
+    _stub(monkeypatch, states=house, calls=calls, post_body=[])
+    tool = _checked_tool("ha_call_service")
+    args = {"domain": "light", "service": "turn_on", "entity_id": "light.neu"}
+
+    assert "error" in json.loads(await tool.handler(args))
+    house.append({"entity_id": "light.neu", "attributes": {"friendly_name": "Neu"}})
+    assert json.loads(await tool.handler(args))["success"] is True
+    assert len(calls) == 1
