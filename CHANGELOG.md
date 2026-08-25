@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.0](https://github.com/mdopp/solarisbay/compare/v0.42.3...v0.43.0) (2026-08-25)
+
+
+### Features
+
+* **chat:** add a confirmed task_delete on a shared cascade helper ([5971462](https://github.com/mdopp/solarisbay/commit/597146286bae617f7a3ec9d3306e9922462d1bd7)), closes [#1244](https://github.com/mdopp/solarisbay/issues/1244)
+
 ## [0.42.3](https://github.com/mdopp/solarisbay/compare/v0.42.2...v0.42.3) (2026-08-25)
 
 
