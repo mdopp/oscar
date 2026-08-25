@@ -127,8 +127,32 @@ _CELL_SCHEMA_STRING_ROLES = ("title", "subtitle", "badge", "state", "icon")
 _CELL_SCHEMA_LIST_ROLES = ("meta", "actions")
 _CELL_SCHEMA_ROLES = _CELL_SCHEMA_STRING_ROLES + _CELL_SCHEMA_LIST_ROLES
 
+# `tool-action-params` (#1214): per action id, `param name → source`, where a
+# source is either an item field reference (`$`-prefixed — read the field of that
+# name off the rendered row) or a literal string. The `$` marker is what makes the
+# two unambiguous; without it `{"status": "done"}` could mean either. Nothing
+# nests beyond that, so the whole map stays one JSON line in the pack's flat,
+# no-PyYAML frontmatter.
+_ACTION_PARAM_FIELD_PREFIX = "$"
 
-def cell_schema_violations(schema: dict[str, Any]) -> list[str]:
+
+def _action_param_violations(action_id: str, mapping: Any) -> list[str]:
+    if not isinstance(mapping, dict) or not mapping:
+        return [f"action '{action_id}' declares no params (tool-action-params)"]
+    out: list[str] = []
+    for param, source in mapping.items():
+        if not isinstance(param, str) or not param:
+            out.append(f"action '{action_id}' has a non-string / empty param name")
+        elif not isinstance(source, str) or not source:
+            out.append(f"action '{action_id}' param '{param}' has a non-string source")
+        elif source == _ACTION_PARAM_FIELD_PREFIX:
+            out.append(f"action '{action_id}' param '{param}' names no item field")
+    return out
+
+
+def cell_schema_violations(
+    schema: dict[str, Any], action_params: dict[str, Any] | None = None
+) -> list[str]:
     """Renderer-agnostic-schema lint for a `tool-cell-schema` (#1022, ADR 0011).
 
     Returns the reasons a schema would NOT render on a non-browser consumer —
@@ -137,7 +161,12 @@ def cell_schema_violations(schema: dict[str, Any]) -> list[str]:
     are field lists); a role maps a bare field name, never an HTML/CSS/`<…>`
     string or an inline handler. `actions` names `action.id`s the def declares in
     `tool-actions`, not JS. This is the promise that one `SKILL.md` drives both a
-    PWA card and a native widget."""
+    PWA card and a native widget.
+
+    Every id in the `actions` role must also carry a param mapping in the def's
+    `tool-action-params` (#1214) — a renderer knows the action id but cannot guess
+    which params `/api/action-callback` wants or where in the row their values
+    come from, so an undeclared one is a button no native consumer can wire."""
     out: list[str] = []
     if not isinstance(schema, dict):
         return ["schema must be a JSON object of role→field mappings"]
@@ -145,6 +174,11 @@ def cell_schema_violations(schema: dict[str, Any]) -> list[str]:
     def _looks_like_markup(value: str) -> bool:
         # A field name is a plain key; markup/CSS/handlers leak the browser.
         return any(c in value for c in "<>{};") or value.strip().startswith(".")
+
+    declared = action_params if isinstance(action_params, dict) else {}
+    for action_id in schema.get("actions") or []:
+        if isinstance(action_id, str) and action_id:
+            out += _action_param_violations(action_id, declared.get(action_id))
 
     for role, value in schema.items():
         if role not in _CELL_SCHEMA_ROLES:
@@ -167,21 +201,29 @@ def cell_schema_violations(schema: dict[str, Any]) -> list[str]:
     return out
 
 
+def _json_field(meta: dict[str, str], key: str) -> dict[str, Any]:
+    raw = meta.get(key, "").strip()
+    try:
+        value = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
     """The declarative `.tool` plugin surface (#1004, ADR 0011) read off a
     tool-kind def's flat frontmatter.
 
-    `tool-actions` is a comma-separated action-id list; `tool-cell-schema` is a
-    one-line JSON object (title/meta/buttons) — both stay within the pack's
-    no-PyYAML flat parser. The client (#1005) dispatches on these instead of the
-    hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the actions.
+    `tool-actions` is a comma-separated action-id list; `tool-cell-schema` and
+    `tool-action-params` are one-line JSON objects — all three stay within the
+    pack's no-PyYAML flat parser. The client (#1005) dispatches on these instead
+    of the hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the
+    actions; `tool-action-params` (#1214) lets a renderer build an action's
+    callback body straight from the row it drew.
     """
     actions = [a.strip() for a in meta.get("tool-actions", "").split(",") if a.strip()]
-    schema_raw = meta.get("tool-cell-schema", "").strip()
-    try:
-        cell_schema = json.loads(schema_raw) if schema_raw else {}
-    except json.JSONDecodeError:
-        cell_schema = {}
+    cell_schema = _json_field(meta, "tool-cell-schema")
+    action_params = _json_field(meta, "tool-action-params")
     return {
         "tool-id": meta.get("tool-id", ""),
         "tool-label": meta.get("tool-label", ""),
@@ -190,6 +232,7 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
         "tool-search-path": meta.get("tool-search-path", ""),
         "tool-actions": actions,
         "tool-cell-schema": cell_schema,
+        "tool-action-params": action_params,
     }
 
 

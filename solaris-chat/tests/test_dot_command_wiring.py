@@ -78,10 +78,32 @@ def test_shipped_tool_cell_schemas_are_renderer_agnostic():
 
     pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
     for d in list_tool_defs(pack):
-        violations = cell_schema_violations(d["tool-cell-schema"])
+        violations = cell_schema_violations(
+            d["tool-cell-schema"], d["tool-action-params"]
+        )
         assert violations == [], (
             f"{d['tool-id']} cell-schema not renderer-agnostic: {violations}"
         )
+
+
+def test_task_row_action_carries_a_declarative_param_map():
+    # #1214: the reference tool declares its row action AND where that action's
+    # /api/action-callback params come from, so a native renderer wires the button
+    # off the catalog alone. `$field` = read the row's field; else a literal.
+    from pathlib import Path
+
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    task = {d["tool-id"]: d for d in list_tool_defs(pack)}["task"]
+    assert task["tool-cell-schema"]["actions"] == ["task.set_status"]
+    assert task["tool-action-params"]["task.set_status"] == {
+        "entity_id": "$id",
+        "status": "done",
+    }
+    # every declared mapping names an action the def actually registers
+    for action_id in task["tool-action-params"]:
+        assert action_id in task["tool-actions"]
 
 
 def test_task_dispatches_through_the_generic_tool_registry_card():

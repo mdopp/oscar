@@ -29,6 +29,26 @@ plain field name.
 `actions` references **`action.id` only** — the ids the def already lists in its
 `tool-actions` frontmatter. No inline JS or handlers live in the schema.
 
+## `tool-action-params` — where an action's params come from
+
+An action id alone is not enough to call `POST /api/action-callback`, which wants
+`{"action_id": …, "params": {…}}` with action-specific params. `tool-action-params`
+declares that mapping per action id, so a renderer builds the callback body from
+the row it already drew:
+
+```json
+{ "task.set_status": { "entity_id": "$id", "status": "done" } }
+```
+
+Each value is a **source**: `$field` reads the item field of that name off the
+rendered row, anything else is a **literal**. The `$` marker is what keeps the two
+apart — `{"status": "done"}` would otherwise be ambiguous. Values are flat
+strings only, so the whole map stays one line in the pack's no-PyYAML frontmatter
+parser.
+
+Every id in a schema's `actions` role **must** be declared here; the lint rejects
+a def that offers a button no consumer can wire.
+
 Anything outside this vocabulary is **custom, browser-only**: it must be flagged
 as such so a native renderer can skip or degrade gracefully — it is not accepted
 in a shipped tool def.
@@ -46,11 +66,12 @@ in the schema.
 The reference `.task` tool (`templates/solaris/skills/household/task-tool/`):
 
 ```json
-{ "title": "title", "meta": ["due"] }
+{ "title": "title", "meta": ["due"], "actions": ["task.set_status"] }
 ```
 
 - `title` → the task's `title` field is the primary line.
 - `meta` → the task's `due` field is the detail line.
+- `actions` → the row's tap target, its params declared in `tool-action-params`.
 
 A richer example using more roles:
 

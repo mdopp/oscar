@@ -1986,7 +1986,9 @@ def test_list_tool_defs_surfaces_the_declarative_plugin_surface(tmp_path):
             "command: .task\n"
             "tool-api-path: /api/portal/tasks?done=1\n"
             "tool-actions: task.set_status, task.add, task.update\n"
-            'tool-cell-schema: {"title": "title", "meta": ["due"]}'
+            'tool-cell-schema: {"title": "title", "meta": ["due"]}\n'
+            'tool-action-params: {"task.set_status": '
+            '{"entity_id": "$id", "status": "done"}}'
         ),
     )
     _write_def(tmp_path, "status", name="solaris-status")  # skill: not a tool
@@ -1999,6 +2001,10 @@ def test_list_tool_defs_surfaces_the_declarative_plugin_surface(tmp_path):
     assert tool["tool-api-path"] == "/api/portal/tasks?done=1"
     assert tool["tool-actions"] == ["task.set_status", "task.add", "task.update"]
     assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
+    # #1214: the per-action param map rides the same flat frontmatter parser.
+    assert tool["tool-action-params"] == {
+        "task.set_status": {"entity_id": "$id", "status": "done"}
+    }
 
 
 def test_cell_schema_lint_accepts_role_field_mappings():
@@ -2012,7 +2018,30 @@ def test_cell_schema_lint_accepts_role_field_mappings():
                 "meta": ["phone", "email"],
                 "badge": "state",
                 "actions": ["contact.add"],
-            }
+            },
+            {"contact.add": {"value": "$name"}},
+        )
+        == []
+    )
+
+
+def test_cell_schema_lint_requires_declared_action_params():
+    # #1214: an `actions` id a renderer can't build a callback body for is a dead
+    # button on a native consumer — the param mapping must be declared.
+    schema = {"title": "title", "actions": ["task.set_status"]}
+    assert skills.cell_schema_violations(schema)  # nothing declared at all
+    assert skills.cell_schema_violations(schema, {"task.add": {"title": "$title"}})
+    assert skills.cell_schema_violations(schema, {"task.set_status": {}})
+    assert skills.cell_schema_violations(schema, {"task.set_status": "entity_id"})
+    # a param whose source is neither a usable field ref nor a literal
+    assert skills.cell_schema_violations(schema, {"task.set_status": {"status": ""}})
+    assert skills.cell_schema_violations(
+        schema, {"task.set_status": {"entity_id": "$"}}
+    )
+    # `$field` reads the row's field, anything else is a literal — both fine.
+    assert (
+        skills.cell_schema_violations(
+            schema, {"task.set_status": {"entity_id": "$id", "status": "done"}}
         )
         == []
     )
