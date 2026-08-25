@@ -3753,8 +3753,11 @@ def build_app(
         — and filters to the on/open ones here, so the widget makes one request.
 
         Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed,
-        owner-scoped, read-only. Returns a flat `active` list; `room` is the area
-        friendly name from the same area snapshot the picker uses."""
+        owner-scoped, read-only. Returns a flat `active` list of the SAME card
+        dicts the other portal routes return, so the widget gets the control
+        attributes (`brightness`, `current_position`, colour) it renders from
+        (#1233); `room` is the area friendly name from the same area snapshot
+        the picker uses."""
         if not hass_url or not hass_token or area_registry is None:
             return web.json_response(
                 {"ok": False, "error": "ha_unconfigured"}, status=503
@@ -3765,17 +3768,12 @@ def build_app(
             return web.json_response(
                 {"ok": False, "error": "ha_unavailable"}, status=502
             )
-        active = [
-            {
-                "entity_id": card.get("entity_id"),
-                "name": card.get("name"),
-                "room": card.get("room") or "",
-                "domain": card.get("domain"),
-                "state": card.get("state"),
-            }
-            for card in cards
-            if str(card.get("state") or "").lower() in ("on", "open")
-        ]
+        active = []
+        for card in cards:
+            if str(card.get("state") or "").lower() not in ("on", "open"):
+                continue
+            card["room"] = card.get("room") or ""
+            active.append(card)
         return web.json_response({"ok": True, "active": active})
 
     async def portal_cameras(request: web.Request) -> web.Response:
