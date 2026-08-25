@@ -14,6 +14,7 @@ refresh picks up registry changes (new/renamed devices) within minutes.
 from __future__ import annotations
 
 import time
+from difflib import SequenceMatcher
 from typing import Any
 
 import aiohttp
@@ -95,6 +96,40 @@ def rank_fallback_players(players: list[str]) -> list[str]:
     return sorted(sorted(players), key=rank)
 
 
+def _match_score(term: str, entity_id: str, name: str) -> float:
+    slug = entity_id.split(".", 1)[-1].replace("_", " ").casefold()
+    best = SequenceMatcher(None, term, slug).ratio()
+    if name:
+        best = max(best, SequenceMatcher(None, term, name.casefold()).ratio())
+    return best
+
+
+def suggest_entities(guess: str, index: dict[str, str], limit: int = 3) -> list[str]:
+    """Real `entity_id | Name` entries closest to a guessed id, best first.
+
+    The model guesses a friendly-name-shaped id — `light.sofalicht` for the
+    Sofalicht whose real id is `light.dimmer_2_5` — so the readable part of the
+    guess is matched against both the real slug and the friendly name. The
+    guessed domain is almost always right, so when it exists the candidates stay
+    inside it; otherwise the whole house is searched and only close matches
+    survive.
+    """
+    domain, _, slug = guess.partition(".")
+    term = (slug or guess).replace("_", " ").casefold()
+    if not term or not index:
+        return []
+    same_domain = {
+        e: n for e, n in index.items() if slug and e.startswith(f"{domain}.")
+    }
+    pool = same_domain or index
+    ranked = sorted(
+        (-_match_score(term, eid, name), f"{eid} | {name}".rstrip(" |"))
+        for eid, name in pool.items()
+    )
+    floor = 0.0 if same_domain else 0.5
+    return [label for score, label in ranked[:limit] if -score >= floor]
+
+
 class EntityRegistry:
     def __init__(self, hass_url: str, hass_token: str):
         self._url = hass_url.rstrip("/")
@@ -106,6 +141,62 @@ class EntityRegistry:
         # the same /api/states read prompt_block already does. The gate reads it
         # to tell a garage cover from a blind (#570 F1).
         self._device_classes: dict[str, str] = {}
+        # entity_id -> friendly_name for EVERY entity HA exposes, from the same
+        # /api/states read; the existence check below is served from it.
+        self._entities: dict[str, str] = {}
+        self._entities_at = 0.0
+
+    async def entity_index(self, *, force: bool = False) -> dict[str, str]:
+        """`entity_id -> friendly_name` for everything HA exposes, TTL-cached.
+
+        The same inventory the prompt block is built from, kept as a lookup so a
+        tool call can check an entity_id exists BEFORE issuing it. Empty when HA
+        is absent or unreachable. `force` re-reads HA now, for the one caller
+        that must not act on a stale answer.
+        """
+        if not self._url or not self._token:
+            return {}
+        fresh = (time.time() - self._entities_at) < _TTL_S
+        if self._entities and fresh and not force:
+            return self._entities
+        try:
+            states = await self._fetch_states()
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            log.warn("engine.registry.index_unreachable", error=str(e))
+            return self._entities
+        self._entities = {
+            str(s.get("entity_id")): str(
+                (s.get("attributes") or {}).get("friendly_name") or ""
+            )
+            for s in states
+            if s.get("entity_id")
+        }
+        self._entities_at = time.time()
+        return self._entities
+
+    async def check_entity(self, entity_id: str) -> tuple[bool, list[str]]:
+        """`(exists, closest real candidates)` for a model-supplied entity_id.
+
+        HA answers 200 with an empty body for a service call on an entity that
+        never existed — byte-identical to a real entity already in the target
+        state — so an unchecked guess reads back as a completed action and the
+        model tells the resident it acted (#1241). Unknown ids come back False
+        with real candidates so the model can retry with the right id.
+
+        Fails OPEN (`True, []`) when the index is empty: HA is then unreachable
+        or absent, the call itself will surface that, and a registry blip must
+        not take device control down.
+        """
+        index = await self.entity_index()
+        if not index or entity_id in index:
+            return True, []
+        # A miss can just be a stale index — a device added or renamed since the
+        # last refresh — and "unknown" is a hard refusal, so re-read HA once
+        # before saying it. Only a genuinely absent id pays for this.
+        index = await self.entity_index(force=True)
+        if not index or entity_id in index:
+            return True, []
+        return False, suggest_entities(entity_id, index)
 
     async def device_class(self, entity_id: str) -> str | None:
         """The entity's HA device_class, or None when it can't be resolved.

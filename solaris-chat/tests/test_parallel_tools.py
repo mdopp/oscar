@@ -11,6 +11,7 @@ held, the rest run.
 from __future__ import annotations
 
 import asyncio
+import gc
 import sqlite3
 
 import pytest
@@ -99,9 +100,16 @@ async def test_multiple_tool_calls_run_concurrently(db, soul):
     client = _client(db, soul, results, [tool])
     sid = await client.create_session("anna")
 
-    t0 = asyncio.get_event_loop().time()
-    _ = [e async for e in client.chat_stream(sid, "alle Lichter")]
-    elapsed = asyncio.get_event_loop().time() - t0
+    # A gen2 collection landing in the measured window costs more than the whole
+    # overlap this asserts (~0.15s in a full-suite run, enough to flip it), so
+    # the collector is held off across it — concurrency is what's under test.
+    gc.disable()
+    try:
+        t0 = asyncio.get_event_loop().time()
+        _ = [e async for e in client.chat_stream(sid, "alle Lichter")]
+        elapsed = asyncio.get_event_loop().time() - t0
+    finally:
+        gc.enable()
 
     # Four 0.05s tools serialized would take >=0.2s; concurrent they overlap.
     assert probe["peak"] >= 2

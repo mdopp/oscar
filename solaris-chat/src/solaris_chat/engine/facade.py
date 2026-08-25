@@ -470,24 +470,10 @@ def _persist_voice_trace(
         steps = []
         for order, rec in enumerate(client.recorder.for_session(session_id, t0)):
             # Persist the detail body with the step under a stable per-step key
-            # so the modal resolves after a reload/restart (#451).
+            # so the modal resolves after a reload/restart (#451); a tool step
+            # gets its arguments + result as that body (#1241).
             detail = client.recorder.detail(rec["id"]) if "id" in rec else None
-            steps.append(
-                {
-                    "model": rec.get("model"),
-                    "profile": rec.get("profile"),
-                    "wall_s": rec.get("wall_s"),
-                    "prompt_tokens": rec.get("prompt_tokens"),
-                    "completion_tokens": rec.get("completion_tokens"),
-                    "context_free": rec.get("context_free"),
-                    "finish_reason": rec.get("finish_reason"),
-                    "n_tools": rec.get("n_tools"),
-                    "detail_id": f"{trace_id}:{order}" if detail else None,
-                    "step_kind": rec.get("step_kind"),
-                    "tool_name": rec.get("tool_name"),
-                    "detail_json": json.dumps(detail) if detail else None,
-                }
-            )
+            steps.append(trace_store.step_row(rec, detail, f"{trace_id}:{order}"))
         if steps:
             trace_store.persist_trace(db_path, session_id, trace_id, uid, steps)
     except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
