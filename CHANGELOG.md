@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.2](https://github.com/mdopp/solarisbay/compare/v0.42.1...v0.42.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **chat:** never derive the context window from an embedding model ([5a14c85](https://github.com/mdopp/solarisbay/commit/5a14c85a94c8d708ec1d55b9c863e76a0bd4cc90)), closes [#1237](https://github.com/mdopp/solarisbay/issues/1237)
+* **template:** re-warm the hot-path model on every ollama start ([b5fa7ef](https://github.com/mdopp/solarisbay/commit/b5fa7ef56725bab7b23137a8943dce10e1a3c9df)), closes [#1236](https://github.com/mdopp/solarisbay/issues/1236)
+
 ## [0.42.1](https://github.com/mdopp/solarisbay/compare/v0.42.0...v0.42.1) (2026-08-25)
 
 
