@@ -11,7 +11,8 @@ model automatically and reflects exactly what the model can hold.
 
 Fallback chain (first that resolves wins; never crash):
   1. explicit `CONTEXT_WINDOW` override — a positive integer means ops pinned it.
-  2. live Ollama `/api/ps` `context_length` of the loaded model.
+  2. live Ollama `/api/ps` `context_length` of the loaded CHAT model —
+     embedding models are skipped, their 2048 is not a chat window (#1237).
   3. `OLLAMA_CONTEXT_LENGTH` env (the value Ollama loads with) when reachable.
   4. a safe static default (32768) when Ollama is unreachable.
 """
@@ -48,11 +49,25 @@ def parse_override(value: str | None) -> int | None:
     return n if n > 0 else None
 
 
-async def _ollama_loaded_context(ollama_url: str) -> int | None:
-    """The context window the active model is loaded with, from `/api/ps`.
+def _is_embed_entry(m: dict) -> bool:
+    """An `/api/ps` entry for an embedding model, which never serves a turn.
 
-    Returns the largest running model's `context_length` (the field Ollama
-    exposes per loaded model), or None when no model is loaded / unreachable.
+    Embedding models carry a tiny native context (nomic-embed-text: 2048), so
+    letting one set the window pins Solaris below its own 7,967-token base
+    prompt (#1237). The ollama template's `local_chat_tags()` already excludes
+    them by name; this is the same filter on the other endpoint.
+    """
+    name = str(m.get("name") or m.get("model") or "")
+    return "embed" in name
+
+
+async def _ollama_loaded_context(ollama_url: str) -> int | None:
+    """The context window the active CHAT model is loaded with, from `/api/ps`.
+
+    Returns the largest running chat model's `context_length` (the field Ollama
+    exposes per loaded model), or None when no chat model is loaded /
+    unreachable — the caller then falls back to the configured window rather
+    than to whatever a resident embedding model happens to be loaded at.
     """
     url = f"{ollama_url.rstrip('/')}/api/ps"
     timeout = aiohttp.ClientTimeout(total=5)
@@ -67,7 +82,9 @@ async def _ollama_loaded_context(ollama_url: str) -> int | None:
     ctxs = [
         m["context_length"]
         for m in models
-        if isinstance(m, dict) and isinstance(m.get("context_length"), int)
+        if isinstance(m, dict)
+        and isinstance(m.get("context_length"), int)
+        and not _is_embed_entry(m)
     ]
     return max(ctxs) if ctxs else None
 

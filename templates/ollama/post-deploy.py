@@ -332,6 +332,138 @@ def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool
         return False
 
 
+def warm_installed_models(
+    ollama_url: str, fast_model: str, fallback: list[str]
+) -> None:
+    """Warm every locally installed chat tag, fast model first.
+
+    Source of truth = the locally installed tags (solarisbay#339: the
+    env-derived list arrived empty on the box); `fallback` is only used when
+    /api/tags can't be read. Order comes from warm_load_order() — configured
+    fast-model identity first, never a size field (solarisbay#1217)."""
+    warm_tags = local_chat_tags(ollama_url) or [m for m in fallback if m]
+    for warm in warm_load_order(warm_tags, fast_model):
+        warm_load_model(ollama_url, warm)
+
+
+# The re-warm unit (#1236). warm_load_model() used to live only in this
+# post-deploy, so ANY ollama start that wasn't a template deploy — a podman
+# auto-update (the container carries AutoUpdate=registry), a reboot, a manual
+# `systemctl restart`, or ServiceBay's GPU-Quadlet force-recreate
+# (mdopp/servicebay#2618) — left the household fast model cold indefinitely.
+# Box-observed 2026-08-25: cold for 13.5h, then a 2m09s first voice turn that
+# Home Assistant gave up on. So the warm is bound to the ollama unit's OWN
+# start: this same script, copied to a durable path, re-run in warm-only mode
+# (OLLAMA_WARM_ONLY=1 short-circuits main()). No second copy of the warm logic
+# → no drift from warm_load_order().
+WARM_SERVICE = "ollama-warm"
+WARM_SCRIPT = "ollama-warm.py"
+
+
+def render_warm_service(
+    script_path: str, port: str, fast_model: str, timeout: int
+) -> str:
+    """Render the oneshot `.service` that re-warms after every ollama start (pure).
+
+    `WantedBy=ollama.service` is the whole point: systemd pulls this in on every
+    start of ollama.service, whatever caused it. It is a plain Wants with
+    `After=` — never Requires/BindsTo/PartOf — so a warm that fails, hangs, or
+    finds no model can never keep ollama from coming up."""
+    return (
+        "[Unit]\n"
+        "Description=Ollama hot-path model warm-load (#1236)\n"
+        "After=ollama.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=OLLAMA_WARM_ONLY=1\n"
+        f"Environment=OLLAMA_PORT={port}\n"
+        f"Environment=OLLAMA_FAST_MODEL={fast_model}\n"
+        f"Environment=OLLAMA_READINESS_TIMEOUT_SECONDS={timeout}\n"
+        f"ExecStart=/usr/bin/env python3 {script_path}\n"
+        "TimeoutStartSec=1800\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=ollama.service\n"
+    )
+
+
+def install_warm_unit(data_dir: str, port: str, fast_model: str, timeout: int) -> bool:
+    """Install the re-warm unit (#1236): copy THIS script to a durable data-dir
+    path and write a `.service` wanted by `ollama.service`. Best-effort — a
+    failure here never blocks the deploy. Returns True when the unit is enabled."""
+    systemd_dir = os.path.expanduser("~/.config/systemd/user")
+    script_dst = os.path.join(data_dir, "solarisbay", WARM_SCRIPT)
+    try:
+        with open(os.path.realpath(__file__), encoding="utf-8") as f:
+            self_src = f.read()
+    except OSError as e:
+        jlog(
+            "warn",
+            "ollama:warm-unit",
+            "could not read self for the warm unit",
+            error=str(e),
+        )
+        return False
+    try:
+        os.makedirs(os.path.dirname(script_dst), exist_ok=True)
+        with open(script_dst, "w", encoding="utf-8") as f:
+            f.write(self_src)
+        os.chmod(script_dst, 0o755)
+        os.makedirs(systemd_dir, exist_ok=True)
+        with open(
+            os.path.join(systemd_dir, f"{WARM_SERVICE}.service"), "w", encoding="utf-8"
+        ) as f:
+            f.write(render_warm_service(script_dst, port, fast_model, timeout))
+    except OSError as e:
+        jlog("warn", "ollama:warm-unit", "could not write the warm unit", error=str(e))
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    enabled = subprocess.run(
+        ["systemctl", "--user", "enable", f"{WARM_SERVICE}.service"],
+        capture_output=True,
+        text=True,
+    )
+    if enabled.returncode != 0:
+        jlog(
+            "warn",
+            "ollama:warm-unit",
+            "could not enable ollama-warm.service; only template deploys will warm",
+            stderr=enabled.stderr[:400],
+        )
+        return False
+    jlog(
+        "info",
+        "ollama:warm-unit",
+        "ollama-warm.service enabled — every ollama start now re-warms the fast model",
+        script=script_dst,
+        fast_model=fast_model,
+    )
+    return True
+
+
+def warm_only() -> int:
+    """`OLLAMA_WARM_ONLY=1` entrypoint — what ollama-warm.service runs after
+    every ollama start. Always exits 0: the warm is best-effort and a red unit
+    would only add noise to a box whose ollama is otherwise healthy."""
+    port = env("OLLAMA_PORT", "11434")
+    fast_model = env("OLLAMA_FAST_MODEL", "gemma4:e4b")
+    timeout = int(env("OLLAMA_READINESS_TIMEOUT_SECONDS", "600"))
+    ollama_url = f"http://127.0.0.1:{port}"
+    if not wait_for_ready(ollama_url, deadline_sec=min(timeout, 120)):
+        jlog(
+            "warn",
+            "ollama:warm",
+            "Ollama API not reachable; nothing warmed",
+            url=ollama_url,
+        )
+        return 0
+    warm_installed_models(ollama_url, fast_model, [])
+    return 0
+
+
 def register_http_check(sb_api: str, sb_token: str, ollama_url: str) -> None:
     """Best-effort: a non-200 here doesn't block the install."""
     headers = {}
@@ -653,6 +785,9 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
 
 
 def main() -> int:
+    if env("OLLAMA_WARM_ONLY") == "1":
+        return warm_only()
+
     port = env("OLLAMA_PORT", "11434")
     model = env("OLLAMA_DEFAULT_MODEL", "gemma4:12b")
     extra_models_raw = env("OLLAMA_EXTRA_MODELS", "")
@@ -763,13 +898,11 @@ def main() -> int:
                 model=embed_model,
             )
 
-    # Warm-load the chat models so the first post-deploy turn doesn't pay
-    # the cold reload. Source of truth = the locally installed tags
-    # (solarisbay#339: the env-derived list arrived empty). Order comes from
-    # warm_load_order() — fast model first, never from a size field.
-    warm_tags = local_chat_tags(ollama_url) or [m for m in (*extra_models, model) if m]
-    for warm in warm_load_order(warm_tags, fast_model):
-        warm_load_model(ollama_url, warm)
+    # Bind the warm to the ollama unit's own start (#1236) so an auto-update,
+    # a reboot or a GPU-Quadlet force-recreate re-warms too, then warm now for
+    # this deploy.
+    install_warm_unit(data_dir, port, fast_model, timeout)
+    warm_installed_models(ollama_url, fast_model, [*extra_models, model])
 
     register_http_check(sb_api, sb_token, ollama_url)
 

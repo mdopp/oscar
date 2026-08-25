@@ -85,6 +85,39 @@ async def test_ollama_loaded_context_no_model_loaded(monkeypatch):
     assert await context._ollama_loaded_context("http://x") is None
 
 
+async def test_embed_model_alone_does_not_set_the_window(monkeypatch):
+    # Box-observed #1237: with only nomic-embed-text resident the window
+    # resolved to its 2048 native context — below Solaris's own 7,967-token
+    # base prompt. "No chat model loaded" must fall through, not pin 2048.
+    _patch_ollama_get(
+        monkeypatch,
+        {"models": [{"name": "nomic-embed-text:latest", "context_length": 2048}]},
+    )
+    assert await context._ollama_loaded_context("http://x") is None
+
+
+async def test_embed_model_never_outvotes_a_resident_chat_model(monkeypatch):
+    _patch_ollama_get(
+        monkeypatch,
+        {
+            "models": [
+                {"name": "nomic-embed-text:latest", "context_length": 2048},
+                {"name": "gemma4:e4b", "context_length": 32768},
+            ]
+        },
+    )
+    assert await context._ollama_loaded_context("http://x") == 32768
+
+
+async def test_only_embed_resident_falls_back_to_the_configured_window(monkeypatch):
+    _patch_ollama_get(
+        monkeypatch, {"models": [{"model": "nomic-embed-text", "context_length": 2048}]}
+    )
+    monkeypatch.setenv("OLLAMA_CONTEXT_LENGTH", "32768")
+    window, source = await context.derive_context_window("http://x", override=None)
+    assert (window, source) == (32768, "ollama_context_length_env")
+
+
 # --- ContextWindow holder refresh ------------------------------------------
 
 
