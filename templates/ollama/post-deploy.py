@@ -245,22 +245,31 @@ def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
 
 
 def local_chat_tags(ollama_url: str) -> list[str]:
-    """The locally installed chat tags from /api/tags (embed models skipped).
-    The install env can't be trusted for the model list — OLLAMA_EXTRA_MODELS
-    arrived empty on the box (solarisbay#339) — but what's pulled locally is
-    ground truth for what should be warm."""
+    """The locally installed chat tags from /api/tags, SMALLEST FIRST (embed
+    models skipped). The install env can't be trusted for the model list —
+    OLLAMA_EXTRA_MODELS arrived empty on the box (solarisbay#339) — but what's
+    pulled locally is ground truth for what should be warm.
+
+    Ordering by the `size` /api/tags reports keys off what actually competes
+    for VRAM instead of the tag text: the old key matched the substring `e2b`,
+    which silently stopped selecting anything once the household moved to
+    gemma4:e4b and left the loop loading big-first (#1217)."""
     req = urllib.request.Request(f"{ollama_url}/api/tags")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         return []
-    tags = []
+    sized = []
     for m in body.get("models") or []:
         name = str(m.get("name") or m.get("model") or "")
         if name and "embed" not in name:
-            tags.append(name)
-    return tags
+            try:
+                size = int(m.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            sized.append((size, name))
+    return [name for _, name in sorted(sized)]
 
 
 def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool:
@@ -293,6 +302,22 @@ def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         jlog("warn", "ollama:warm", "warm-load failed", model=model, error=str(e))
         return False
+
+
+def warm_load_chat_models(ollama_url: str, fallback: list[str]) -> list[str]:
+    """Warm-load every locally installed chat model, SMALL/FAST ONE FIRST.
+
+    Order is load-bearing (solarisbay#340, box-measured): with the small
+    household hot-path model resident a big load co-exists (13.9/16.4 GiB),
+    but loading the big one first makes the subsequent small load evict it
+    (ollama's free-VRAM check is conservative). `local_chat_tags` already
+    returns smallest-first; the env `fallback` is passed extras-before-primary
+    for the same reason (OLLAMA_EXTRA_MODELS carries the FAST_MODEL tag,
+    OLLAMA_DEFAULT_MODEL the thorough one). Returns the order it used."""
+    order = list(dict.fromkeys(local_chat_tags(ollama_url) or fallback))
+    for warm in order:
+        warm_load_model(ollama_url, warm)
+    return order
 
 
 def register_http_check(sb_api: str, sb_token: str, ollama_url: str) -> None:
@@ -727,14 +752,8 @@ def main() -> int:
 
     # Warm-load the chat models so the first post-deploy turn doesn't pay
     # the cold reload. Source of truth = the locally installed tags
-    # (solarisbay#339: the env-derived list missed e2b). Order is load-bearing
-    # (solarisbay#340, box-measured): SMALL first — with e2b resident a 12b
-    # load co-exists (13.9/16.4 GiB), but loading 12b first makes the
-    # subsequent e2b load evict it (ollama's free-VRAM check is
-    # conservative). Small-first ends with everything resident.
-    warm_tags = local_chat_tags(ollama_url) or [m for m in (*extra_models, model) if m]
-    for warm in sorted(set(warm_tags), key=lambda t: ("e2b" not in t, t)):
-        warm_load_model(ollama_url, warm)
+    # (solarisbay#339: the env-derived list missed the fast tag).
+    warm_load_chat_models(ollama_url, [m for m in (*extra_models, model) if m])
 
     register_http_check(sb_api, sb_token, ollama_url)
 
