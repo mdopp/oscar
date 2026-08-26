@@ -146,7 +146,7 @@
   "USAGE_METRICS_TOKEN": {
     "type": "secret",
     "noAutoGenerate": true,
-    "description": "Optional: das Bearer-Token des Haushalts-Dienstes `usage-metrics` (POST http://127.0.0.1:8095/ingest). Damit meldet Solaris, DASS heute jemand eine Widget-Kachel benutzt hat — es verlaesst genau `{app, event, day}` das Haus, also z. B. `solaris / widget.tasks.compose / 2026-08-26`. KEINE Person, kein Raum, kein Geraet, kein Text, kein Inhalt. Leer lassen schaltet das Zaehlen komplett ab; ist der Dienst aus oder langsam, merkt niemand etwas — Solaris antwortet unveraendert weiter. Das Token steht in der Installation von `usage-metrics`."
+    "description": "Optional: das Bearer-Token des Haushalts-Dienstes `usage-metrics` (POST http://127.0.0.1:8095/ingest). Damit meldet Solaris, DASS heute jemand eine Widget-Kachel benutzt hat — es verlaesst genau `{app, event, day, count}` das Haus, also z. B. `solaris / widget.tasks.compose / 2026-08-26 / 1`. KEINE Person, kein Raum, kein Geraet, kein Text, kein Inhalt. Leer lassen schaltet das Zaehlen komplett ab; ist der Dienst aus oder langsam, merkt niemand etwas — Solaris antwortet unveraendert weiter. Das Token steht in der Installation von `usage-metrics`."
   },
   "GATEKEEPER_IMAGE": {
     "type": "text",
