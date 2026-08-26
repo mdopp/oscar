@@ -140,22 +140,43 @@ def widget_event(src: str | None) -> str | None:
     return tag if _WIDGET_SRC_RE.match(tag) else None
 
 
-def usage_metrics_payload(event: str) -> dict[str, str]:
-    """The ENTIRE body that leaves the house: `{app, event, day}` (#1026).
+def usage_metrics_payload(event: str) -> dict[str, str | int]:
+    """The ENTIRE body that leaves the house: `{app, event, day, count}` (#1026).
 
-    No uid, no room, no entity id, no request body, no content — the counted
-    fact is "someone in this house used this widget zone today". Test
-    `test_widget_usage_metrics.py` asserts this key set exactly, so a field
-    can't be added here by accident."""
+    Those four fields are what the service's `/ingest` requires and all it
+    accepts — it rejects unknown fields and a `count` below 1 with 400
+    (mdopp/usage-metrics `ingest.go`). No uid, no room, no entity id, no
+    request body, no content — the counted fact is "someone in this house
+    used this widget zone today". Test `test_widget_usage_metrics.py` asserts
+    this key set against that contract, so a field can't be added here by
+    accident and a missing one can't ship green (#1252)."""
     return {
         "app": "solaris",
         "event": event,
         "day": datetime.now(timezone.utc).date().isoformat(),
+        "count": 1,
     }
 
 
+# A broken metrics service must not spam the log, but "sends nothing, forever"
+# must not be silent either — that is how #1252 stayed invisible for a release.
+# The first failure of this process is logged; the rest stay quiet.
+_usage_metrics_failure_logged = False
+
+
+def _log_usage_metrics_failure(event: str, **args: Any) -> None:
+    global _usage_metrics_failure_logged
+    if _usage_metrics_failure_logged:
+        return
+    _usage_metrics_failure_logged = True
+    log.warn("chat.usage_metrics.post_failed", event=event, **args)
+
+
 async def _post_usage_metric(event: str) -> None:
-    """POST one increment; swallow everything (#1026 — fail-open, always)."""
+    """POST one increment; swallow everything (#1026 — fail-open, always).
+
+    Fail-open never means fail-silent: a non-2xx or an unreachable service is
+    logged once per process (#1252)."""
     token = os.environ.get("USAGE_METRICS_TOKEN", "").strip()
     if not token:
         return
@@ -167,10 +188,14 @@ async def _post_usage_metric(event: str) -> None:
                 USAGE_METRICS_URL,
                 json=usage_metrics_payload(event),
                 headers={"Authorization": f"Bearer {token}"},
-            ):
-                pass
-    except Exception:  # noqa: BLE001 — a metrics hiccup must never reach a resident.
-        pass
+            ) as response:
+                if not 200 <= response.status < 300:
+                    detail = (await response.text())[:200]
+                    _log_usage_metrics_failure(
+                        event, status=response.status, detail=detail
+                    )
+    except Exception as exc:  # noqa: BLE001 — a metrics hiccup must never reach a resident.
+        _log_usage_metrics_failure(event, error=str(exc))
 
 
 def count_widget_hit(request: web.Request) -> None:
