@@ -149,6 +149,32 @@ def test_warm_load_order_falls_back_alphabetically_and_logs(pd, capsys):
     assert logged["args"]["fast_model"] == "gemma4:e4b"
 
 
+def test_a_non_fast_installed_tag_is_never_warmed(pd, monkeypatch):
+    """solarisbay#1258: warming the other installed tags evicted the model we
+    had just warmed (`predicted 8.3 GiB / available 8.0 GiB`), so the re-warm
+    cancelled itself. gemma4:12b belongs to foundry-chronicle, which loads it
+    itself off the critical path — it must stay installed and unwarmed."""
+    monkeypatch.setattr(
+        pd, "local_chat_tags", lambda url: ["gemma4:12b", "gemma4:e4b", "qwen3:8b"]
+    )
+    warmed = []
+    monkeypatch.setattr(
+        pd, "warm_load_model", lambda url, m, **k: warmed.append(m) or True
+    )
+    pd.warm_installed_models("http://x", "gemma4:e4b", [])
+    assert warmed == ["gemma4:e4b"]
+
+
+def test_warm_falls_back_to_the_env_list_when_api_tags_is_empty(pd, monkeypatch):
+    monkeypatch.setattr(pd, "local_chat_tags", lambda url: [])
+    warmed = []
+    monkeypatch.setattr(
+        pd, "warm_load_model", lambda url, m, **k: warmed.append(m) or True
+    )
+    pd.warm_installed_models("http://x", "gemma4:e4b", ["gemma4:12b", "gemma4:e4b"])
+    assert warmed == ["gemma4:e4b"]
+
+
 def test_local_chat_tags_fails_soft(pd, monkeypatch):
     def boom(req, timeout=0):
         raise OSError("down")
@@ -223,7 +249,7 @@ def test_warm_only_warms_the_fast_model_first(pd, monkeypatch):
         pd, "warm_load_model", lambda url, m, **k: warmed.append(m) or True
     )
     assert pd.main() == 0
-    assert warmed == ["gemma4:e4b", "gemma4:12b"]
+    assert warmed == ["gemma4:e4b"]
 
 
 def test_warm_only_exits_zero_when_ollama_never_answers(pd, monkeypatch):
