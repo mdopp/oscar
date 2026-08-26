@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.0](https://github.com/mdopp/solarisbay/compare/v0.43.1...v0.44.0) (2026-08-26)
+
+
+### Features
+
+* **chat:** forward widget src tags to the usage-metrics service ([a9ff8ce](https://github.com/mdopp/solarisbay/commit/a9ff8ce0ca4bbc2d0c184e4f7e17a3dc811138cd)), closes [#1026](https://github.com/mdopp/solarisbay/issues/1026)
+
 ## [0.43.1](https://github.com/mdopp/solarisbay/compare/v0.43.0...v0.43.1) (2026-08-26)
 
 
