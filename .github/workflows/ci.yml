@@ -145,18 +145,20 @@ jobs:
       - run: pytest -q wakeword-trainer/tests
 
   semgrep:
-    name: semgrep (report-only)
+    name: semgrep
     runs-on: ubuntu-latest
-    # Report-only first (gate 1): findings surface in the log but don't block.
-    # Promote to blocking by removing continue-on-error once the baseline is
-    # triaged (add suppressions / a .semgrep.yml), then pin the semgrep version.
-    continue-on-error: true
+    # Gate 1: static security scan. Blocking as of #1255 — the baseline is clean
+    # (the two accepted use-defused-xml findings in scripts/check-diff-coverage.py
+    # carry a documented `# nosemgrep`), and report-only had left this job red on
+    # every PR for findings nobody intended to act on, which trains everyone to
+    # ignore it. The version is pinned so a new semgrep release can't wedge every
+    # open PR on its own; bump it deliberately, like ruff above.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - run: pip install semgrep
+      - run: pip install semgrep==1.174.0
       - run: semgrep scan --config p/python --config p/security-audit --severity ERROR --error --metrics off
 
   audit:
