@@ -193,41 +193,61 @@ async def compact_session(
     if not force and not needs_compaction(session, context_window, threshold):
         return None
 
-    # Pass 1: extract durable learnings into memory BEFORE anything is dropped.
+    # A confirmation the resident has not answered yet ("Soll ich die Haustür
+    # wirklich aufschließen?") is lifted out of the gate for the duration (#1247)
+    # and put back under whichever session the resident continues in. Otherwise
+    # compaction's own two turns read as "not a yes" and drop it, and the
+    # continuation starts with no stash — so the "ja" silently actuates nothing.
+    # The deadline rides along, so this cannot outlive the window it was given.
+    held = engine.detach_pending(session_id)
+    resumes_in = session_id
     try:
-        await engine.chat(session_id, EXTRACT_PROMPT, None, "high")
-    except Exception as e:  # noqa: BLE001 — a failed extract must abort compaction
-        log.error("chat.compaction.extract_failed", session_id=session_id, error=str(e))
-        return None
+        # Pass 1: extract durable learnings into memory BEFORE anything is dropped.
+        try:
+            await engine.chat(session_id, EXTRACT_PROMPT, None, "high")
+        except Exception as e:  # noqa: BLE001 — a failed extract must abort compaction
+            log.error(
+                "chat.compaction.extract_failed", session_id=session_id, error=str(e)
+            )
+            return None
 
-    # Pass 2: summarise the conversation to seed the continuation.
-    try:
-        summary = await engine.chat(session_id, SUMMARY_PROMPT, None, "none")
-    except Exception as e:  # noqa: BLE001
-        log.error("chat.compaction.summary_failed", session_id=session_id, error=str(e))
-        return None
-    if not summary.strip():
-        log.warning("chat.compaction.empty_summary", session_id=session_id)
-        return None
+        # Pass 2: summarise the conversation to seed the continuation.
+        try:
+            summary = await engine.chat(session_id, SUMMARY_PROMPT, None, "none")
+        except Exception as e:  # noqa: BLE001
+            log.error(
+                "chat.compaction.summary_failed", session_id=session_id, error=str(e)
+            )
+            return None
+        if not summary.strip():
+            log.warning("chat.compaction.empty_summary", session_id=session_id)
+            return None
 
-    # Open the continuation; the original session is untouched (kept as record).
-    # The title carries a timestamp suffix so it never collides with an
-    # abandoned bare-marker stub — the engine enforces title uniqueness and a bare
-    # `[uid:...] ` marker would 400 against any stub already holding it (#267).
-    try:
-        new_id = await engine.create_session(
-            uid,
-            _continuation_prompt(base_system_prompt, summary),
-            title=f"Fortsetzung {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        # Open the continuation; the original session is untouched (kept as record).
+        # The title carries a timestamp suffix so it never collides with an
+        # abandoned bare-marker stub — the engine enforces title uniqueness and a
+        # bare `[uid:...] ` marker would 400 against any stub already holding it
+        # (#267).
+        try:
+            new_id = await engine.create_session(
+                uid,
+                _continuation_prompt(base_system_prompt, summary),
+                title=f"Fortsetzung {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error(
+                "chat.compaction.create_failed", session_id=session_id, error=str(e)
+            )
+            return None
+
+        log.info(
+            "chat.compaction.compacted",
+            uid=uid,
+            session_id=session_id,
+            continuation_id=new_id,
         )
-    except Exception as e:  # noqa: BLE001
-        log.error("chat.compaction.create_failed", session_id=session_id, error=str(e))
-        return None
-
-    log.info(
-        "chat.compaction.compacted",
-        uid=uid,
-        session_id=session_id,
-        continuation_id=new_id,
-    )
-    return new_id
+        resumes_in = new_id
+        return new_id
+    finally:
+        if held is not None:
+            engine.attach_pending(resumes_in, held)
