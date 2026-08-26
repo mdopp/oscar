@@ -143,6 +143,11 @@
     "description": "Comma-separated SHA256 signing-cert fingerprints (#716) of the Android TWA, served in /.well-known/assetlinks.json so Google can verify the app↔domain binding (drops the URL bar). Public value (it IS the assetlinks content). Default = the household app (cloud.dopp.solaris) signing key; a template default so it survives redeploys (#758). Get a new one from the android repo's signing key (`keytool -list` / Play App Signing).",
     "default": "C3:6A:41:03:80:AB:C9:9D:D5:6E:DF:14:5F:34:FF:A6:DA:7F:4A:15:B0:98:A3:7F:FD:AB:D7:02:FD:68:A6:2D"
   },
+  "USAGE_METRICS_TOKEN": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: das Bearer-Token des Haushalts-Dienstes `usage-metrics` (POST http://127.0.0.1:8095/ingest). Damit meldet Solaris, DASS heute jemand eine Widget-Kachel benutzt hat — es verlaesst genau `{app, event, day}` das Haus, also z. B. `solaris / widget.tasks.compose / 2026-08-26`. KEINE Person, kein Raum, kein Geraet, kein Text, kein Inhalt. Leer lassen schaltet das Zaehlen komplett ab; ist der Dienst aus oder langsam, merkt niemand etwas — Solaris antwortet unveraendert weiter. Das Token steht in der Installation von `usage-metrics`."
+  },
   "GATEKEEPER_IMAGE": {
     "type": "text",
     "description": "Image tag for Solaris's gatekeeper container. Leave default for the base bridge. For speaker-ID set this to ghcr.io/mdopp/solaris-gatekeeper-ml:latest (bakes in SpeechBrain/torch) and turn on SOLARIS_SPEAKER_ID_ENABLED.",
