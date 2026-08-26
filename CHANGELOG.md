@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.2](https://github.com/mdopp/solarisbay/compare/v0.44.1...v0.44.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **template:** warm only the configured fast model after an ollama start ([3e8fd30](https://github.com/mdopp/solarisbay/commit/3e8fd30b177467b0ea58586ba1212f9ea82890c3)), closes [#1258](https://github.com/mdopp/solarisbay/issues/1258)
+
 ## [0.44.1](https://github.com/mdopp/solarisbay/compare/v0.44.0...v0.44.1) (2026-08-26)
 
 
