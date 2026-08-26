@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from solaris_chat import compaction
 from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine import confirm, tasks
 from solaris_chat.engine.client import EngineClient, EngineProfile
@@ -854,3 +855,133 @@ async def test_task_delete_unknown_target_errors_without_holding(tmp_path, soul)
     # A guessed id is an error naming the candidates — never a wrong delete (#1241).
     assert len(tasks.list_tasks(db, "anna")) == 1
     assert client._pending.peek(sid) is None
+
+
+# -- #1247: a compaction between the question and the "ja" -------------------
+#
+# Compaction (#210) runs two LLM turns on the session and then continues the
+# resident in a session with a NEW id. Both used to eat an unanswered
+# confirmation, so the resident's "ja" reached no held action and NOTHING
+# happened — no unlock, no delete, and no word about why. The held action now
+# travels with the resident, keeping its original deadline: answered in time it
+# still fires, answered too late it says so.
+
+
+def _unlock_call() -> ChatResult:
+    return ChatResult(
+        tool_calls=[
+            {
+                "function": {
+                    "name": "ha_call_service",
+                    "arguments": {
+                        "domain": "lock",
+                        "service": "unlock",
+                        "entity_id": "lock.haustuer",
+                    },
+                }
+            }
+        ]
+    )
+
+
+async def _compact(client, sid: str) -> str:
+    new_id = await compaction.compact_session(
+        client, "anna", sid, context_window=100, force=True
+    )
+    assert new_id and new_id != sid
+    return new_id
+
+
+@pytest.mark.asyncio
+async def test_unlock_confirmation_survives_a_compaction(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _unlock_call(),
+            ChatResult(content="Soll ich haustuer wirklich aufschließen?"),
+            ChatResult(content="2 Fakten gespeichert."),  # compaction: extract
+            ChatResult(content="Kurzfassung."),  # compaction: summary
+            ChatResult(content="Ist offen."),
+        ],
+        tools=_tools(),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Haustür aufschließen")]
+    assert posts == []
+
+    new_id = await _compact(client, sid)
+    assert client._pending.peek(new_id) is not None
+    assert client._pending.peek(sid) is None
+
+    _ = [e async for e in client.chat_stream(new_id, "ja")]
+    assert len(posts) == 1
+    assert posts[0][1]["entity_id"] == "lock.haustuer"
+
+
+@pytest.mark.asyncio
+async def test_task_delete_confirmation_survives_a_compaction(tmp_path, soul):
+    db, notes = _task_db(tmp_path)
+    tasks.create_task(db_path=db, notes_dir=notes, uid="anna", title="Milch")
+    tools = build_choice_tools() + build_tasks_tools(
+        db, lambda: "anna", notes_dir=notes
+    )
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _delete_call(title="milch"),
+            ChatResult(content="Soll ich die Aufgabe Milch wirklich löschen?"),
+            ChatResult(content="1 Fakt gespeichert."),  # compaction: extract
+            ChatResult(content="Kurzfassung."),  # compaction: summary
+            ChatResult(content="Gelöscht."),
+        ],
+        tools=tools,
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "lösch die Aufgabe Milch")]
+    assert len(tasks.list_tasks(db, "anna")) == 1
+
+    new_id = await _compact(client, sid)
+
+    _ = [e async for e in client.chat_stream(new_id, "ja")]
+    assert tasks.list_tasks(db, "anna", include_done=True) == []
+
+
+@pytest.mark.asyncio
+async def test_compaction_does_not_extend_the_confirmation_window(
+    db, soul, monkeypatch
+):
+    """Carrying the question across a compaction must not let it outlive its
+    window and fire later against a different intent: the deadline travels with
+    it, so a late "ja" gets the plain expiry answer — never silence, never a
+    surprise unlock."""
+    posts = _stub_ha(monkeypatch)
+    client, _ = _client(
+        db,
+        soul,
+        [
+            _unlock_call(),
+            ChatResult(content="Soll ich haustuer wirklich aufschließen?"),
+            ChatResult(content="2 Fakten gespeichert."),
+            ChatResult(content="Kurzfassung."),
+            ChatResult(content="Diese Antwort darf nie kommen."),
+        ],
+        tools=_tools(),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Haustür aufschließen")]
+    new_id = await _compact(client, sid)
+
+    class _TwoHoursLater:
+        @staticmethod
+        def monotonic() -> float:
+            return time.monotonic() + 7200.0
+
+    monkeypatch.setattr(confirm, "time", _TwoHoursLater, raising=False)
+
+    events = [e async for e in client.chat_stream(new_id, "ja")]
+    assert posts == []
+    answer = events[-1]["data"]["messages"][-1]["content"]
+    assert "abgelaufen" in answer and "nichts ausgeführt" in answer

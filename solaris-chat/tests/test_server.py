@@ -117,6 +117,14 @@ class _FakeEngine:
         self._events = events or []
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
+        # The confirm gate's stash, keyed like the real client's (#1247).
+        self.pending: dict[str, object] = {}
+
+    def detach_pending(self, key):
+        return self.pending.pop(key, None)
+
+    def attach_pending(self, key, held):
+        self.pending[key] = held
 
     async def create_session(
         self,

@@ -202,6 +202,10 @@ class PendingAction:
         return out
 
 
+# A held action as it sits in the store: the action plus its monotonic deadline.
+Held = tuple[PendingAction, float]
+
+
 class PendingStore:
     """Per-conversation stash of one pending sensitive action.
 
@@ -216,7 +220,22 @@ class PendingStore:
     """
 
     def __init__(self) -> None:
-        self._pending: dict[str, tuple[PendingAction, float]] = {}
+        self._pending: dict[str, Held] = {}
+
+    def detach(self, session_id: str) -> Held | None:
+        """Lift a held action out of the store WITHOUT answering it (#1247).
+
+        Compaction runs its own two LLM turns on the session and then continues
+        the resident in a session with a NEW id. Both would eat an unanswered
+        question: the extract turn reads as "not a yes" and drops it, and the
+        continuation carries no stash, so the resident's "ja" lands on nothing.
+        The deadline travels with the action, so putting it back can never
+        extend the window — a confirmation still dies `PENDING_TTL_S` after it
+        was asked, compaction or not."""
+        return self._pending.pop(session_id, None)
+
+    def attach(self, session_id: str, held: Held) -> None:
+        self._pending[session_id] = held
 
     def stash(self, session_id: str, action: PendingAction) -> None:
         self._pending[session_id] = (action, time.monotonic() + PENDING_TTL_S)

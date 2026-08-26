@@ -372,6 +372,16 @@ class EngineClient:
         reach the gate."""
         return key is not None and self._pending.peek(key) is not None
 
+    def detach_pending(self, key: str) -> confirm.Held | None:
+        """Lift this caller's unanswered confirmation out of the gate (#1247).
+
+        Compaction uses it to carry the question across its own LLM turns and
+        into the continuation session; see `confirm.PendingStore.detach`."""
+        return self._pending.detach(key)
+
+    def attach_pending(self, key: str, held: confirm.Held) -> None:
+        self._pending.attach(key, held)
+
     @property
     def profile_name(self) -> str:
         return self._profile.name

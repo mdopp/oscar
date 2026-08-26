@@ -95,6 +95,14 @@ class _RecordingEngine:
         self.calls: list[str] = []
         self.created_prompts: list[str] = []
         self.created_titles: list[str] = []
+        # The confirm gate's stash, keyed like the real client's (#1247).
+        self.pending: dict[str, object] = {}
+
+    def detach_pending(self, key):
+        return self.pending.pop(key, None)
+
+    def attach_pending(self, key, held):
+        self.pending[key] = held
 
     async def get_session(self, session_id, uid):
         return dict(self._session) if self._session is not None else None
