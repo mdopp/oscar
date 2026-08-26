@@ -342,6 +342,12 @@ spec:
       value: "{{ANDROID_PACKAGE}}"
     - name: ANDROID_CERT_FINGERPRINTS
       value: "{{ANDROID_CERT_FINGERPRINTS}}"
+    # Widget-usage forwarding (#1026): the bearer for the household
+    # usage-metrics service on host loopback 127.0.0.1:8095 (this is a
+    # hostNetwork pod). Empty ⇒ the var resolves empty, ServiceBay prunes it,
+    # and the forwarder stays off — nothing is counted, nothing breaks.
+    - name: USAGE_METRICS_TOKEN
+      value: "{{USAGE_METRICS_TOKEN}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint

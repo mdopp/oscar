@@ -117,6 +117,80 @@ ANDROID_APK_URL = (
 # header (untrusted here). Minting stays on the interactive-Authelia `/api/` path.
 NATIVE_PREFIX = "/napi/"
 
+# Widget-usage forwarding (#1026). The Android widgets tag their deep-link opens
+# and `/napi/` calls `?src=widget.<tool>.<zone>`; Solaris is a thin forwarder —
+# it turns one tagged request into ONE aggregate increment on the household
+# usage-metrics service and keeps no counter of its own. Solaris runs
+# `effectiveHostNetwork: true`, so that isolated-netns service is reached on the
+# host loopback (127.0.0.1:8095), NOT `host.containers.internal`.
+USAGE_METRICS_URL = "http://127.0.0.1:8095/ingest"
+USAGE_METRICS_TIMEOUT_S = 2.0
+# `widget.<tool>.<zone>` and nothing else — a tag is attacker-supplied query
+# text, and this is what stops anything but two short slugs becoming an event
+# name on a shared service.
+_WIDGET_SRC_RE = re.compile(r"\Awidget\.[a-z0-9_-]{1,32}\.[a-z0-9_-]{1,32}\Z")
+# Strong refs to the in-flight fire-and-forget posts (asyncio only holds weak
+# ones, so a task can otherwise be garbage-collected mid-flight).
+_usage_metrics_tasks: set[asyncio.Task[None]] = set()
+
+
+def widget_event(src: str | None) -> str | None:
+    """The `widget.<tool>.<zone>` event for a `?src=` tag, or None (#1026)."""
+    tag = (src or "").strip()
+    return tag if _WIDGET_SRC_RE.match(tag) else None
+
+
+def usage_metrics_payload(event: str) -> dict[str, str]:
+    """The ENTIRE body that leaves the house: `{app, event, day}` (#1026).
+
+    No uid, no room, no entity id, no request body, no content — the counted
+    fact is "someone in this house used this widget zone today". Test
+    `test_widget_usage_metrics.py` asserts this key set exactly, so a field
+    can't be added here by accident."""
+    return {
+        "app": "solaris",
+        "event": event,
+        "day": datetime.now(timezone.utc).date().isoformat(),
+    }
+
+
+async def _post_usage_metric(event: str) -> None:
+    """POST one increment; swallow everything (#1026 — fail-open, always)."""
+    token = os.environ.get("USAGE_METRICS_TOKEN", "").strip()
+    if not token:
+        return
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=USAGE_METRICS_TIMEOUT_S)
+        ) as session:
+            async with session.post(
+                USAGE_METRICS_URL,
+                json=usage_metrics_payload(event),
+                headers={"Authorization": f"Bearer {token}"},
+            ):
+                pass
+    except Exception:  # noqa: BLE001 — a metrics hiccup must never reach a resident.
+        pass
+
+
+def count_widget_hit(request: web.Request) -> None:
+    """Fire-and-forget one increment for a `?src=widget.*` request (#1026)."""
+    event = widget_event(request.query.get("src"))
+    if event is None:
+        return
+    task = asyncio.create_task(_post_usage_metric(event))
+    _usage_metrics_tasks.add(task)
+    task.add_done_callback(_usage_metrics_tasks.discard)
+
+
+@web.middleware
+async def widget_usage(request: web.Request, handler: Any) -> web.StreamResponse:
+    # Counting happens BEFORE the handler runs and is never awaited, so the
+    # resident's response is not delayed by the metrics service (#1026).
+    count_widget_hit(request)
+    return await handler(request)
+
+
 # Idle-keepalive interval for the portal SSE stream (#1093). Two things drop an
 # idle stream, and the shorter one sets this: (a) the NPM proxy in front of chat,
 # `proxy_read_timeout 600s` (read off the box's proxy_host conf on 2026-07-28 —
@@ -5950,7 +6024,7 @@ def build_app(
     # (#869) is far larger, so the cap is the archive limit — the upload handler's
     # own per-type guard rejects an oversized non-archive part.
     app = web.Application(
-        middlewares=[csp],
+        middlewares=[csp, widget_usage],
         client_max_size=_ARCHIVE_MAX_BYTES + 8 * 1024 * 1024,
     )
     app.router.add_get("/", index)
