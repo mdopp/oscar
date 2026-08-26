@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.43.1](https://github.com/mdopp/solarisbay/compare/v0.43.0...v0.43.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **chat:** carry an unanswered confirmation through session compaction ([bbc9907](https://github.com/mdopp/solarisbay/commit/bbc9907bf4447faad0c3744db06f0e48d74db39f)), closes [#1247](https://github.com/mdopp/solarisbay/issues/1247)
+
 ## [0.43.0](https://github.com/mdopp/solarisbay/compare/v0.42.3...v0.43.0) (2026-08-25)
 
 
