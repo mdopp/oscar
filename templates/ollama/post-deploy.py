@@ -335,14 +335,26 @@ def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool
 def warm_installed_models(
     ollama_url: str, fast_model: str, fallback: list[str]
 ) -> None:
-    """Warm every locally installed chat tag, fast model first.
+    """Warm the configured fast model — and nothing else.
+
+    Warming every installed chat tag was self-cancelling (solarisbay#1258,
+    box-measured): the second tag loaded ~45 s after the fast model and
+    evicted it (`predicted 8.3 GiB / available 8.0 GiB`, 7× in 14 days), so
+    the re-warm left the household hot path colder than it found it. The big
+    tag is not unused — foundry-chronicle shares this box and loads it itself
+    at `/session start`, in a background thread, minutes to hours before its
+    first scene — it just doesn't need OUR pre-warm. Unconditional by
+    agreement with that side (mdopp/foundry-chronicle#299): warming "only
+    when a lease exists" would couple this script to their lease state for
+    56 seconds once an evening.
 
     Source of truth = the locally installed tags (solarisbay#339: the
     env-derived list arrived empty on the box); `fallback` is only used when
-    /api/tags can't be read. Order comes from warm_load_order() — configured
-    fast-model identity first, never a size field (solarisbay#1217)."""
+    /api/tags can't be read. Which tag is the fast one comes from
+    warm_load_order() — configured fast-model identity first, never a size
+    field (solarisbay#1217)."""
     warm_tags = local_chat_tags(ollama_url) or [m for m in fallback if m]
-    for warm in warm_load_order(warm_tags, fast_model):
+    for warm in warm_load_order(warm_tags, fast_model)[:1]:
         warm_load_model(ollama_url, warm)
 
 
@@ -598,12 +610,11 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         "# resident models fit with headroom, so 24h pinning carries no OOM\n"
         "# risk.\n"
         f"Environment=OLLAMA_KEEP_ALIVE={keep_alive}\n"
-        "# Keep ALL THREE models resident (default 3): fast chat (e2b),\n"
-        "# thorough chat (12b) and the embed model. The cap is GLOBAL — the\n"
-        "# embed model IS counted (box-measured 2026-06-10), and at 2 the\n"
-        "# night crons on 12b plus an embedding evicted e2b, so the first\n"
-        "# fast turn of the morning paid a ~6.75s reload (box-observed\n"
-        "# 2026-06-11).\n"
+        "# How many models stay resident (default 2): the household fast\n"
+        "# chat and the embed model. The cap is GLOBAL — the embed model IS\n"
+        "# counted (box-measured 2026-06-10). Only the fast model is\n"
+        "# warm-loaded (#1258), so both slots belong to the voice hot path\n"
+        "# and a big chat tag loaded on demand is what pays the reload.\n"
         f"Environment=OLLAMA_MAX_LOADED_MODELS={max_loaded_models}\n"
         "# Flash attention — negligible speed change here but harmless and\n"
         "# the prerequisite for optional KV-cache quant.\n"
