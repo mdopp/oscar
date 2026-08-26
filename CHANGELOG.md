@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.1](https://github.com/mdopp/solarisbay/compare/v0.44.0...v0.44.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **chat:** send count on the usage-metrics ingest and log a rejected post ([3ac1678](https://github.com/mdopp/solarisbay/commit/3ac16785d581f35c924315f94a8d7f8ccf05fc59)), closes [#1252](https://github.com/mdopp/solarisbay/issues/1252)
+
 ## [0.44.0](https://github.com/mdopp/solarisbay/compare/v0.43.1...v0.44.0) (2026-08-26)
 
 
