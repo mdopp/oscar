@@ -114,16 +114,33 @@ _ACTION_VERBS: dict[str, str] = {
 }
 
 
-def confirm_prompt(domain: str, service: str, entity_id: str) -> str:
+def confirm_prompt(domain: str, service: str, entity_id: str, name: str = "") -> str:
     """The "Soll ich … wirklich …?" question for a held sensitive action.
 
-    Uses the entity_id's readable slug (no HA round-trip — the gate must be
-    synchronous and deterministic); the model relays it verbatim."""
-    name = (
+    Falls back to the entity_id's readable slug (no HA round-trip — the gate
+    must be synchronous and deterministic); the model relays it verbatim. When
+    the engine resolved the target itself (#1263), `name` is the real device's
+    friendly name, so the question the resident answers names the device that
+    would actually move — not the id the model guessed."""
+    name = name or (
         entity_id.split(".", 1)[1].replace("_", " ") if "." in entity_id else entity_id
     )
     verb = _ACTION_VERBS.get(service, service)
     return f"Soll ich {name} wirklich {verb}?"
+
+
+def choice_prompt(guess: str, options: list[str] | tuple[str, ...]) -> str:
+    """The "Welches Gerät meinst du?" question for an id that resolved to nothing.
+
+    Ambiguity is where a silent resolution must not happen (#1263): two devices
+    that fit equally well are a question, not a coin flip. The options are the
+    real friendly names and ride out as chips, so the resident taps one instead
+    of repeating themselves — and the next turn's guess carries that exact name,
+    which resolves."""
+    slug = guess.partition(".")[2].replace("_", " ") or guess
+    if options:
+        return f"Welches Gerät meinst du — {' oder '.join(options)}?"
+    return f"Ich finde kein Gerät namens „{slug}“. Wie heißt es genau?"
 
 
 # A task hard-delete is irreversible (no tombstone, no undo) — it is gated by

@@ -20,6 +20,7 @@ import pytest
 from solaris_chat import compaction
 from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine import confirm, tasks
+from solaris_chat.engine import registry as registry_mod
 from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ollama import ChatResult
 from solaris_chat.engine.tools import Toolbox
@@ -43,6 +44,11 @@ class _FakeRegistry:
 
     async def device_class(self, entity_id: str) -> str | None:
         return self._classes.get(entity_id)
+
+    async def resolve(self, entity_id: str) -> registry_mod.Resolution:
+        # No entity inventory here: the real registry fails OPEN when HA's list
+        # is unavailable, so the model's id passes through untouched (#1263).
+        return registry_mod.Resolution(entity_id=entity_id)
 
     async def prompt_block(self) -> str:
         return ""
