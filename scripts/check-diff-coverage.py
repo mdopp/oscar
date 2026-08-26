@@ -15,6 +15,14 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+
+# The only XML this script ever reads is voice-gatekeeper/coverage.xml, written
+# by our own `pytest --cov-report=xml` a step earlier in the same CI job. It is
+# not resident data, not fetched over the network, and not anything a PR author
+# supplies — so the XXE / XML-bomb attacks defusedxml guards against have no way
+# in. Overturn this suppression the moment the script reads a coverage report it
+# did not produce itself.
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -59,6 +67,8 @@ def covered_lines() -> dict[str, dict[int, bool]]:
     """{repo-relative path: {line number: covered?}} from coverage.xml."""
     if not COVERAGE_XML.exists():
         sys.exit(f"{COVERAGE_XML} not found — run pytest --cov-report=xml first.")
+    # Same CI-produced input as the import above — see the reason there.
+    # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
     root = ET.parse(COVERAGE_XML).getroot()
     sources = [s.text for s in root.findall("./sources/source") if s.text]
     result: dict[str, dict[int, bool]] = {}
