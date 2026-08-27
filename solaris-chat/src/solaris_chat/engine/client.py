@@ -194,6 +194,64 @@ def _is_fabricated_device_claim(content: str) -> bool:
 # question to fall back on, but still nothing to report as done.
 _NOT_DONE = "Das hat nicht geklappt — ich habe nichts geschaltet."
 
+# What a surface says instead of handing the resident nothing at all (#1267).
+# Silence is unreadable: it looks exactly like a command that never arrived, so
+# the resident repeats it — the worst possible reaction after devices moved.
+NO_ANSWER = "Entschuldige, dazu habe ich gerade keine Antwort."
+
+# The state word a completed service leaves the device in, for the closing
+# sentence below. Only the services whose result is plainly sayable; anything
+# else falls back to the neutral "habe ich geschaltet".
+_ACTED_STATE = {
+    "turn_on": "an",
+    "turn_off": "aus",
+    "open_cover": "offen",
+    "close_cover": "zu",
+    "lock": "abgeschlossen",
+    "unlock": "aufgeschlossen",
+}
+
+
+def _acted_call(args: Any) -> tuple[str, str]:
+    """`(real service, entity_id)` for one dispatched ha_call_service (#1267).
+
+    The natural verb is normalised the same way `call_service` normalises it
+    before the POST (cover "open" -> "open_cover"), so the sentence describes
+    the service that actually ran."""
+    if not isinstance(args, dict):
+        return "", ""
+    entity_id = str(args.get("entity_id") or "")
+    service = str(args.get("service") or "")
+    domain = entity_id.split(".", 1)[0]
+    return ha_tools._SERVICE_ALIASES.get(domain, {}).get(service, service), entity_id
+
+
+def _join_de(names: list[str]) -> str:
+    if len(names) < 2:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} und {names[-1]}"
+
+
+def _acted_sentence(actions: list[tuple[str, str]]) -> str:
+    """The closing line for a turn that switched devices but said nothing (#1267).
+
+    `actions` is `(service, device name)` in dispatch order. Devices that ended
+    in the same state are named together, so a room-wide command reads as one
+    sentence ("… sind jetzt an") rather than four."""
+    if not actions:
+        return "Erledigt."
+    parts: list[str] = []
+    for state in dict.fromkeys(_ACTED_STATE.get(s, "") for s, _ in actions):
+        names = list(
+            dict.fromkeys(n for s, n in actions if _ACTED_STATE.get(s, "") == state)
+        )
+        if state:
+            verb = "ist" if len(names) == 1 else "sind"
+            parts.append(f"{_join_de(names)} {verb} jetzt {state}")
+        else:
+            parts.append(f"{_join_de(names)} habe ich geschaltet")
+    return "Erledigt — " + ", ".join(parts) + "."
+
 
 def _action_outcome(output: str) -> tuple[bool, str]:
     """`(acted, the honest line)` for one ha_call_service result (#1263).
@@ -763,6 +821,21 @@ class EngineClient:
             "",
         )
 
+    async def _acted_names(self, calls: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """`(service, device name)` for the entities this turn switched (#1267).
+
+        Resolved against the same registry index the dispatch boundary uses, so
+        the closing sentence names the device the resident knows it by
+        ("Sofalicht") rather than the id it was switched through."""
+        registry = self._profile.registry
+        out: list[tuple[str, str]] = []
+        for service, entity_id in calls:
+            name = ""
+            if registry is not None and entity_id:
+                name = (await registry.resolve(entity_id)).name
+            out.append((service, name or entity_id))
+        return out
+
     async def _gate_sensitive(
         self,
         args: dict[str, Any],
@@ -1008,6 +1081,7 @@ class EngineClient:
         # below doesn't re-hold the very action we are now executing.
         confirmed: set[tuple[str, str, str]] = set()
         confirmed_executed = False
+        confirmed_calls: list[tuple[str, str]] = []
         pending = self._pending.peek(pending_key) if pending_key else None
         # Past its window the held action is gone (#1183). A yes that lands on
         # nothing is answered deterministically — like the gate itself — so the
@@ -1097,6 +1171,8 @@ class EngineClient:
                     {"role": "tool", "content": output, "tool_name": held_tool}
                 )
                 confirmed_executed = True
+                if held_tool == "ha_call_service" and _action_outcome(output)[0]:
+                    confirmed_calls.append(_acted_call(pending.args()))
 
         has_tools = bool(self._profile.toolbox.names())
         # A confirmed action already ran a tool this turn, so the model's report
@@ -1106,6 +1182,10 @@ class EngineClient:
         # what should the resident hear instead of the model's success claim?
         acted = confirmed_executed
         unacted = ""
+        # #1267: `(service, entity_id)` for every device action that really
+        # reached HA this turn — the material for the closing sentence when the
+        # model ends a multi-call round without one.
+        acted_calls: list[tuple[str, str]] = list(confirmed_calls)
         # Whether the model itself stored the fact this turn (#621): if the user
         # said "merk dir …" and no store tool ran, the loop enforces it at turn
         # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
@@ -1327,7 +1407,9 @@ class EngineClient:
                 if name == "ha_call_service":
                     did_act, honest = _action_outcome(output)
                     acted = acted or did_act
-                    if not did_act:
+                    if did_act:
+                        acted_calls.append(_acted_call(item["args"]))
+                    else:
                         unacted = honest
                 yield {
                     "type": "tool.completed",
@@ -1391,6 +1473,17 @@ class EngineClient:
         retrieved = grounding.context_from_turn(messages)
         if retrieved is not None and final_content:
             final_content = grounding.ground(final_content, retrieved)
+        # #1267: a multi-call round ends with an empty model turn often enough to
+        # matter — measured on the box, "Mach das Licht im Wohnzimmer an" switched
+        # four real lamps and returned `reply: ""`. A device action that reached
+        # HA must never leave the resident without a sentence, so name what was
+        # actually switched; a turn whose action was held or refused falls back to
+        # that honest line instead (#1263), never to a confirmation.
+        if not final_content.strip():
+            if acted:
+                final_content = _acted_sentence(await self._acted_names(acted_calls))
+            elif unacted:
+                final_content = unacted
         if persist:
             store.append_message(
                 self._db_path,

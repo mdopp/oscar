@@ -291,6 +291,15 @@
     "description": "ServiceBay public portal base (through NPM) used ONLY for the delegated-admin session mint that backs app approve/reject (servicebay#2278/#2285, solarisbay#811/#820). The BFF forwards the acting admin's authelia_session cookie to POST /api/auth/delegated-admin-from-authelia-session on this host; NPM's forward-auth validates the cookie and injects the CSRF-exempt X-SB-Internal-Token. Must be a *.dopp.cloud host (e.g. https://www.dopp.cloud) — the bare apex is Authelia default-deny and 401s even with a valid cookie; loopback has neither the token nor Authelia. Companion reads and the verdict callback keep using SERVICEBAY_API_URL (loopback, Bearer-authenticated). Empty ⇒ fall back to SERVICEBAY_API_URL — correct for a LAN/no-portal deploy where NPM isn't in front.",
     "default": "https://www.dopp.cloud"
   },
+  "SOLARIS_MODEL_LEASE_ENABLED": {
+    "type": "select",
+    "description": "Honour a neighbour service's model lease (solarisbay#1260, contract mdopp/foundry-chronicle#299). foundry-chronicle shares this GPU and holds gemma4:12b for hours; that model and the household's gemma4:e4b do not fit beside the voice stack, so insisting on the fast model costs a ~56 s model swap EACH WAY on every turn during their evening. When on, chronicle POSTs {model, ttl_s} to http://127.0.0.1:<CHAT_PORT>/api/model-lease (loopback only, no token by agreement) and DELETEs it at the end; for that window Solaris answers household and guest turns with the model already in VRAM, and re-warms FAST_MODEL as soon as the lease ends or its 15-minute TTL expires. Set to false to leave the contract: the endpoint refuses and every turn runs FAST_MODEL. No lease, an unreadable lease or an expired lease is always normal operation.",
+    "options": [
+      "true",
+      "false"
+    ],
+    "default": "true"
+  },
   "SOLARIS_SPEAKER_ID_ENABLED": {
     "type": "select",
     "description": "Speaker-ID (#84, #350): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solaris.db. When on, the post-deploy registers the gatekeeper as the Assist pipeline's Wyoming STT engine so the live Voice PE path runs through speaker-ID; the resolved resident is attributed to the turn via a transcript-keyed side-channel. Requires the solaris-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",

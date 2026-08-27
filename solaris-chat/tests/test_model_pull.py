@@ -1,4 +1,5 @@
-"""Pull wrapper + VRAM-headroom estimate + admin gate (#367)."""
+"""Pull wrapper + VRAM-headroom estimate + admin gate (#367), and the warm
+call's explicit keep_alive (#1264)."""
 
 from __future__ import annotations
 
@@ -138,6 +139,31 @@ async def test_embed_raises_on_error_status(monkeypatch):
     client = OllamaChat("http://x:11434")
     with pytest.raises(OllamaError):
         await client.embed("nomic-embed-text", ["a"])
+
+
+# --- /api/generate warm ----------------------------------------------------
+
+
+async def test_warm_pins_the_fast_model_with_an_explicit_keep_alive(monkeypatch):
+    # #1264 — OLLAMA_KEEP_ALIVE is a short SERVICE-wide fallback because it
+    # governs every model any consumer on the box loads; a blanket 24h let one
+    # neighbour that sends no keep_alive squat the GPU for a day. So the long
+    # hold on the household fast model is this call's to ask for, from the
+    # module constant that mirrors templates/ollama/post-deploy.py's.
+    sess = _patch_ollama_embed(monkeypatch, {})
+    client = OllamaChat("http://x:11434")
+
+    assert await client.warm("gemma4:e4b") is True
+
+    assert sess.last["url"] == "http://x:11434/api/generate"
+    assert sess.last["json"] == {
+        "model": "gemma4:e4b",
+        "prompt": "Hi",
+        "stream": False,
+        "keep_alive": ollama.FAST_MODEL_KEEP_ALIVE,
+        "options": {"num_predict": 1},
+    }
+    assert ollama.FAST_MODEL_KEEP_ALIVE == "24h"
 
 
 # --- combined-vs-available estimate ---------------------------------------

@@ -3558,3 +3558,25 @@ async def test_portal_energy_history_502_when_ha_unavailable(
     resp = await client.get("/api/portal/energy/history?range=24h")
     assert resp.status == 502
     assert (await resp.json())["error"] == "ha_unavailable"
+
+
+async def test_chat_never_answers_ok_with_an_empty_reply(aiohttp_client, tmp_path):
+    """#1267: `{"ok": true, "reply": ""}` was the box's answer to a turn that
+    switched four lamps — success reported to the caller, nothing to the
+    resident. An empty reply never leaves this endpoint."""
+
+    class _Silent(_FakeEngine):
+        async def chat(self, *a, **k):
+            return "  "
+
+    app = build_app(
+        engine=_Silent(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post("/api/chat", json={"input": "Licht im Wohnzimmer an"})
+    body = await resp.json()
+    assert body["ok"] is True
+    assert body["reply"].strip()

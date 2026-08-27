@@ -206,6 +206,13 @@ spec:
       value: "{{FAST_MODEL}}"
     - name: THOROUGH_MODEL
       value: "{{THOROUGH_MODEL}}"
+    # The model lease foundry-chronicle declares over the loopback while it
+    # holds the big model on this box (#1260): for its window the household
+    # answers with that model instead of forcing a ~56 s swap each way. "false"
+    # leaves the contract — the endpoint refuses and every turn runs FAST_MODEL
+    # again — without rebuilding anything.
+    - name: SOLARIS_MODEL_LEASE_ENABLED
+      value: "{{SOLARIS_MODEL_LEASE_ENABLED}}"
     # The Kokoro voices the panel's voice picker offers (#368), comma-separated;
     # the first is the default. The solaris-tts image bakes "martin", so that
     # stays the single default. The admin's selection persists beside solaris.db

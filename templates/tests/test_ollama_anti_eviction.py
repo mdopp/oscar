@@ -1,6 +1,7 @@
-"""Tests for the ollama anti-eviction config (#268): OLLAMA_MAX_LOADED_MODELS=1
-and OLLAMA_KEEP_ALIVE=24h, wired on both the variables.json defaults and the
-GPU `.container` Quadlet render path.
+"""Tests for the ollama residency config, wired on both the variables.json
+defaults and the GPU `.container` Quadlet render path: OLLAMA_MAX_LOADED_MODELS
+(#268) and the service-wide OLLAMA_KEEP_ALIVE fallback, which is short since
+#1264 because it governs every consumer's models, not only the household's.
 """
 
 from __future__ import annotations
@@ -55,8 +56,27 @@ def test_context_length_default_is_32k(variables):
     assert variables["OLLAMA_CONTEXT_LENGTH"]["default"] == "32768"
 
 
-def test_keep_alive_default_is_24h(variables):
-    assert variables["OLLAMA_KEEP_ALIVE"]["default"] == "24h"
+def test_keep_alive_default_is_short(variables):
+    # #1264 — the service-wide default governs EVERY model any consumer on the
+    # box loads, so it is short: forgetting a per-request keep_alive costs
+    # minutes of squatted VRAM, not a day. The long hold on our own fast model
+    # is asked for explicitly by the warm call (see FAST_MODEL_KEEP_ALIVE).
+    assert variables["OLLAMA_KEEP_ALIVE"]["default"] == "15m"
+
+
+def test_keep_alive_default_covers_the_model_lease_ttl(variables):
+    # The lease (#1260) makes the household answer on a model a neighbour
+    # holds, for up to LEASE_TTL_SECONDS = 900s. A shorter service default
+    # would let that model fall out of VRAM inside a live lease, so the turn
+    # the lease exists to speed up would pay the ~56s reload instead. Read from
+    # the lease module itself so raising the TTL can't silently undercut this.
+    lease = _load(
+        "solaris_chat_model_lease",
+        TEMPLATES.parent / "solaris-chat" / "src" / "solaris_chat" / "model_lease.py",
+    )
+    default = variables["OLLAMA_KEEP_ALIVE"]["default"]
+    assert default.endswith("m")
+    assert int(default[:-1]) * 60 >= lease.LEASE_TTL_SECONDS
 
 
 # ── template.yml env wiring ───────────────────────────────────────────────
@@ -72,14 +92,22 @@ def test_template_yml_wires_max_loaded_models():
 # ── GPU .container render path parity ─────────────────────────────────────
 
 
-def test_gpu_unit_carries_max_loaded_models_and_24h(ollama_pd, monkeypatch):
-    # No env set → the render path falls back to the new defaults.
+def test_gpu_unit_carries_max_loaded_models_and_the_short_keep_alive(
+    ollama_pd, variables, monkeypatch
+):
+    # No env set → the render path falls back to the new defaults, and the GPU
+    # path must fall back to the SAME value variables.json declares — the .kube
+    # env never reaches the GPU runtime, so a drift here is invisible on the box.
     monkeypatch.delenv("OLLAMA_MAX_LOADED_MODELS", raising=False)
     monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
     monkeypatch.delenv("OLLAMA_CONTEXT_LENGTH", raising=False)
     unit = ollama_pd.render_gpu_container_unit("11434", "/mnt/data/stacks")
     assert "Environment=OLLAMA_MAX_LOADED_MODELS=2" in unit
-    assert "Environment=OLLAMA_KEEP_ALIVE=24h" in unit
+    assert "Environment=OLLAMA_KEEP_ALIVE=15m" in unit
+    assert (
+        f"Environment=OLLAMA_KEEP_ALIVE={variables['OLLAMA_KEEP_ALIVE']['default']}\n"
+        in unit
+    )
     assert "Environment=OLLAMA_CONTEXT_LENGTH=32768" in unit
 
 

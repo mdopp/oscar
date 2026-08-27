@@ -16,6 +16,11 @@ from typing import Any
 
 import aiohttp
 
+# How long a warm call asks Ollama to hold the household fast model. Mirrors
+# `FAST_MODEL_KEEP_ALIVE` in templates/ollama/post-deploy.py — the two warms
+# share a shape, so they share the hold; a test pins the value on both sides.
+FAST_MODEL_KEEP_ALIVE = "24h"
+
 
 class OllamaError(Exception):
     """Raised when Ollama returns a non-2xx response."""
@@ -79,6 +84,33 @@ class OllamaChat:
                     if not line:
                         continue
                     yield json.loads(line)
+
+    async def warm(self, model: str) -> bool:
+        """Load `model` into VRAM with a 1-token generate — the same warm shape
+        `ollama-warm` uses on the box (#1236), so there is one warm, not two.
+
+        Carries an explicit `keep_alive`: the service-wide default is short so a
+        neighbour that sends none can't squat the GPU for a day (#1264), which
+        makes the long hold on our fast model this call's job to ask for.
+
+        Best-effort: a warm that fails leaves the next real turn cold, which is
+        slow, not broken, so nothing here raises.
+        """
+        body = {
+            "model": model,
+            "prompt": "Hi",
+            "stream": False,
+            "keep_alive": FAST_MODEL_KEEP_ALIVE,
+            "options": {"num_predict": 1},
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as client:
+                async with client.post(
+                    f"{self._base_url}/api/generate", json=body
+                ) as resp:
+                    return resp.status < 400
+        except Exception:  # noqa: BLE001 — any transport failure is a cold model
+            return False
 
     async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
         """`POST /api/embed` — embed a batch of texts, one vector per input.

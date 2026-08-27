@@ -300,14 +300,31 @@ def _canonical_tag(tag: str) -> str:
     return tag if ":" in tag else f"{tag}:latest"
 
 
+# How long OUR warm call asks Ollama to hold the household fast model. The
+# service-wide OLLAMA_KEEP_ALIVE default is short on purpose (#1264): it applies
+# to every model any consumer on this box loads, so as a blanket 24h it let one
+# forgetful neighbour squat the GPU for a day at the household's expense. 24h is
+# right for our model (#268) — so we ask for it, per request, for our model only.
+FAST_MODEL_KEEP_ALIVE = "24h"
+
+
 def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool:
     """Load `model` into VRAM with a 1-token generate so the first real turn
     after a deploy is warm. Every (re)deploy restarts the ollama unit and
     drops all residents — without this, the first voice turn lands on a cold
     model and the PE gives up before the answer arrives (box-observed
-    2026-06-12: 9-66s intent stage, "blinkt nur blau"). Best-effort."""
+    2026-06-12: 9-66s intent stage, "blinkt nur blau"). Best-effort.
+
+    The call carries an explicit `keep_alive` so the fast model's long hold
+    comes from us and not from the service-wide default (#1264)."""
     body = json.dumps(
-        {"model": model, "prompt": "Hi", "stream": False, "options": {"num_predict": 1}}
+        {
+            "model": model,
+            "prompt": "Hi",
+            "stream": False,
+            "keep_alive": FAST_MODEL_KEEP_ALIVE,
+            "options": {"num_predict": 1},
+        }
     ).encode("utf-8")
     req = urllib.request.Request(
         f"{ollama_url}/api/generate",
@@ -586,7 +603,7 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
     rendered here too). Kept pure so the needs-rewrite comparison and the
     write share one source of truth."""
     context_length = env("OLLAMA_CONTEXT_LENGTH", "32768")
-    keep_alive = env("OLLAMA_KEEP_ALIVE", "24h")
+    keep_alive = env("OLLAMA_KEEP_ALIVE", "15m")
     flash_attention = env("OLLAMA_FLASH_ATTENTION", "1")
     max_loaded_models = env("OLLAMA_MAX_LOADED_MODELS", "2")
     return (
@@ -604,11 +621,15 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         "# per-request num_ctx, so only this env-set default lands — without\n"
         "# it the GPU Quadlet stays at 4096 and the engine loops at 1 token (#146).\n"
         f"Environment=OLLAMA_CONTEXT_LENGTH={context_length}\n"
-        "# Keep a model loaded after its last request so a conversational\n"
-        "# pause — or an overnight gap — doesn't pay a cold model reload next\n"
-        "# turn (stock 5m evicts too soon, #268). At the 32k window all three\n"
-        "# resident models fit with headroom, so 24h pinning carries no OOM\n"
-        "# risk.\n"
+        "# Fallback hold for consumers that send NO per-request keep_alive.\n"
+        "# Short on purpose (#1264): this applies to every model anything on\n"
+        "# this box loads, so as a blanket 24h one forgetful neighbour pinned\n"
+        "# the GPU for a day. 15m is 3x Ollama's stock 5m — long enough that a\n"
+        "# conversational pause doesn't reload mid-use — and equals the model\n"
+        "# lease's 900s TTL, so a lease that is actually being used never\n"
+        "# outlives its model's residency. Our own hot path doesn't rely on\n"
+        "# this at all: the warm call pins the fast model explicitly (see\n"
+        "# FAST_MODEL_KEEP_ALIVE).\n"
         f"Environment=OLLAMA_KEEP_ALIVE={keep_alive}\n"
         "# How many models stay resident (default 2): the household fast\n"
         "# chat and the embed model. The cap is GLOBAL — the embed model IS\n"

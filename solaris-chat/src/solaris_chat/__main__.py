@@ -193,6 +193,7 @@ async def _run() -> None:
         tts_voices=settings.tts_voices,
         solaris_db_path=settings.solaris_db_path,
         speaker_id_enabled=settings.speaker_id_enabled,
+        model_lease_enabled=settings.model_lease_enabled,
         notes_dir=settings.notes_dir,
         ollama_url=settings.ollama_url,
         trace_recorder=recorder,

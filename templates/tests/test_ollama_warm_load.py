@@ -56,6 +56,32 @@ def test_warm_load_posts_one_token_generate(pd, monkeypatch):
     assert body["options"]["num_predict"] == 1
 
 
+def test_warm_load_pins_the_fast_model_explicitly(pd, monkeypatch):
+    # #1264 — the service-wide OLLAMA_KEEP_ALIVE is short because it applies to
+    # every consumer on the box, so the long hold on our fast model has to be
+    # asked for on this call. From the module's own constant, not a literal
+    # buried in the body, so post-deploy and this check cannot drift.
+    calls = []
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(json.loads(req.data))
+        return _Resp()
+
+    monkeypatch.setattr(pd.urllib.request, "urlopen", fake_urlopen)
+    pd.warm_load_model("http://127.0.0.1:11434", "gemma4:e4b")
+    assert calls[0]["keep_alive"] == pd.FAST_MODEL_KEEP_ALIVE
+    assert pd.FAST_MODEL_KEEP_ALIVE == "24h"
+
+
 def test_warm_load_fails_soft(pd, monkeypatch):
     def boom(req, timeout=0):
         raise OSError("down")
