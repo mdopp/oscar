@@ -16,7 +16,7 @@ import threading
 import pytest
 from solaris_chat.engine import store
 from solaris_chat.engine.bus import SessionBus
-from solaris_chat.engine.client import EngineClient, EngineProfile
+from solaris_chat.engine.client import NO_ANSWER, EngineClient, EngineProfile
 from solaris_chat.engine.ollama import ChatResult, OllamaError
 from solaris_chat.engine.tools import Tool, Toolbox, Visibility
 from solaris_chat.engine.trace import TraceRecorder
@@ -2081,3 +2081,38 @@ async def test_a_bystander_turn_is_not_swallowed_by_another_dialogs_wizard(
     assert "Zustimmung" not in bob["message"]["content"]
     # Anna's consent step is untouched — his "ok" was never her answer.
     assert enrollment_fsm.get_fsm_state(db, "conv-anna")["state"] == "consent"
+
+
+# -- #1267: a spoken turn is never silence -----------------------------------
+
+
+async def test_empty_turn_is_never_spoken_as_silence(aiohttp_client, db, soul):
+    """An empty model turn reached the satellite as no audio at all — the
+    resident cannot tell a done command from a lost one and repeats it."""
+    app, _ = _app(db, soul, [ChatResult(content="   ")])
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+        },
+    )
+    body = await resp.json()
+    assert body["message"]["content"] == NO_ANSWER
+
+
+async def test_empty_streamed_turn_is_never_silence(aiohttp_client, db, soul):
+    app, _ = _app(db, soul, [ChatResult(content="")])
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "messages": [{"role": "user", "content": "Licht an"}],
+        },
+    )
+    lines = [json.loads(line) for line in (await resp.text()).strip().splitlines()]
+    content = "".join(line["message"]["content"] for line in lines)
+    assert content == NO_ANSWER

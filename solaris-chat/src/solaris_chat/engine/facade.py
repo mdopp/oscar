@@ -33,7 +33,12 @@ from aiohttp import web
 
 from solaris_chat import trace_store
 from solaris_chat.engine import store
-from solaris_chat.engine.client import EngineClient, EngineError, current_room
+from solaris_chat.engine.client import (
+    NO_ANSWER,
+    EngineClient,
+    EngineError,
+    current_room,
+)
 from solaris_chat.engine.notify import EventBus, Notifier, emit_chat
 from solaris_chat.engine.tools import (
     CHANNEL_VOICE,
@@ -372,7 +377,12 @@ def add_facade_routes(
                 return web.json_response({"error": "engine unavailable"}, status=502)
             persist_trace()
             answer = _strip_wikilinks(answer)
-            if answer and _question_pending(answer, offered_choices):
+            # #1267: a spoken turn with no text is silence on the satellite —
+            # indistinguishable from a command that never arrived, so the
+            # resident repeats it. Never hand the caller an empty reply.
+            if not answer.strip():
+                answer = NO_ANSWER
+            if _question_pending(answer, offered_choices):
                 answer = _as_question(answer)
             await _emit_voice_turn(event_bus, notifier, client, uid, answer)
             return web.Response(
@@ -408,6 +418,9 @@ def add_facade_routes(
             if tail:
                 streamed += tail
                 await resp.write(_chunk(model, tail, done=False))
+            if not streamed.strip():
+                streamed = NO_ANSWER
+                await resp.write(_chunk(model, streamed, done=False))
             # A turn with a question pending must end in `?` so HA keeps the mic
             # open for the answer without a re-wake (#566, #627). Deltas already
             # went out verbatim — append the missing `?` as a trailing chunk.

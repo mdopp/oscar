@@ -66,6 +66,7 @@ from solaris_chat.engine import sb_companion as sb_companion_module
 from solaris_chat.engine.document_deadlines_sync import cascade_task_event_configured
 from solaris_chat.engine.importers.google_takeout import orchestrator as import_flow
 from solaris_chat.engine.client import (
+    NO_ANSWER,
     EngineClient,
     EngineError,
     current_admin_identity,
@@ -5892,6 +5893,11 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
             )
+        # #1267: `{"ok": true, "reply": ""}` is a lie of omission — the caller
+        # reports success while the resident is told nothing, after a turn that
+        # may well have switched real devices. An empty reply never ships.
+        if not reply.strip():
+            reply = NO_ANSWER
         attachments.add(session_id, images)
         await persist_turn_trace(owner_uid, session_id, wall_t0, ephemeral=ephemeral)
         # Non-streamed turn: only total wall-time is observable (no per-phase
