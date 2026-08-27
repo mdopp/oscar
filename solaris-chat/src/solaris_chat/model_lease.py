@@ -9,7 +9,7 @@ already hold.
 
 The negotiated contract, in one place:
 
-* they `POST` `{model, ttl}` over the loopback and `DELETE` at the end —
+* they `POST` `{model, ttl_s}` over the loopback and `DELETE` at the end —
   no token, no shared secret, and the payload carries **no** session, round or
   guild identifier (`PAYLOAD_KEYS` and its test pin that shut).
 * `LEASE_TTL_SECONDS` is the safety net and `RENEW_INTERVAL_SECONDS` is derived
@@ -37,7 +37,7 @@ LEASE_TTL_SECONDS = 900
 RENEW_INTERVAL_SECONDS = LEASE_TTL_SECONDS // 3
 
 # The complete payload. Adding a key here is a contract change on both sides.
-PAYLOAD_KEYS = ("model", "ttl")
+PAYLOAD_KEYS = ("model", "ttl_s")
 
 # How often the expiry watch looks; small against the 15-minute TTL so the
 # re-warm starts promptly after a chronicle run dies without its DELETE.
@@ -49,7 +49,7 @@ def lease_path(db_path: str) -> Path:
 
 
 def parse_payload(body: Any) -> tuple[str, int]:
-    """`(model, ttl)` from a lease body, or `ValueError(<reason>)`.
+    """`(model, ttl)` from a `{model, ttl_s}` body, or `ValueError(<reason>)`.
 
     The key set is closed: an unknown field is refused rather than ignored, so
     a session/round/guild identifier cannot quietly appear later. The TTL is
@@ -62,7 +62,7 @@ def parse_payload(body: Any) -> tuple[str, int]:
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("invalid_model")
-    raw_ttl = body.get("ttl", LEASE_TTL_SECONDS)
+    raw_ttl = body.get("ttl_s", LEASE_TTL_SECONDS)
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl <= 0:
         raise ValueError("invalid_ttl")
     return model.strip(), min(raw_ttl, LEASE_TTL_SECONDS)

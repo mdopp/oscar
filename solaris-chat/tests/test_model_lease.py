@@ -50,16 +50,19 @@ def test_ttl_and_renewal_come_from_one_constant():
 # ---- the payload is closed -------------------------------------------------
 
 
-def test_payload_key_set_is_exactly_model_and_ttl():
-    assert model_lease.PAYLOAD_KEYS == ("model", "ttl")
-    assert model_lease.parse_payload({"model": "gemma4:12b", "ttl": 600}) == (
+def test_payload_key_set_is_exactly_model_and_ttl_s():
+    assert model_lease.PAYLOAD_KEYS == ("model", "ttl_s")
+    assert model_lease.parse_payload({"model": "gemma4:12b", "ttl_s": 600}) == (
         "gemma4:12b",
         600,
     )
+    # The key is theirs: the pre-contract `ttl` spelling is an unknown field.
+    with pytest.raises(ValueError, match="unexpected_field"):
+        model_lease.parse_payload({"model": "gemma4:12b", "ttl": 600})
     # No session, round or guild identifier may be smuggled in later.
     for extra in ("session", "session_id", "round", "guild", "guild_id"):
         with pytest.raises(ValueError, match="unexpected_field"):
-            model_lease.parse_payload({"model": "gemma4:12b", "ttl": 600, extra: "x"})
+            model_lease.parse_payload({"model": "gemma4:12b", "ttl_s": 600, extra: "x"})
 
 
 def test_payload_rejects_bad_values_and_caps_the_ttl():
@@ -69,10 +72,10 @@ def test_payload_rejects_bad_values_and_caps_the_ttl():
         model_lease.parse_payload({"model": "  "})
     for bad in (0, -1, "600", True):
         with pytest.raises(ValueError, match="invalid_ttl"):
-            model_lease.parse_payload({"model": "gemma4:12b", "ttl": bad})
+            model_lease.parse_payload({"model": "gemma4:12b", "ttl_s": bad})
     # The TTL is OUR safety net: a longer one is capped, not honoured.
-    assert model_lease.parse_payload({"model": "gemma4:12b", "ttl": 86400})[1] == 900
-    # Absent ttl means the agreed one.
+    assert model_lease.parse_payload({"model": "gemma4:12b", "ttl_s": 86400})[1] == 900
+    # Absent ttl_s means the agreed one.
     assert model_lease.parse_payload({"model": "gemma4:12b"})[1] == 900
 
 
@@ -164,7 +167,9 @@ def test_disabled_setting_ignores_a_live_lease(tmp_path, monkeypatch):
 
 async def test_post_grants_and_answers_the_renewal_cadence(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
-    r = await client.post("/api/model-lease", json={"model": "gemma4:12b", "ttl": 900})
+    r = await client.post(
+        "/api/model-lease", json={"model": "gemma4:12b", "ttl_s": 900}
+    )
     assert r.status == 200
     body = await r.json()
     assert body["ok"] is True
@@ -178,7 +183,7 @@ async def test_post_grants_and_answers_the_renewal_cadence(aiohttp_client, tmp_p
 async def test_post_refuses_an_identifier_or_malformed_body(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
-        "/api/model-lease", json={"model": "gemma4:12b", "ttl": 900, "session": "s-1"}
+        "/api/model-lease", json={"model": "gemma4:12b", "ttl_s": 900, "session": "s-1"}
     )
     assert r.status == 400
     assert (await r.json())["reason"] == "unexpected_field"
@@ -199,7 +204,7 @@ async def test_delete_ends_the_window_and_rewarms(
 
     monkeypatch.setattr(OllamaChat, "warm", fake_warm)
     client = await aiohttp_client(_app(tmp_path))
-    await client.post("/api/model-lease", json={"model": "gemma4:12b", "ttl": 900})
+    await client.post("/api/model-lease", json={"model": "gemma4:12b", "ttl_s": 900})
     r = await client.delete("/api/model-lease")
     assert r.status == 200
     assert model_lease.active_model(_db(tmp_path)) == ""
@@ -231,7 +236,9 @@ async def test_delete_without_a_live_lease_does_not_warm(
 
 async def test_disabled_setting_refuses_the_endpoint(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path, enabled=False))
-    r = await client.post("/api/model-lease", json={"model": "gemma4:12b", "ttl": 900})
+    r = await client.post(
+        "/api/model-lease", json={"model": "gemma4:12b", "ttl_s": 900}
+    )
     assert r.status == 503
     assert (await r.json())["reason"] == "disabled"
     assert model_lease.active_model(_db(tmp_path)) == ""
@@ -245,7 +252,7 @@ async def test_proxy_forwarded_request_is_not_a_neighbour(aiohttp_client, tmp_pa
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
         "/api/model-lease",
-        json={"model": "gemma4:12b", "ttl": 900},
+        json={"model": "gemma4:12b", "ttl_s": 900},
         headers={"X-Forwarded-For": "203.0.113.9"},
     )
     assert r.status == 403

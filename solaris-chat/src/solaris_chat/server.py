@@ -3166,7 +3166,7 @@ def build_app(
     # foundry-chronicle declares the window in which it holds the big model on
     # this box; for its duration Solaris answers with that model rather than
     # forcing a ~56 s swap each way. Loopback-only, no token, no shared secret,
-    # payload exactly {model, ttl} — see solaris_chat.model_lease.
+    # payload exactly {model, ttl_s} — see solaris_chat.model_lease.
 
     def rewarm_fast_model() -> None:
         """Pull FAST_MODEL back into VRAM without making anyone wait for it."""
