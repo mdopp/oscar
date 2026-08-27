@@ -80,6 +80,28 @@ class OllamaChat:
                         continue
                     yield json.loads(line)
 
+    async def warm(self, model: str) -> bool:
+        """Load `model` into VRAM with a 1-token generate — the same warm shape
+        `ollama-warm` uses on the box (#1236), so there is one warm, not two.
+
+        Best-effort: a warm that fails leaves the next real turn cold, which is
+        slow, not broken, so nothing here raises.
+        """
+        body = {
+            "model": model,
+            "prompt": "Hi",
+            "stream": False,
+            "options": {"num_predict": 1},
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as client:
+                async with client.post(
+                    f"{self._base_url}/api/generate", json=body
+                ) as resp:
+                    return resp.status < 400
+        except Exception:  # noqa: BLE001 — any transport failure is a cold model
+            return False
+
     async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
         """`POST /api/embed` — embed a batch of texts, one vector per input.
 

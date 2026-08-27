@@ -37,6 +37,7 @@ from solaris_chat import (
     documents_portal_db,
     favorites_store,
     mentions_store,
+    model_lease,
     notes_portal_db,
     notes_search,
     personalities,
@@ -132,6 +133,23 @@ _WIDGET_SRC_RE = re.compile(r"\Awidget\.[a-z0-9_-]{1,32}\.[a-z0-9_-]{1,32}\Z")
 # Strong refs to the in-flight fire-and-forget posts (asyncio only holds weak
 # ones, so a task can otherwise be garbage-collected mid-flight).
 _usage_metrics_tasks: set[asyncio.Task[None]] = set()
+# Same, for the fire-and-forget FAST_MODEL re-warm at a lease end (#1260).
+_rewarm_tasks: set[asyncio.Task[bool]] = set()
+
+
+def is_loopback_caller(request: web.Request) -> bool:
+    """True only for a request that came straight off the host loopback.
+
+    The model lease (#1260) carries no token and no shared secret by agreement
+    with foundry-chronicle, so reachability IS the authorisation. NPM runs
+    hostNetwork on this same box, so its peer address is loopback too — a
+    forwarding header therefore means the request came through the proxy from
+    outside and is not a neighbour on the box.
+    """
+    if request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP"):
+        return False
+    peer = request.remote or ""
+    return peer == "::1" or peer.startswith("127.")
 
 
 def widget_event(src: str | None) -> str | None:
@@ -1412,6 +1430,7 @@ def build_app(
     immich_api_key: str = "",
     paperless_ui_url: str = "",
     speaker_id_enabled: bool = False,
+    model_lease_enabled: bool = True,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -3141,6 +3160,61 @@ def build_app(
             await resp.write((json.dumps({"error": str(e)}) + "\n").encode())
         await resp.write_eof()
         return resp
+
+    # -- the neighbour-service model lease (#1260) --------------------------
+    # foundry-chronicle declares the window in which it holds the big model on
+    # this box; for its duration Solaris answers with that model rather than
+    # forcing a ~56 s swap each way. Loopback-only, no token, no shared secret,
+    # payload exactly {model, ttl} — see solaris_chat.model_lease.
+
+    def rewarm_fast_model() -> None:
+        """Pull FAST_MODEL back into VRAM without making anyone wait for it."""
+        if not fast_model:
+            return
+        task = asyncio.create_task(OllamaChat(ollama_url).warm(fast_model))
+        _rewarm_tasks.add(task)
+        task.add_done_callback(_rewarm_tasks.discard)
+
+    async def set_model_lease(request: web.Request) -> web.Response:
+        if not model_lease_enabled:
+            return web.json_response({"ok": False, "reason": "disabled"}, status=503)
+        if not is_loopback_caller(request):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        try:
+            model, ttl = model_lease.parse_payload(body)
+        except ValueError as e:
+            return web.json_response({"ok": False, "reason": str(e)}, status=400)
+        expires_at = model_lease.grant(solaris_db_path, model, ttl)
+        log.info("chat.model_lease.set", model=model, ttl=ttl)
+        # The renewal cadence is answered, not assumed, so both sides read one
+        # number from one constant.
+        return web.json_response(
+            {
+                "ok": True,
+                "model": model,
+                "ttl": ttl,
+                "renew_after": model_lease.RENEW_INTERVAL_SECONDS,
+                "expires_at": expires_at,
+            }
+        )
+
+    async def clear_model_lease(request: web.Request) -> web.Response:
+        if not model_lease_enabled:
+            return web.json_response({"ok": False, "reason": "disabled"}, status=503)
+        if not is_loopback_caller(request):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        was_live = bool(model_lease.active_model(solaris_db_path))
+        model_lease.clear(solaris_db_path)
+        if was_live:
+            log.info("chat.model_lease.cleared", model=fast_model)
+            rewarm_fast_model()
+        return web.json_response({"ok": True})
 
     async def list_sessions(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
@@ -6078,6 +6152,8 @@ def build_app(
     app.router.add_put("/api/voice", put_voice)
     app.router.add_get("/api/vram", get_vram)
     app.router.add_post("/api/model/pull", pull_model)
+    app.router.add_post("/api/model-lease", set_model_lease)
+    app.router.add_delete("/api/model-lease", clear_model_lease)
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)
     app.router.add_get("/api/sessions/{session_id}", get_session)
@@ -6522,6 +6598,7 @@ async def serve(
     immich_api_key: str = "",
     paperless_ui_url: str = "",
     speaker_id_enabled: bool = False,
+    model_lease_enabled: bool = True,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -6584,6 +6661,7 @@ async def serve(
         immich_base_url=immich_base_url,
         immich_api_key=immich_api_key,
         paperless_ui_url=paperless_ui_url,
+        model_lease_enabled=model_lease_enabled,
     )
     runner = web.AppRunner(app)
     await runner.setup()
@@ -6593,8 +6671,24 @@ async def serve(
     # Re-derive the context window periodically so a model switch adapts the
     # compaction cap without a restart (no-op when an explicit override pins it).
     refresh = asyncio.create_task(context_window.refresh_loop())
+    # A chronicle run that dies never sends its DELETE, so the TTL is what ends
+    # the lease — and the re-warm has to happen then, not on the next resident's
+    # turn, which would otherwise pay the cold load (#1260).
+    lease_watch: asyncio.Task[None] | None = None
+    if model_lease_enabled:
+
+        async def rewarm_after_lease() -> None:
+            log.info("chat.model_lease.expired", model=fast_model)
+            if fast_model:
+                await OllamaChat(ollama_url).warm(fast_model)
+
+        lease_watch = asyncio.create_task(
+            model_lease.expiry_watch(solaris_db_path, rewarm_after_lease)
+        )
     try:
         await asyncio.Event().wait()
     finally:
         refresh.cancel()
+        if lease_watch is not None:
+            lease_watch.cancel()
         await runner.cleanup()
