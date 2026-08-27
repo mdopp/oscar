@@ -16,6 +16,11 @@ from typing import Any
 
 import aiohttp
 
+# How long a warm call asks Ollama to hold the household fast model. Mirrors
+# `FAST_MODEL_KEEP_ALIVE` in templates/ollama/post-deploy.py — the two warms
+# share a shape, so they share the hold; a test pins the value on both sides.
+FAST_MODEL_KEEP_ALIVE = "24h"
+
 
 class OllamaError(Exception):
     """Raised when Ollama returns a non-2xx response."""
@@ -84,6 +89,10 @@ class OllamaChat:
         """Load `model` into VRAM with a 1-token generate — the same warm shape
         `ollama-warm` uses on the box (#1236), so there is one warm, not two.
 
+        Carries an explicit `keep_alive`: the service-wide default is short so a
+        neighbour that sends none can't squat the GPU for a day (#1264), which
+        makes the long hold on our fast model this call's job to ask for.
+
         Best-effort: a warm that fails leaves the next real turn cold, which is
         slow, not broken, so nothing here raises.
         """
@@ -91,6 +100,7 @@ class OllamaChat:
             "model": model,
             "prompt": "Hi",
             "stream": False,
+            "keep_alive": FAST_MODEL_KEEP_ALIVE,
             "options": {"num_predict": 1},
         }
         try:

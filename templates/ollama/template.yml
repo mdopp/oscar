@@ -46,11 +46,13 @@ spec:
     # per-request num_ctx — only this env-set default actually applies.
     - name: OLLAMA_CONTEXT_LENGTH
       value: "{{OLLAMA_CONTEXT_LENGTH}}"
-    # Keep a model loaded after its last request so a conversational pause —
-    # or an overnight gap — doesn't pay a cold model RELOAD next turn (stock
-    # 5m evicts too soon). 24h (#268): with MAX_LOADED_MODELS=1 only one chat
-    # model is ever resident, so the old co-residency VRAM concern that capped
-    # this at 60m is gone. See OLLAMA_KEEP_ALIVE.
+    # Fallback hold for consumers that send NO per-request keep_alive. It
+    # applies to EVERY model anything on this box loads, not just ours, so it
+    # is deliberately short (#1264): as a blanket 24h a single neighbour call
+    # pinned the GPU for a day at the household's expense. 15m is 3x Ollama's
+    # stock 5m and equals the model lease's 900s TTL. The household fast model
+    # does not depend on this — post-deploy's warm call pins it explicitly with
+    # its own keep_alive. See OLLAMA_KEEP_ALIVE.
     - name: OLLAMA_KEEP_ALIVE
       value: "{{OLLAMA_KEEP_ALIVE}}"
     # Keep BOTH chat + embed models resident (default 2). Box-measured

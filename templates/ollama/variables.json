@@ -36,8 +36,8 @@
   },
   "OLLAMA_KEEP_ALIVE": {
     "type": "text",
-    "description": "How long Ollama keeps a model loaded in VRAM after its last request (Go duration, e.g. `24h`, `60m`; `-1` = forever, `0` = unload immediately). Stock default is `5m`, which evicts the chat model after a short pause → the next turn pays a cold model RELOAD (several seconds) on top of prefill. Default `24h`: a normal conversational pause — and an overnight gap — never triggers a cold reload, so the cached prefix and the loaded weights survive (#268 anti-eviction). At OLLAMA_CONTEXT_LENGTH=32768 all three resident models (see OLLAMA_MAX_LOADED_MODELS=3) fit with headroom, so long pinning carries no OOM risk.",
-    "default": "24h"
+    "description": "Fallback hold for a model whose caller sends NO per-request `keep_alive` (Go duration, e.g. `15m`, `24h`; `-1` = forever, `0` = unload immediately). This is a property of the SERVICE, so it governs every model any consumer on the box loads — not just the household's. Default `15m` (#1264): the previous blanket `24h` meant one call from a forgetful neighbour held VRAM for a day, and the cost fell on the household hot path, not on the forgetful caller (box-measured: gemma4:12b resident 1h50m and 2h37m for ~31 min of generation). `15m` is 3x Ollama's stock `5m` — long enough that a conversational pause doesn't reload mid-use — and equals the model lease's 900s TTL, so a lease that is actually being generated against never outlives its model's residency. The household fast model does NOT rely on this: post-deploy's warm call (and solaris-chat's lease-end re-warm) pin it explicitly with a 24h per-request `keep_alive` (#268's anti-eviction guarantee, now asked for rather than imposed on everyone). Anything that genuinely needs a long hold should send its own `keep_alive`.",
+    "default": "15m"
   },
   "OLLAMA_MAX_LOADED_MODELS": {
     "type": "text",
