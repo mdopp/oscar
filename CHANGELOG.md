@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.3](https://github.com/mdopp/solarisbay/compare/v0.44.2...v0.44.3) (2026-08-27)
+
+
+### Bug Fixes
+
+* **chat:** resolve a guessed entity_id in code instead of asking the model ([fee5cb9](https://github.com/mdopp/solarisbay/commit/fee5cb9854d505e14ba110a89b9dde7267276a62)), closes [#1263](https://github.com/mdopp/solarisbay/issues/1263)
+
 ## [0.44.2](https://github.com/mdopp/solarisbay/compare/v0.44.1...v0.44.2) (2026-08-26)
 
 
