@@ -1171,6 +1171,35 @@ def test_suggest_entities_prefers_the_guessed_domain_then_the_name():
     assert registry_mod.suggest_entities("lamp.zzzz", index) == []
 
 
+def test_resolve_entity_takes_the_one_clear_match():
+    # The #1263 case: e4b guesses the friendly name as an id, 10/10 on the box.
+    index = {
+        "light.dimmer_2_5": "Sofalicht",
+        "light.dimmer_2_3": "Esszimmertischlicht",
+        "cover.esszimmerjalousie": "Esszimmerjalousie",
+    }
+    got = registry_mod.resolve_entity("light.sofalicht", index)
+    assert (got.entity_id, got.name) == ("light.dimmer_2_5", "Sofalicht")
+    # A cover slug welded onto the light domain is NOT a light: the service the
+    # caller is about to run belongs to the guessed domain, so the resolution
+    # stays inside it and the resident is asked instead.
+    ask = registry_mod.resolve_entity("light.esszimmerjalousie", index)
+    assert ask.entity_id == ""
+    assert "Esszimmerjalousie" not in ask.choices
+    # Nothing close enough at all → ask, never guess.
+    assert registry_mod.resolve_entity("light.zzzzzzzz", index).entity_id == ""
+
+
+def test_resolve_entity_asks_when_two_candidates_are_equally_good():
+    index = {
+        "light.dimmer_1": "Deckenlicht Küche",
+        "light.dimmer_2": "Deckenlicht Bad",
+    }
+    got = registry_mod.resolve_entity("light.deckenlicht", index)
+    assert got.entity_id == ""
+    assert set(got.choices) == {"Deckenlicht Küche", "Deckenlicht Bad"}
+
+
 async def test_call_service_rechecks_ha_before_refusing_a_new_device(monkeypatch):
     # The index is TTL-cached, so a device added since the last refresh would
     # otherwise be refused as "unknown" for minutes. A miss re-reads HA once.

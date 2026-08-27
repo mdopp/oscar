@@ -190,6 +190,29 @@ def _is_fabricated_device_claim(content: str) -> bool:
     return bool(_DEVICE_CLAIM.search(content or ""))
 
 
+# What the resident hears when a device action failed outright — no held
+# question to fall back on, but still nothing to report as done.
+_NOT_DONE = "Das hat nicht geklappt — ich habe nichts geschaltet."
+
+
+def _action_outcome(output: str) -> tuple[bool, str]:
+    """`(acted, the honest line)` for one ha_call_service result (#1263).
+
+    A held or refused call did not touch the house, so the turn must not end on
+    a success sentence. The held result already carries the question the
+    resident should get instead — that is what replaces the claim.
+    """
+    try:
+        payload = json.loads(output)
+    except (ValueError, TypeError):
+        return False, _NOT_DONE
+    if not isinstance(payload, dict):
+        return False, _NOT_DONE
+    if payload.get("success") or payload.get("ok"):
+        return True, ""
+    return False, str(payload.get("prompt") or _NOT_DONE)
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     """The latest user turn's text — drives the state-scoped card filter (#536)."""
     for m in reversed(messages):
@@ -695,12 +718,58 @@ class EngineClient:
         except Exception:  # noqa: BLE001 — a usage hiccup must not kill the turn
             pass
 
+    async def _resolve_ha_entity(
+        self, args: dict[str, Any], quick_replies: list[str]
+    ) -> tuple[str | None, str]:
+        """Swap a guessed entity_id for the real one BEFORE dispatch (#1263).
+
+        gemma4:e4b guesses a friendly-name-shaped id — `light.sofalicht` for the
+        Sofalicht whose real id is `light.dimmer_2_5`, measured 10/10 — and
+        cannot use the candidate list #1241 hands back (0/6 retries). So the
+        resolution happens in code, like the task_delete target (#1244): one
+        clear match is used, anything ambiguous comes back as a question with
+        the real device names as chips, and nothing is dispatched on a guess.
+
+        This must stay AHEAD of `_gate_sensitive` in the dispatch order: the
+        gate classifies the entity_id it is given, so resolving first is what
+        makes a lock or a garage cover get its confirmation question under the
+        REAL device's name — a resolved sensitive target is never silently
+        executed, it is asked about.
+        """
+        registry = self._profile.registry
+        entity_id = str(args.get("entity_id") or "")
+        if registry is None or not entity_id:
+            return None, ""
+        resolved = await registry.resolve(entity_id)
+        if resolved.entity_id == entity_id:
+            return None, ""
+        if resolved.entity_id:
+            args["entity_id"] = resolved.entity_id
+            log.info(
+                "engine.entity.resolved",
+                guess=entity_id,
+                entity_id=resolved.entity_id,
+                name=resolved.name,
+            )
+            return None, resolved.name
+        prompt = confirm.choice_prompt(entity_id, resolved.choices)
+        quick_replies.clear()
+        quick_replies.extend(resolved.choices)
+        return (
+            json.dumps(
+                {"ok": False, "needs_choice": True, "prompt": prompt},
+                ensure_ascii=False,
+            ),
+            "",
+        )
+
     async def _gate_sensitive(
         self,
         args: dict[str, Any],
         confirmed: set[tuple[str, str, str]],
         session_id: str | None,
         quick_replies: list[str],
+        name: str = "",
     ) -> str | None:
         """Hold a sensitive, unconfirmed ha_call_service (#570).
 
@@ -735,7 +804,7 @@ class EngineClient:
         if (domain, service, entity_id) in confirmed:
             return None
         data = args.get("data") if isinstance(args.get("data"), dict) else None
-        prompt = confirm.confirm_prompt(domain, service, entity_id)
+        prompt = confirm.confirm_prompt(domain, service, entity_id, name)
         # Only stash when we have a per-conversation key (F3): without one a held
         # action could be confirmed by a different caller, so re-gate next turn.
         if session_id:
@@ -1033,6 +1102,10 @@ class EngineClient:
         # A confirmed action already ran a tool this turn, so the model's report
         # ("Garagentor ist offen") is grounded, not a fabrication (#570/#356).
         tool_dispatched = confirmed_executed
+        # #1263: did a device action actually reach HA this turn, and if not,
+        # what should the resident hear instead of the model's success claim?
+        acted = confirmed_executed
+        unacted = ""
         # Whether the model itself stored the fact this turn (#621): if the user
         # said "merk dir …" and no store tool ran, the loop enforces it at turn
         # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
@@ -1053,12 +1126,17 @@ class EngineClient:
             # answer is only final after the number/date check below — so hold
             # its deltas back rather than streaming a sum that may be discarded.
             # Turn end then surfaces it as one late delta (the #258 pattern).
-            grounded = grounding.context_from_turn(messages) is not None
+            # Same reason (#1263): after a device action was held or refused,
+            # this pass may be the fabricated "ist jetzt an" that gets replaced
+            # below — streaming it would put it in front of the resident anyway.
+            hold_deltas = grounding.context_from_turn(messages) is not None or (
+                bool(unacted) and not acted
+            )
             async for kind, payload in self._ollama.stream(
                 model, sent, tools=tools, think=think, options=options
             ):
                 if kind == "delta":
-                    if not grounded:
+                    if not hold_deltas:
                         yield {"type": "assistant.delta", "data": {"delta": payload}}
                 elif kind == "done":
                     result = payload
@@ -1105,6 +1183,15 @@ class EngineClient:
                     messages.append({"role": "system", "content": _CLAIM_CORRECTION})
                     continue
                 final_content = result.content
+                # #1263: a device action was held or refused this turn, so the
+                # house was not touched — and e4b still reports success ("Klar.
+                # Das Sofalicht ist jetzt an." in 2 of 3 measured runs). The
+                # claim is REPLACED here rather than re-prompted: the guard
+                # above never fires for this case (a tool did run), and the
+                # measured retry rate for this model is 0 of 6. What the
+                # resident gets instead is the held question, with its chips.
+                if unacted and not acted and _is_fabricated_device_claim(final_content):
+                    final_content = unacted
                 break
 
             # Tool pass: persist the call, dispatch, feed results back. An
@@ -1155,9 +1242,17 @@ class EngineClient:
                     stored_fact = True
                 held: str | None = None
                 if name == "ha_call_service" and isinstance(args, dict):
-                    held = await self._gate_sensitive(
-                        args, confirmed, pending_key, quick_replies
+                    held, resolved_name = await self._resolve_ha_entity(
+                        args, quick_replies
                     )
+                    if held is None:
+                        held = await self._gate_sensitive(
+                            args,
+                            confirmed,
+                            pending_key,
+                            quick_replies,
+                            resolved_name,
+                        )
                 elif name == "task_delete" and isinstance(args, dict):
                     held = await self._gate_task_delete(
                         args, confirmed, pending_key, quick_replies, uid
@@ -1229,6 +1324,11 @@ class EngineClient:
                         output=output,
                     )
                     self._count_usage(uid, name, item["args"], output)
+                if name == "ha_call_service":
+                    did_act, honest = _action_outcome(output)
+                    acted = acted or did_act
+                    if not did_act:
+                        unacted = honest
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": name, "wall_s": tool_wall_s},

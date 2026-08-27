@@ -14,6 +14,7 @@ refresh picks up registry changes (new/renamed devices) within minutes.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -104,8 +105,10 @@ def _match_score(term: str, entity_id: str, name: str) -> float:
     return best
 
 
-def suggest_entities(guess: str, index: dict[str, str], limit: int = 3) -> list[str]:
-    """Real `entity_id | Name` entries closest to a guessed id, best first.
+def rank_entities(
+    guess: str, index: dict[str, str], limit: int = 3
+) -> list[tuple[str, str, float]]:
+    """`(entity_id, friendly_name, score)` for the entities closest to a guess.
 
     The model guesses a friendly-name-shaped id — `light.sofalicht` for the
     Sofalicht whose real id is `light.dimmer_2_5` — so the readable part of the
@@ -123,11 +126,70 @@ def suggest_entities(guess: str, index: dict[str, str], limit: int = 3) -> list[
     }
     pool = same_domain or index
     ranked = sorted(
-        (-_match_score(term, eid, name), f"{eid} | {name}".rstrip(" |"))
-        for eid, name in pool.items()
+        (-_match_score(term, eid, name), eid, name) for eid, name in pool.items()
     )
     floor = 0.0 if same_domain else 0.5
-    return [label for score, label in ranked[:limit] if -score >= floor]
+    return [
+        (eid, name, -score) for score, eid, name in ranked[:limit] if -score >= floor
+    ]
+
+
+def suggest_entities(guess: str, index: dict[str, str], limit: int = 3) -> list[str]:
+    """Real `entity_id | Name` entries closest to a guessed id, best first."""
+    return [
+        f"{eid} | {name}".rstrip(" |")
+        for eid, name, _ in rank_entities(guess, index, limit)
+    ]
+
+
+# How sure the engine must be before it swaps a guessed entity_id for a real one
+# without asking (#1263). `light.sofalicht` matches `light.dimmer_2_5 | Sofalicht`
+# at 1.0, so the bar can sit high: below it the guess is a different word than any
+# real device (`light.esszimmerjalousie` reaches ~0.65 against the room's lights)
+# and swapping would be a coin flip. The margin is the second half of the rule —
+# two devices that match nearly as well are an ambiguity, and ambiguity is exactly
+# where the resident gets asked instead of guessed at.
+_RESOLVE_MIN = 0.75
+_RESOLVE_MARGIN = 0.15
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """The real entity a guessed id means (`entity_id` set), or the device names
+    to ask the resident about (`choices`) when no single one is clear."""
+
+    entity_id: str = ""
+    name: str = ""
+    choices: tuple[str, ...] = ()
+
+
+def _readable(entity_id: str, name: str) -> str:
+    return name or entity_id.partition(".")[2].replace("_", " ") or entity_id
+
+
+def resolve_entity(guess: str, index: dict[str, str]) -> Resolution:
+    """Resolve a guessed entity_id in code, or come back with names to ask about.
+
+    Only a clear winner INSIDE the guessed domain resolves: the service the
+    caller is about to run (`light.turn_on`) belongs to that domain, so a
+    `cover` that happens to carry the guessed word is not a substitute — it is a
+    different device with different services.
+    """
+    ranked = rank_entities(guess, index)
+    if not ranked:
+        return Resolution()
+    choices = tuple(_readable(eid, name) for eid, name, _ in ranked)
+    top_id, top_name, top = ranked[0]
+    runner_up = ranked[1][2] if len(ranked) > 1 else 0.0
+    domain = guess.partition(".")[0]
+    if (
+        "." in guess
+        and top_id.startswith(f"{domain}.")
+        and top >= _RESOLVE_MIN
+        and top - runner_up >= _RESOLVE_MARGIN
+    ):
+        return Resolution(entity_id=top_id, name=_readable(top_id, top_name))
+    return Resolution(choices=choices)
 
 
 class EntityRegistry:
@@ -197,6 +259,22 @@ class EntityRegistry:
         if not index or entity_id in index:
             return True, []
         return False, suggest_entities(entity_id, index)
+
+    async def resolve(self, entity_id: str) -> Resolution:
+        """The real entity a model-supplied id means — itself when it exists.
+
+        Handing the model a candidate list and hoping it retries does not work:
+        gemma4:e4b retried 0 of 6 measured rejections and told the resident the
+        lamp was on instead (#1263). So the guess is resolved HERE, against the
+        same index `check_entity` refuses from.
+        """
+        known, _ = await self.check_entity(entity_id)
+        if known:
+            return Resolution(
+                entity_id=entity_id,
+                name=_readable(entity_id, self._entities.get(entity_id, "")),
+            )
+        return resolve_entity(entity_id, self._entities)
 
     async def device_class(self, entity_id: str) -> str | None:
         """The entity's HA device_class, or None when it can't be resolved.
