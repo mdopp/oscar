@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.45.0](https://github.com/mdopp/solarisbay/compare/v0.44.3...v0.45.0) (2026-08-27)
+
+
+### Features
+
+* **chat:** honour a neighbour service's model lease over the loopback ([1321a35](https://github.com/mdopp/solarisbay/commit/1321a358fc4741bdefe4dd81bbf7f3e8d6f93dc0)), closes [#1260](https://github.com/mdopp/solarisbay/issues/1260)
+
+
+### Bug Fixes
+
+* **chat:** echo ttl_s in the lease response, not ttl ([d04b689](https://github.com/mdopp/solarisbay/commit/d04b6899e7c4bfb717f975fb6c1fb2cb4b53d44e))
+* **chat:** name what was switched when a multi-tool turn falls silent ([ceea58e](https://github.com/mdopp/solarisbay/commit/ceea58ec1223f23d6ae1e2c4dd5acfe412a52b71)), closes [#1267](https://github.com/mdopp/solarisbay/issues/1267)
+* **chat:** rename the model-lease payload key ttl to ttl_s ([e7574e9](https://github.com/mdopp/solarisbay/commit/e7574e94f18d71226d76d441e6b2fd7ac50fd065))
+* **template:** invert the ollama keep-alive default so forgetting costs minutes ([8812818](https://github.com/mdopp/solarisbay/commit/8812818f135c0185233c94eaf3f8ed0748a75147)), closes [#1264](https://github.com/mdopp/solarisbay/issues/1264)
+
 ## [0.44.3](https://github.com/mdopp/solarisbay/compare/v0.44.2...v0.44.3) (2026-08-27)
 
 
