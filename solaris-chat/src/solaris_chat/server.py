@@ -3199,7 +3199,7 @@ def build_app(
             {
                 "ok": True,
                 "model": model,
-                "ttl": ttl,
+                "ttl_s": ttl,
                 "renew_after": model_lease.RENEW_INTERVAL_SECONDS,
                 "expires_at": expires_at,
             }
