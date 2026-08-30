@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.47.0](https://github.com/mdopp/solarisbay/compare/v0.46.0...v0.47.0) (2026-08-30)
+
+
+### Features
+
+* **chat:** carry timers and reminders on the ha event kind with a category ([2080295](https://github.com/mdopp/solarisbay/commit/20802957823db599e7e66636b9d03022a844c585)), closes [#1280](https://github.com/mdopp/solarisbay/issues/1280)
+
+
+### Bug Fixes
+
+* **ci:** build images for every tag and flag a release that published none ([5f99cf8](https://github.com/mdopp/solarisbay/commit/5f99cf82998a4775022396ffa4f94ccfddaadea3)), closes [#1275](https://github.com/mdopp/solarisbay/issues/1275)
+
 ## [0.46.0](https://github.com/mdopp/solarisbay/compare/v0.45.0...v0.46.0) (2026-08-30)
 
 
