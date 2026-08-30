@@ -111,6 +111,49 @@ no "process fully dead + push + no third-party" option on Android; this is it.
   - `chat` — a backgrounded/finished chat turn or a server-injected card.
   - `servicebay` — a ServiceBay **approval** event, republished from SB's SSE:
     `data:{id,kind,summary}` → show an **approval notification**. (Verdict flow below.)
+  - `ha` — a **household notice** an HA automation posted (#1276, app side
+    mdopp/solaris-android#116): `data:{kind:"ha", target, title, body, urgency, actions}`
+    → show a notification on its own channel. `urgency ∈ {low,normal,high}` is
+    **presentation only**. `actions` is `[{action,title}]` (≤3), meant to be mapped onto
+    the app's existing `WidgetActionActivity` path — confirmation dialog + the
+    server-side `sensitive_action` 403 gate — not a second action route.
+    > **Not an alarm channel.** This rides the same best-effort stream as everything
+    > else here: immediate while connected, delayed or lost otherwise. It is for
+    > "Waschmaschine fertig" / "Post da" / "Fenster offen" — never smoke, intrusion, or
+    > anything that has to wake somebody. No `urgency` value changes that.
+
+### Where an `ha` notice comes from (#1276)
+
+HA automations no longer name a phone (`notify.mobile_app_<device>`); they name a
+**person**, and Solaris resolves that to their paired devices — so pairing a new phone
+changes no automation.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/ha/notify` | `{target, title, body?, urgency?, actions?}` (closed key set) | **202** `{ok,target,residents,delivery}` · **400** bad payload · **403** not a loopback neighbour · **404** `{reason:"unknown_target"}` |
+
+- **Auth = reachability**, the model lease's pattern (#1260): peer-bound to the host
+  loopback, and refused when an `X-Forwarded-For`/`X-Real-IP` header shows the call came
+  through the proxy. HA is a hostNetwork pod on the same box, so it just posts to
+  `http://127.0.0.1:<CHAT_PORT>/api/ha/notify`. Deliberately **not** under `/napi/`,
+  which is Authelia-bypassed and device-token-only/fail-closed.
+- **`target`** is a resident **uid** (as in `/napi/whoami`) or the household group
+  (`DEFAULT_UID`, normally `household`). A resident is addressable once they have a
+  paired device — a device token or a Web Push subscription. Matching is exact,
+  case-insensitive, and nothing else: **an unknown or misspelled target delivers to
+  nobody** (404) rather than falling back to the whole house.
+- **Fail-open for HA:** the response is written before any push leaves the box, so an
+  unreachable phone can neither fail nor delay the automation.
+
+```yaml
+# configuration.yaml
+rest_command:
+  solaris_notify:
+    url: "http://127.0.0.1:8787/api/ha/notify"   # CHAT_PORT
+    method: POST
+    content_type: "application/json"
+    payload: '{"target": "{{ target }}", "title": "{{ title }}", "body": "{{ body }}"}'
+```
 
 **Approval verdict** is *not* on `/napi`: the verdict needs the Authelia session
 (servicebay#2249), which a device token cannot supply. So the app hands off to the web.
@@ -149,7 +192,7 @@ Both are Authelia-gated **and** admin-gated. The GET deliberately omits SB's
 - **Subscribe / unsubscribe** (browser, Authelia-gated): `POST /api/push/subscribe`
   body `{endpoint,keys:{p256dh,auth}}` → `{ok}`; `POST /api/push/unsubscribe` `{endpoint}` → `{ok}`.
 - **Selective push:** the server sends a Web Push only when no SSE subscriber is open
-  for that uid (backgrounded). Payload `{title, body, data:{kind:"chat"|"reminder"|"card_state"|"servicebay", …}}`;
+  for that uid (backgrounded). Payload `{title, body, data:{kind:"chat"|"reminder"|"card_state"|"servicebay"|"ha", …}}`;
   service worker `/sw.js` shows it and deep-links on click.
 
 > Note: device-token `/napi/push/subscribe` twins were briefly added in v0.26.0 for a

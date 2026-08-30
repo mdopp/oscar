@@ -36,6 +36,7 @@ from solaris_chat import (
     device_token_store,
     documents_portal_db,
     favorites_store,
+    ha_notify,
     mentions_store,
     model_lease,
     notes_portal_db,
@@ -136,6 +137,9 @@ _WIDGET_SRC_RE = re.compile(r"\Awidget\.[a-z0-9_-]{1,32}\.[a-z0-9_-]{1,32}\Z")
 _usage_metrics_tasks: set[asyncio.Task[None]] = set()
 # Same, for the fire-and-forget FAST_MODEL re-warm at a lease end (#1260).
 _rewarm_tasks: set[asyncio.Task[bool]] = set()
+# Same, for the fire-and-forget Web Push fan-out of an HA notice (#1276) — the
+# caller is answered before a single push leaves the box.
+_ha_notify_tasks: set[asyncio.Task[None]] = set()
 
 
 def is_loopback_caller(request: web.Request) -> bool:
@@ -1984,7 +1988,7 @@ def build_app(
         async def _pump(stream) -> None:
             async for event in stream:
                 kind = event.get("kind")
-                if kind in ("card_state", "chat", "servicebay"):
+                if kind in ("card_state", "chat", "servicebay", "ha"):
                     await _send_event(resp, kind, event.get("data") or {})
 
         async def _heartbeat_ping() -> None:
@@ -3216,6 +3220,101 @@ def build_app(
             log.info("chat.model_lease.cleared", model=fast_model)
             rewarm_fast_model()
         return web.json_response({"ok": True})
+
+    # -- the household notice Home Assistant posts (#1276) ------------------
+    #
+    # THIS IS NOT AN ALARM CHANNEL. Delivery is best effort: an open client gets
+    # the notice over the `/napi/portal/events` SSE stream, a backgrounded PWA
+    # through Web Push, and an unreachable phone gets it when it comes back or
+    # not at all. Nothing here retries, queues, escalates or rings, and no
+    # `urgency` value changes that — see `solaris_chat.ha_notify`. A smoke
+    # detector, an intrusion or anything that must wake somebody needs a real
+    # alerting transport, which does not exist yet.
+    #
+    # Auth is the model lease's loopback pattern (#1260), deliberately not a
+    # third scheme and deliberately NOT under `/napi/` (Authelia-bypassed,
+    # device-token-only, fail-closed — an unauthenticated route there would
+    # punch a hole in that prefix's one invariant). HA is a hostNetwork pod on
+    # this box, so it reaches `127.0.0.1:<CHAT_PORT>` as a loopback neighbour
+    # exactly like foundry-chronicle does.
+    #
+    # Fail-open for the caller: everything that can block — the Web Push
+    # round-trips — happens in a background task AFTER the response is written,
+    # so an unreachable phone can neither error nor delay the automation.
+    # Target resolution stays synchronous because it is a local SQLite read and
+    # because a silent mis-delivery is the failure this endpoint exists to
+    # prevent: an unknown target is refused, never broadcast.
+
+    async def _fan_out_ha_notice(
+        uids: list[str], title: str, body: str, data: dict[str, Any]
+    ) -> None:
+        if notifier is None or not notifier.enabled:
+            return
+        for uid in uids:
+            # An open client already received it on the SSE stream (the #715
+            # selective-push rule) — pushing again would double-notify.
+            if event_bus is not None and event_bus.has_subscriber(uid):
+                continue
+            try:
+                await notifier.push(uid, title, body, data)
+            except Exception as e:  # noqa: BLE001 — best effort, per resident
+                log.error("chat.ha_notify.push_failed", uid=uid, error=str(e))
+
+    async def ha_notify_post(request: web.Request) -> web.Response:
+        if not is_loopback_caller(request):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        try:
+            notice = ha_notify.parse_payload(body)
+        except ValueError as e:
+            return web.json_response({"ok": False, "reason": str(e)}, status=400)
+        resolved = ha_notify.resolve(
+            solaris_db_path, notice["target"], household_uid=default_uid
+        )
+        if resolved is None:
+            # A typo'd or unpaired target delivers to NOBODY. Loud in the log,
+            # silent on every phone — the alternative is one resident's notice
+            # read by the whole house.
+            log.warn("chat.ha_notify.unknown_target", target=notice["target"])
+            return web.json_response(
+                {"ok": False, "reason": "unknown_target"}, status=404
+            )
+        bus_uid, push_uids = resolved
+        data = {
+            "kind": ha_notify.EVENT_KIND,
+            "target": bus_uid,
+            "title": notice["title"],
+            "body": notice["body"],
+            "urgency": notice["urgency"],
+            "actions": notice["actions"],
+        }
+        if event_bus is not None:
+            event_bus.publish(bus_uid, ha_notify.EVENT_KIND, data)
+        task = asyncio.create_task(
+            _fan_out_ha_notice(push_uids, notice["title"], notice["body"], data)
+        )
+        _ha_notify_tasks.add(task)
+        task.add_done_callback(_ha_notify_tasks.discard)
+        log.info(
+            "chat.ha_notify.accepted",
+            target=bus_uid,
+            residents=len(push_uids),
+            urgency=notice["urgency"],
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "target": bus_uid,
+                "residents": push_uids,
+                "delivery": ha_notify.NOT_AN_ALARM,
+            },
+            status=202,
+        )
 
     async def list_sessions(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
@@ -6160,6 +6259,9 @@ def build_app(
     app.router.add_post("/api/model/pull", pull_model)
     app.router.add_post("/api/model-lease", set_model_lease)
     app.router.add_delete("/api/model-lease", clear_model_lease)
+    # Loopback-only, like the model lease above — NOT on /napi/ (see the
+    # handler). This is the route an HA `rest_command` posts to.
+    app.router.add_post("/api/ha/notify", ha_notify_post)
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)
     app.router.add_get("/api/sessions/{session_id}", get_session)
