@@ -18,7 +18,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from solaris_chat import device_token_store
+from solaris_chat import db_health, device_token_store
 from solaris_chat.engine.notify import EventBus
 from solaris_chat.server import build_app, native_uid
 
@@ -1528,3 +1528,78 @@ async def test_napi_non_admin_action_still_runs_for_device_token(
     )
     assert r.status == 200
     assert (await r.json())["detail"] == "pong"
+
+
+# ---- unreadable store ⇒ 503, not 500 (#1272) ------------------------------
+
+
+def test_resolve_raises_unavailable_when_the_path_cannot_be_stat_ed(
+    tmp_path, monkeypatch
+):
+    # The exact #1271 trace: Path.exists() -> os.stat -> PermissionError, thrown
+    # before any auth decision could be made.
+    db = _db(tmp_path)
+
+    def _denied(_self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", _denied)
+    try:
+        device_token_store.resolve(db, "sol_device_whatever")
+    except db_health.Unavailable as exc:
+        assert "PermissionError" in str(exc)
+    else:  # pragma: no cover - the raise is the assertion
+        raise AssertionError("an unreadable store must not resolve silently")
+
+
+def test_resolve_still_degrades_when_only_the_table_is_missing(tmp_path):
+    # schema-init hasn't migrated yet: fail-closed (401), NOT a 503.
+    path = str(tmp_path / "empty.db")
+    sqlite3.connect(path).close()
+    assert device_token_store.resolve(path, "sol_device_x") is None
+
+
+async def test_napi_answers_503_with_retry_after_when_db_unreadable(
+    aiohttp_client, tmp_path
+):
+    # A directory where solaris.db should be: sqlite cannot open it, whatever
+    # uid the test runs as — the same class of fault as the SELinux relabel.
+    unreadable = str(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, unreadable))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_anything"}
+    )
+    assert r.status == 503
+    assert r.headers["Retry-After"] == "30"
+    assert (await r.json())["error"] == "database_unavailable"
+
+
+async def test_napi_still_401s_for_a_bad_token_on_a_readable_db(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_nope"}
+    )
+    assert r.status == 401
+
+
+async def test_napi_programming_error_is_still_a_500(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # Too wide a catch would hide real bugs behind a soothing 503.
+    db = _db(tmp_path)
+
+    def _bug(*_a, **_k):
+        raise TypeError("someone changed a signature")
+
+    monkeypatch.setattr(device_token_store, "resolve", _bug)
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_anything"}
+    )
+    assert r.status == 500

@@ -33,6 +33,7 @@ from aiohttp.typedefs import Handler
 
 from solaris_chat import (
     compaction,
+    db_health,
     device_token_store,
     documents_portal_db,
     favorites_store,
@@ -119,6 +120,10 @@ ANDROID_APK_URL = (
 # valid token ⇒ 401, never the household `default_uid` and never a Remote-User
 # header (untrusted here). Minting stays on the interactive-Authelia `/api/` path.
 NATIVE_PREFIX = "/napi/"
+
+# Matches the healthcheck interval in templates/solaris/template.yml: a client
+# that waits this long retries just after the next probe would have gone green.
+DB_RETRY_AFTER_S = 30
 
 # Widget-usage forwarding (#1026). The Android widgets tag their deep-link opens
 # and `/napi/` calls `?src=widget.<tool>.<zone>`; Solaris is a thin forwarder —
@@ -4738,7 +4743,20 @@ def build_app(
 
         @functools.wraps(handler)
         async def wrapper(request: web.Request) -> web.StreamResponse:
-            uid = native_uid(request, solaris_db_path)
+            try:
+                uid = native_uid(request, solaris_db_path)
+            except db_health.Unavailable as exc:
+                # An unreadable solaris.db is OUR fault, not the caller's (#1272).
+                # A 500 tells the client "try again, maybe it works" and the app
+                # duly retried every minute for twenty minutes in #1271; 503 +
+                # Retry-After tells it to back off until the box is fixed, and it
+                # is the same answer /health gives for the same state.
+                log.error("napi.db_unavailable", path=request.path, reason=str(exc))
+                return web.json_response(
+                    {"ok": False, "error": "database_unavailable", "reason": str(exc)},
+                    status=503,
+                    headers={"Retry-After": str(DB_RETRY_AFTER_S)},
+                )
             if uid is None:
                 return web.json_response(
                     {"ok": False, "error": "unauthorized"}, status=401
