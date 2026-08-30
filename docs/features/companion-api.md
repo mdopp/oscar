@@ -67,7 +67,7 @@ All require `Authorization: Bearer sol_device_...`. Common errors: **401** (no/b
 ### HA actions
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| POST | `/napi/ha/call` | `{entity_id,service,data?,confirmed?}` | domains `light\|switch\|cover\|climate`. Sensitive covers (garage/door/gate open) need `confirmed:true` (**403** otherwise). **400** bad domain. |
+| POST | `/napi/ha/call` | `{entity_id,service,data?,confirmed?}` | domains `light\|switch\|cover\|climate\|lock` (#1212). Sensitive targets — any `lock`, and garage/door/gate cover opens — need `confirmed:true` (**403** `sensitive_action` otherwise). **400** bad domain. A notification action may name a **narrower** set (§3): never `lock`. |
 
 ### ServiceBay BFF (Solaris aggregates ServiceBay — ADR 0010 / #811)
 | Method | Path | Body | Returns |
@@ -115,9 +115,49 @@ no "process fully dead + push + no third-party" option on Android; this is it.
     mdopp/solaris-android#116):
     `data:{kind:"ha", target, title, body, urgency, actions, category}`
     → show a notification on the channel `category` names. `urgency ∈ {low,normal,high}`
-    is **presentation only**. `actions` is `[{action,title}]` (≤3), meant to be mapped onto
-    the app's existing `WidgetActionActivity` path — confirmation dialog + the
+    is **presentation only**. `actions` is `[{entity_id,service,title}]` (≤3), meant to be
+    mapped onto the app's existing `WidgetActionActivity` path — confirmation dialog + the
     server-side `sensitive_action` 403 gate — not a second action route.
+
+    **`actions` (#1283, contract change — the shape is new)** — an action is a service
+    call written out in **two separate fields**, never one `domain.suffix` string:
+
+    | key | what it is | example |
+    |---|---|---|
+    | `entity_id` | the entity the call targets (`domain.object_id`) | `cover.kueche_fenster` |
+    | `service` | the service, **dotted**, its domain equal to the entity's | `cover.close_cover` |
+    | `title` | the button label the resident reads | `Schließen` |
+
+    All three are required, and the pair is exactly the `/napi/ha/call` body: the app
+    posts `{entity_id, service}` **verbatim** (plus `confirmed:true` after its dialog when
+    the server 403s `sensitive_action`) and derives nothing from the shape of a string.
+
+    ```json
+    {"kind":"ha","target":"anna","title":"Fenster offen","body":"Küche",
+     "urgency":"normal","category":"house",
+     "actions":[{"entity_id":"cover.kueche_fenster",
+                 "service":"cover.close_cover","title":"Schließen"}]}
+    ```
+
+    *Why two fields.* Until #1283 an action was a single string, and `lock.front_door`
+    (an entity) and `cover.close` (a service) are syntactically identical — the engine's
+    own tests carried one of each. A receiver had to guess, and guessing wrong turns
+    "show me the front door" into "switch the front door" from a notification sitting on
+    the lock screen. The old one-string form is now **refused** (`400
+    {reason:"invalid_actions"}`), not reinterpreted; the notice itself still delivers only
+    if the whole payload is valid, so an automation still posting the old shape gets a
+    400 rather than a silent guess.
+
+    **Actionable domains — closed set:** `light`, `switch`, `cover`, `climate`. Anything
+    else is refused with **400** `{reason:"forbidden_action_domain"}`.
+    **`lock` and `alarm_control_panel` are never actionable from a notification**, and are
+    not to be added. `/napi/ha/call` does accept `lock` — a lock *card* in the app can
+    unlock, because the confirm gate is in that conversation — but a notification is
+    reachable from the lock screen, outside it. So a notice cannot name a lock at all:
+    an unlock is **unrepresentable** in this payload, the same structural choice as the
+    deliberately missing `alarm` category below. A `cover` on a garage/door/gate still
+    hits the server-side `sensitive_action` 403 and needs the app's confirmation.
+    A receiver may of course render **fewer** actions than the contract allows.
 
     **`category` (#1280, additive — new since v0.46.0)** — `"house" | "timer" | "reminder"`:
 
@@ -158,7 +198,7 @@ Two producers, one event kind:
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/ha/notify` | `{target, title, body?, urgency?, actions?, category?}` (closed key set) | **202** `{ok,target,residents,delivery}` · **400** bad payload, incl. `{reason:"invalid_category"}` · **403** not a loopback neighbour · **404** `{reason:"unknown_target"}` |
+| POST | `/api/ha/notify` | `{target, title, body?, urgency?, actions?, category?}` (closed key set; `actions` is `[{entity_id,service,title}]`) | **202** `{ok,target,residents,delivery}` · **400** bad payload, incl. `{reason:"invalid_category"}`, `{reason:"invalid_actions"}`, `{reason:"forbidden_action_domain"}` · **403** not a loopback neighbour · **404** `{reason:"unknown_target"}` |
 
 - **Auth = reachability**, the model lease's pattern (#1260): peer-bound to the host
   loopback, and refused when an `X-Forwarded-For`/`X-Real-IP` header shows the call came

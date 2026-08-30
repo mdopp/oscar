@@ -139,23 +139,66 @@ def test_payload_rejects_bad_values():
         ha_notify.parse_payload({"target": "anna", "title": ""})
     with pytest.raises(ValueError, match="invalid_urgency"):
         ha_notify.parse_payload({"target": "anna", "title": "x", "urgency": "alarm"})
-    for bad in ("x", [{"action": "close", "title": ""}], [{"action": "close"}] * 9):
+    close = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
+    for bad in (
+        "x",
+        [close | {"title": ""}],
+        [close] * 9,
+        # The retired one-string shape: refused, not guessed at.
+        [{"action": "cover.close_cover", "title": "Schließen"}],
+        # Both halves must be named, and the service must belong to the entity.
+        [{"entity_id": "cover.kueche", "title": "Schließen"}],
+        [close | {"service": "close_cover"}],
+        [close | {"service": "light.turn_on"}],
+        [close | {"entity_id": "kueche"}],
+    ):
         with pytest.raises(ValueError, match="invalid_actions"):
             ha_notify.parse_payload({"target": "a", "title": "x", "actions": bad})
 
 
-def test_actions_stay_on_the_apps_existing_action_path():
-    # `{action,title}` and nothing else: the app maps this onto its
-    # WidgetActionActivity path (confirm dialog + `sensitive_action` gate).
-    assert ha_notify.ACTION_KEYS == ("action", "title")
+def test_an_action_names_the_entity_and_the_service_separately():
+    # `{entity_id,service,title}` and nothing else (#1283): the receiver copies
+    # both fields verbatim into the app's existing WidgetActionActivity path
+    # (confirm dialog + `sensitive_action` gate) and infers nothing from the
+    # shape of a string.
+    assert ha_notify.ACTION_KEYS == ("entity_id", "service", "title")
+    action = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
     parsed = ha_notify.parse_payload(
-        {
-            "target": "anna",
-            "title": "Tür offen",
-            "actions": [{"action": "lock.front_door", "title": "Schließen"}],
-        }
+        {"target": "anna", "title": "Fenster offen", "actions": [action]}
     )
-    assert parsed["actions"] == [{"action": "lock.front_door", "title": "Schließen"}]
+    assert parsed["actions"] == [action]
+
+
+def test_a_notification_can_never_carry_an_unlock():
+    # The one outcome the confirm gate exists to prevent, on the one surface
+    # that reaches the lock screen. `lock` and `alarm_control_panel` are not
+    # values this field can hold, so an unlock is unrepresentable — not merely
+    # discouraged. Same choice as the missing `alarm` category.
+    assert "lock" not in ha_notify.ACTIONABLE_DOMAINS
+    assert "alarm_control_panel" not in ha_notify.ACTIONABLE_DOMAINS
+    for entity_id, service in (
+        ("lock.haustuer", "lock.unlock"),
+        ("lock.haustuer", "lock.open"),
+        ("lock.haustuer", "lock.lock"),
+        ("alarm_control_panel.haus", "alarm_control_panel.alarm_disarm"),
+        ("button.tueroeffner", "button.press"),
+    ):
+        forbidden = [{"entity_id": entity_id, "service": service, "title": "Auf"}]
+        with pytest.raises(ValueError, match="forbidden_action_domain"):
+            ha_notify.parse_payload(
+                {"target": "anna", "title": "Tür", "actions": forbidden}
+            )
+        # And not through a producer that never saw the HTTP edge either.
+        with pytest.raises(ValueError, match="forbidden_action_domain"):
+            ha_notify.event_data("anna", "Tür", actions=forbidden)
 
 
 # ---- the category, and that it was added additively ------------------------
@@ -175,19 +218,25 @@ def test_a_category_picks_the_channel_and_defaults_to_house():
         ha_notify.parse_payload({"target": "anna", "title": "x", "category": "alarm"})
 
 
-def test_a_v0_46_0_shaped_payload_without_a_category_is_still_accepted():
-    # The exact shipped key set. It must keep parsing, and land on `house`.
+def test_a_payload_without_a_category_is_still_accepted():
+    # `category` stays optional: the shipped key set without it must keep
+    # parsing, and land on `house`. (The action *shape* did change — #1283.)
+    action = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
     shipped = {
         "target": "anna",
         "title": "Fenster offen",
         "body": "Küche",
         "urgency": "high",
-        "actions": [{"action": "cover.close", "title": "Schließen"}],
+        "actions": [action],
     }
     parsed = ha_notify.parse_payload(shipped)
     assert parsed["category"] == "house"
     assert parsed["urgency"] == "high"
-    assert parsed["actions"] == [{"action": "cover.close", "title": "Schließen"}]
+    assert parsed["actions"] == [action]
 
 
 def test_every_producer_builds_the_same_event_shape():

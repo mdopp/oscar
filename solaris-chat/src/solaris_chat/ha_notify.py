@@ -43,6 +43,26 @@ no prefix, no fuzzy, no nearest match. An unknown or misspelled target resolves
 to **nothing** and is refused, because the alternative failure mode is a notice
 meant for one resident being read by the whole house.
 
+## An action is a service call written out, never a guess (#1283)
+
+An `action` used to be one string, and `domain.suffix` fits both an entity id
+(`lock.front_door`) and a service name (`cover.close`) — this module's own tests
+carried one of each. A receiver had to guess which it held, and guessing wrong
+turns "show me the front door" into "switch the front door", from a
+notification that is reachable on the lock screen. So the two halves are now
+separate, named fields: `entity_id` **and** `service` (dotted, its domain
+matching the entity's), which is exactly the `/napi/ha/call` body the app
+already posts. Nothing is inferred from a string's shape.
+
+`ACTIONABLE_DOMAINS` is the closed set a notification action may name.
+`lock` and `alarm_control_panel` are missing on purpose and must stay missing:
+`/napi/ha/call` does accept `lock`, and the confirm gate
+(`engine/confirm.py`) is what keeps an unlock honest there — but a notification
+sits on the lock screen, outside that conversation, so the only safe answer is
+that no notice can name a lock at all. Refusing it here makes an unlock
+**unrepresentable** in this payload rather than merely discouraged, the same
+choice as the deliberately missing `alarm` category below.
+
 The payload key set is closed, like the model lease (#1260) — an unknown field
 is refused rather than ignored, so the contract with HA (and with the app,
 `docs/features/companion-api.md`) cannot drift by accident. `category` was
@@ -52,6 +72,7 @@ payload the shipped v0.46.0 contract allows is still accepted unchanged.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from solaris_chat import device_token_store, push_store
@@ -85,8 +106,19 @@ DEFAULT_CATEGORY = "house"
 TIMER_CATEGORIES = {"timer": "timer", "alarm": "timer", "reminder": "reminder"}
 # One action, as the app maps it onto its existing WidgetActionActivity path
 # (confirmation dialog + the server-side `sensitive_action` gate) — a second
-# action route would be redundant and the weaker choice security-wise.
-ACTION_KEYS = ("action", "title")
+# action route would be redundant and the weaker choice security-wise. All three
+# keys are required: the receiver copies `entity_id`/`service` verbatim into
+# `/napi/ha/call` and derives nothing (#1283).
+ACTION_KEYS = ("entity_id", "service", "title")
+
+# Which domains may EVER be actionable from a notification — see the module
+# docstring. `lock` and `alarm_control_panel` are absent by design; adding
+# either would put an unlock one tap from the lock screen.
+ACTIONABLE_DOMAINS = ("light", "switch", "cover", "climate")
+
+# HA slug pair, for both `entity_id` and the dotted `service`. A single-segment
+# or three-segment value is refused rather than repaired.
+_DOTTED_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
 # Presentation only — see the "not an alarm channel" note above.
 URGENCY_LEVELS = ("low", "normal", "high")
@@ -104,14 +136,20 @@ def _parse_actions(raw: Any) -> list[dict[str, str]]:
         raise ValueError("invalid_actions")
     actions: list[dict[str, str]] = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) - set(ACTION_KEYS):
+        if not isinstance(item, dict) or set(item) != set(ACTION_KEYS):
             raise ValueError("invalid_actions")
-        action, title = item.get("action"), item.get("title")
-        if not isinstance(action, str) or not action.strip():
+        values = [item[key] for key in ACTION_KEYS]
+        if not all(isinstance(v, str) and v.strip() for v in values):
             raise ValueError("invalid_actions")
-        if not isinstance(title, str) or not title.strip():
+        entity_id, service, title = (v.strip() for v in values)
+        if not _DOTTED_RE.match(entity_id) or not _DOTTED_RE.match(service):
             raise ValueError("invalid_actions")
-        actions.append({"action": action.strip(), "title": title.strip()})
+        domain = entity_id.split(".", 1)[0]
+        if service.split(".", 1)[0] != domain:
+            raise ValueError("invalid_actions")
+        if domain not in ACTIONABLE_DOMAINS:
+            raise ValueError("forbidden_action_domain")
+        actions.append({"entity_id": entity_id, "service": service, "title": title})
     return actions
 
 
@@ -160,6 +198,10 @@ def event_data(
     Both producers — the HA endpoint and the timer scheduler — build the event
     here so a receiver never has to tell them apart by shape, only by
     `category`.
+
+    Actions are re-validated here, not just at the HTTP edge: this is the one
+    place every producer passes through, so a lock or alarm action cannot reach
+    a phone even from a caller that never saw `parse_payload` (#1283).
     """
     return {
         "kind": EVENT_KIND,
@@ -167,7 +209,7 @@ def event_data(
         "title": title,
         "body": body,
         "urgency": urgency,
-        "actions": actions or [],
+        "actions": _parse_actions(actions),
         "category": category,
     }
 
