@@ -257,6 +257,11 @@ class GatekeeperHandler(AsyncEventHandler):
             endpoint=endpoint,
             location=location,
             trace_id=self.trace_id,
+            # `guest` is one sentinel shared by every voice speaker-ID failed to
+            # match, so it can never key a conversation history: the visitor at
+            # the door would be prompted with whatever the last unmatched
+            # speaker said (#1289). Every other uid names one resident.
+            remember=speaker.uid != GUEST_UID,
         )
         if not response:
             log.warn("gatekeeper.solaris.empty", trace_id=self.trace_id)
