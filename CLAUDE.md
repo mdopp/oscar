@@ -107,9 +107,20 @@ work back, that rule is wrong: fix the rule, then keep going.
 
 ## Issues
 
-- Capture **symptom + repro + starting-point files** — not a fix-plan or
-  acceptance bullets. The fix is decided in the PR. Symptom-style issues age
-  well; fix-plan-heavy bodies rot. See `.github/ISSUE_TEMPLATE/bug_report.md`.
+- Capture **symptom + repro + starting-point files** — not acceptance bullets.
+  The fix is decided in the PR. Symptom-style issues age well; fix-plan-heavy
+  bodies rot. See `.github/ISSUE_TEMPLATE/bug_report.md`.
+- **Separate a finding from a proposal.** A *finding* is verified and belongs in
+  the ticket — say what you measured and where. A *proposal* is a hypothesis and
+  must be recognisable as one, so whoever builds it may discard it. Put them in
+  different paragraphs and label the proposal as such.
+
+  **Why:** a neighbouring repo lost three attempts at one ticket because both sat
+  in the same paragraph — three builders executed the hypothesis instead of
+  questioning it, and the plan did not prevent the wrong diagnosis, it spread it
+  faster. Our own #1271 made the same mistake: a well-evidenced SELinux finding
+  followed by a "what to do" section that was pure guesswork, and it only ended
+  well because the builder checked the box and discarded half of it.
 
 ## Autoloop state
 
