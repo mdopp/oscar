@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 
 from solaris_chat import db_health, device_token_store
-from solaris_chat.server import build_app
+from solaris_chat.server import STATIC_DIR, build_app
 
 
 class _FakeEngine:
@@ -146,3 +146,48 @@ async def test_health_and_napi_agree_when_the_database_is_fine(
         headers={"Authorization": f"Bearer {device_token_store.TOKEN_PREFIX}x"},
     )
     assert napi.status == 401
+
+
+# ---- the resident's surface (#1274) ---------------------------------------
+
+
+async def test_whoami_tells_the_page_the_database_is_unreadable(
+    aiohttp_client, tmp_path
+):
+    # The web path authenticates from the Authelia header and never touches the
+    # store, so through #1271 the page loaded normally and the resident found out
+    # one dead click at a time. `db` is what raises the in-page banner.
+    client = await aiohttp_client(_app(str(tmp_path)))
+
+    resp = await client.get("/api/whoami")
+    assert resp.status == 200  # a loaded page with a notice, NOT a 503 page
+    assert (await resp.json())["db"] == "unavailable"
+
+
+async def test_whoami_clears_the_banner_when_the_database_is_readable(
+    aiohttp_client, tmp_path
+):
+    client = await aiohttp_client(_app(_readable_db(tmp_path)))
+
+    assert (await (await client.get("/api/whoami")).json())["db"] == "ok"
+
+
+async def test_the_page_banner_agrees_with_health_and_napi(aiohttp_client, tmp_path):
+    # The third surface on the one predicate: whoami must not say "ok" to the
+    # browser while /health and /napi answer 503 about the same state.
+    client = await aiohttp_client(_app(str(tmp_path)))
+
+    assert (await client.get("/health")).status == 503
+    assert (await (await client.get("/api/whoami")).json())["db"] == "unavailable"
+
+
+def test_the_banner_is_wired_to_the_whoami_db_token():
+    # Frontend contract: one notice element above the views (so the chat view and
+    # every portal page carry it), driven by `db`, re-asked so it lifts on
+    # recovery without a reload, and worded without jargon or a dead end.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="db-notice"' in html
+    assert "function applyDbHealth(db)" in html
+    assert "applyDbHealth(j && j.db)" in html
+    assert "setInterval(refreshDbHealth, 30000)" in html
+    assert "Solaris kann gerade nicht auf seine Daten zugreifen." in html

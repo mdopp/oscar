@@ -2498,6 +2498,15 @@ def build_app(
 
     async def whoami(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        # #1274: the resident-facing half of the #1271 outage signal. The web
+        # path authenticates from the Authelia header and never touches the
+        # store, so the page loaded normally through the whole outage and the
+        # resident found out one dead click at a time. Same predicate `/health`
+        # (#1273) and the `/napi/` gate (#1272) classify with, so the three
+        # surfaces cannot disagree; the browser renders it as an in-page banner
+        # rather than a 503, because a loaded page with an honest notice beats a
+        # blank error and keeps the history already on screen readable.
+        db_reason = await asyncio.to_thread(db_health.probe, solaris_db_path)
         admin = is_admin(request, remote_groups_header, admin_group)
         # The pinned "Wartung" ops chat (#786) is admin-only: its deterministic
         # session id is handed to the browser ONLY for an admin, so a household
@@ -2510,6 +2519,9 @@ def build_app(
                 "ok": True,
                 "uid": uid,
                 "is_admin": admin,
+                # "ok" | "unavailable" — the client banner's state token, same
+                # shape as the `ha` field the start page carries (#729/#1274).
+                "db": "unavailable" if db_reason else "ok",
                 "version": VERSION,
                 "logout_url": logout_url,
                 "context_window": context_window.value,
