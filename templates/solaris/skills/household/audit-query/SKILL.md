@@ -26,7 +26,7 @@ prompt/response fulltext only when debug-mode is on).
 - "Find every event tied to trace_id <X>."
 
 Out of scope: mutating state (use `solaris-debug-set` for the debug flag);
-operational stdout logs (ServiceBay-MCP `get_container_logs`); conversation history.
+operational stdout logs (ServiceBay-MCP `get_logs`); conversation history.
 
 ## Operating sequence
 

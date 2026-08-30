@@ -27,10 +27,15 @@ Out of scope: breadth-first triage ("was ist überhaupt kaputt?") →
 
 ## Container- vs service-logs
 
-- **`get_container_logs <container>`** — one container (`<service>-<app>`); the
-  default for a deep-dive.
-- **`get_service_logs <service>`** — interleaves every container in the pod; use it
-  when the failure spans a sidecar or you don't yet know which container logged it.
+One tool, `get_logs`, reads all three sources; `source` picks which:
+
+- **`get_logs(source="container", container=<service>-<app>)`** — one container's
+  stdout/stderr; the default for a deep-dive.
+- **`get_logs(source="service", name=<service>)`** — the whole service's systemd
+  journal; use it when the failure spans a sidecar or you don't yet know which
+  container logged it.
+- **`get_logs(source="podman")`** — the node's podman daemon log; only for a
+  container that never got far enough to log anything itself.
 
 Resolve the container name per the operator soul's service↔container model; never
 ask the operator for it.
@@ -39,10 +44,10 @@ ask the operator for it.
 
 1. **Resolve the target.** Service name → `list_containers` → `<service>-<app>`; an
    app name ("the config agent") → the matching container.
-2. **Pick the window.** Parse natural-language time into `since` ("last hour" →
-   `1h`, "since the crash" → the restart timestamp from
-   `list_containers`/`get_health_checks`, "today" → start of day). Default to a
-   recent tail.
+2. **Pick the window.** `since` is **Unix seconds**, not a duration — convert the
+   natural-language time first ("last hour" → now − 3600, "since the crash" → the
+   restart timestamp from `list_containers`/`get_health_checks`, "today" →
+   midnight). For a plain tail omit `since` and set `lines` (default 200).
 3. **Read with a signature in mind.** If a symptom was named ("speaker-ID error",
    "401", "OOM"), scan for it; else the first error/non-200/traceback. Pull the
    relevant lines, not the whole buffer.

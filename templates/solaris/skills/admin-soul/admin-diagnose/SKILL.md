@@ -34,9 +34,9 @@ model; never ask for a container name.
 1. **Locate the service** (`list_services`); if absent, say so and offer the
    closest matches — don't guess wildly.
 2. **Resolve to container(s)** (`list_containers`, filter to the service).
-3. **Read the symptom:** logs → `get_container_logs` (or `get_service_logs` for an
-   all-containers view); health → `get_health_checks` then `diagnose <check-id>`
-   for a red one; config → `get_service_files`.
+3. **Read the symptom:** logs → `get_logs` with `source="container"` (or
+   `source="service"` for the whole systemd unit); health → `get_health_checks`
+   then `diagnose <check-id>` for a red one; config → `get_service_files`.
 4. **Read, don't dump.** Scan for the actual error (trace, non-200, restart loop,
    OOM, missing-env) and summarise in 1–3 sentences naming service, container, and
    the concrete failure.
@@ -50,8 +50,8 @@ model; never ask for a container name.
 |---|---|
 | List services + status | `list_services` |
 | Map services → containers | `list_containers` |
-| One container's logs | `get_container_logs` |
-| A whole service's logs | `get_service_logs` |
+| One container's logs | `get_logs(source="container", container=<service>-<app>)` |
+| A whole service's logs | `get_logs(source="service", name=<service>)` |
 | Aggregated health | `get_health_checks` |
 | Deep-dive one health check | `diagnose <check-id>` |
 | What a service was deployed with | `get_service_files` |
