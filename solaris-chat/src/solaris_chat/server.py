@@ -2784,13 +2784,22 @@ def build_app(
         except Exception:  # noqa: BLE001 — any malformed JSON
             body = {}
         session_id = str((body or {}).get("session_id") or "")
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        # Same ownership gate as /api/chat and /api/chat/stream (#1287): the
+        # shared Zuhause and Wartung ids are deterministic uuid5s anyone can
+        # compute, so an unguarded cancel let any resident abort another
+        # session's in-flight turn just by naming it.
+        admin = is_admin(request, remote_groups_header, admin_group)
+        owner_uid = effective_uid(uid, session_id, admin=admin)
+        if session_id and not owns_session(owner_uid, session_id):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         event = cancels.get(session_id) if session_id else None
         if event is None:
             return web.json_response({"ok": True, "cancelled": False})
         event.set()
         log.info(
             "chat.stream.cancelled",
-            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
+            uid=uid,
             session_id=session_id,
         )
         return web.json_response({"ok": True, "cancelled": True})
