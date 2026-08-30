@@ -110,8 +110,53 @@ def test_tool_compose_route_is_catalog_driven():
     )
     # The card comes from the shared dot-command entry, not a new page per tool.
     assert "dotcmd.openTool(toolId)" in _HTML
-    assert "function openTool(toolId)" in _HTML
+    assert "function openTool(toolId, filter)" in _HTML
     assert "openTool: openTool" in _HTML
+
+
+def test_tool_item_route_is_catalog_driven():
+    # #1256 (contract with mdopp/solaris-android#107): `#/p/<tool-id>/item/<item-id>`
+    # opens ONE entry of ANY tool in /api|/napi/defs/tool. `item` is its own
+    # segment, so an item id can never collide with `new` or a later subpage, and
+    # the id is matched greedily so an entity_id keeps its dots.
+    assert "var itemRoute = /^([^/]+)\\/item\\/(.+)$/.exec(type);" in _HTML
+    assert (
+        "if (itemRoute) { openToolItem(itemRoute[1], itemRoute[2]); return; }" in _HTML
+    )
+    assert "function openToolItem(toolId, itemId)" in _HTML
+    # Only a tool that DECLARES which field carries its item id has an item route
+    # — the same declaration the app reads to decide whether a row tap gets an
+    # address at all.
+    assert (
+        'if (!def || !def["tool-item-id-field"] || !itemId) '
+        "{ toolDeepLinkFallback(); return; }" in _HTML
+    )
+    # The item is resolved against the tool's own list endpoint, generically: no
+    # per-tool payload-key table, so a `.tool` shipped after this build works
+    # with no PWA rebuild and no app update.
+    assert "function findToolItem(def, itemId)" in _HTML
+    assert (
+        'var path = def["tool-api-path"], field = def["tool-item-id-field"];' in _HTML
+    )
+    assert (
+        "for (var k in j) { if (Array.isArray(j[k])) { items = j[k]; break; } }"
+        in _HTML
+    )
+    # The entry opens through the shared dot-command entry with the row's title as
+    # the live filter — no per-tool item page.
+    assert "if (!dotcmd.openTool(toolId, title)) toolDeepLinkFallback();" in _HTML
+
+
+def test_unknown_tool_item_falls_back_to_start_page():
+    # #1256: a home-screen tile outlives the entry it points at (a task ticked
+    # off, a document deleted). An id the tool's list no longer returns lands on
+    # `#/p/start` — the same fallback as an unresolvable tool-id (#1213), never a
+    # blank router state.
+    assert "findToolItem(def, itemId).then(function (item) {" in _HTML
+    assert "if (!item) { toolDeepLinkFallback(); return; }" in _HTML
+    # A failed/unauthorised list read resolves to "no item", not to a rejection
+    # that would leave the route hanging on a blank view.
+    assert ".catch(function () { return null; });" in _HTML
 
 
 def test_tool_chat_card_param_is_consumed_once():
@@ -142,6 +187,7 @@ def test_unknown_tool_id_falls_back_to_start_page():
     assert "if (!toolRegistry[toolId]) { toolDeepLinkFallback(); return; }" in _HTML
     # An id that is in the catalog but whose card won't build also falls back.
     assert _HTML.count("if (!dotcmd.openTool(toolId)) toolDeepLinkFallback();") == 2
-    # The routes wait for the catalog instead of racing its first load.
+    # The routes wait for the catalog instead of racing its first load — compose,
+    # chat-card, and the item route (#1256).
     assert "var toolRegistryReady = loadToolRegistry();" in _HTML
-    assert _HTML.count("toolRegistryReady.then(function () {") == 2
+    assert _HTML.count("toolRegistryReady.then(function () {") == 3

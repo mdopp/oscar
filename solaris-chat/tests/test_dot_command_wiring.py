@@ -111,6 +111,54 @@ def test_shipped_tool_compose_paths_resolve():
         assert by_id[tid]["tool-compose-path"] == ""
 
 
+def test_shipped_tool_item_id_fields_are_declared_not_sniffed():
+    # #1256: a tool declares WHICH item field addresses one entry
+    # (`tool-item-id-field`), so `#/p/<tool-id>/item/<item-id>` is built from the
+    # catalog instead of a consumer probing entity_id/id/item_id/uid/key in order.
+    from pathlib import Path
+
+    from solaris_chat.skills import TOOL_ITEM_ROUTE, item_id_field_violations
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    by_id = {d["tool-id"]: d for d in list_tool_defs(pack)}
+    for tid, d in by_id.items():
+        violations = item_id_field_violations(
+            d["tool-item-id-field"], d["tool-cell-schema"]
+        )
+        assert violations == [], f"{tid} item id field does not resolve: {violations}"
+    # The tools whose rows address one entry declare the field their own list
+    # endpoint returns it under; the rest declare none, so a consumer leaves
+    # their rows un-tappable instead of linking into nowhere.
+    assert by_id["task"]["tool-item-id-field"] == "id"
+    assert by_id["doc"]["tool-item-id-field"] == "entity_id"
+    assert by_id["contacts"]["tool-item-id-field"] == "id"
+    assert by_id["photo"]["tool-item-id-field"] == "id"
+    for tid in ("note", "home", "energy"):
+        assert by_id[tid]["tool-item-id-field"] == ""
+    # The one route the declaration feeds — the literal the Android side pins.
+    assert (
+        TOOL_ITEM_ROUTE.format(tool_id="doc", item_id="doc:42") == "#/p/doc/item/doc:42"
+    )
+
+
+def test_item_id_field_lint_rejects_a_field_the_cell_schema_lacks():
+    # #1256: no declaration is clean (the tool offers no item route); a
+    # declaration must name a field the def's own cell-schema provides — a field
+    # nothing declares is the guessing this key exists to end.
+    from solaris_chat.skills import item_id_field_violations
+
+    schema = {"id": "entity_id", "title": "title", "meta": ["category"]}
+    assert item_id_field_violations("", schema) == []
+    assert item_id_field_violations("entity_id", schema) == []
+    assert item_id_field_violations("title", schema) == []  # any declared field
+    assert item_id_field_violations("uid", schema)  # not in the schema
+    assert item_id_field_violations("id", schema)  # the ROLE name, not the field
+    assert item_id_field_violations("entity_id", {})  # schema declares no fields
+    # `actions` names action ids, not item fields — it can't provide an id.
+    assert item_id_field_violations("task.set_status", {"actions": ["task.set_status"]})
+
+
 def test_compose_path_lint_rejects_a_path_the_router_cannot_serve():
     # #1213: no declaration is clean (the tool has no create path); a declaration
     # must be THIS tool's canonical route.

@@ -5646,14 +5646,16 @@
 
         // Deep-link entry (#1213): open a catalog tool's live card the same way
         // typing its dot-command does — the composer is primed with the command
-        // so the resident just keeps typing to create/filter. Both deep-link
-        // routes go through here, which is why neither grows a per-tool page.
+        // so the resident just keeps typing to create/filter. All three deep-link
+        // routes go through here, which is why none grows a per-tool page.
+        // `filter` (#1256) primes the argument as well, so the item route lands
+        // on the card with its list already narrowed to the tapped entry.
         // Returns false when the tool-id isn't in the catalog (uninstalled tool →
         // the router falls back to the start page instead of a blank view).
-        function openTool(toolId) {
+        function openTool(toolId, filter) {
           var def = toolRegistry[toolId];
           if (!def) return false;
-          input.value = (def.command || "." + toolId) + " ";
+          input.value = (def.command || "." + toolId) + " " + (filter || "");
           autosize(); refresh(); input.focus();
           return card != null;
         }
@@ -7191,6 +7193,12 @@
         // rebuild here and no app update, as long as its def declares a
         // tool-compose-path.
         if (/^[^/]+\/new$/.test(type)) { openToolCompose(type.slice(0, -4)); return; }
+        // Eintrag deep link (#1256): `#/p/<tool-id>/item/<item-id>` opens ONE
+        // entry of ANY tool in the catalog — the Android row tap. `item` is its
+        // own segment so it can never collide with `new` or a later subpage, and
+        // the id is matched greedily, so an entity_id keeps its dots.
+        var itemRoute = /^([^/]+)\/item\/(.+)$/.exec(type);
+        if (itemRoute) { openToolItem(itemRoute[1], itemRoute[2]); return; }
         // Energie is no longer a standalone page — it lives in the `.energy`
         // dot-command (renderEnergyPage/renderEnergyFlow/… still exist). A stale
         // #/p/energy link falls back to the Geräte start page (#973).
@@ -7232,8 +7240,9 @@
       // ---- Katalog-getriebene Tool-Deep-Links (#1213) ----
       // Two routes the Android home screen opens, both resolved against
       // /api/defs/tool rather than a hand-written page per tool:
-      //   #/p/<tool-id>/new  — Erfassen: open that tool's create path
-      //   #/?tool=<tool-id>  — Chat mit geöffneter Karte
+      //   #/p/<tool-id>/new             — Erfassen: open that tool's create path
+      //   #/p/<tool-id>/item/<item-id>  — Eintrag: open ONE entry (#1256)
+      //   #/?tool=<tool-id>             — Chat mit geöffneter Karte
       // A tile outlives the tool it points at (uninstall, renamed id), so an
       // unresolvable tool-id must never leave the resident on an empty screen:
       // it lands on the start page, the same place the app's other tiles land.
@@ -7249,6 +7258,46 @@
           newSession();
           if (!dotcmd.openTool(toolId)) toolDeepLinkFallback();
         });
+      }
+      // Eintrag (#1256): only a tool that DECLARES which of its item fields
+      // carries the id has an item route — that declaration is what the app
+      // reads to decide whether a row tap gets an address at all, so honouring
+      // it keeps both sides on the same answer. The id is resolved against the
+      // tool's own list endpoint, so a tile pointing at a deleted entry lands on
+      // the start page instead of an empty card. No per-tool branch: the entry
+      // opens the tool's card with its live filter on the tapped row, the same
+      // create·find·edit line typing the dot-command opens (#967).
+      function openToolItem(toolId, itemId) {
+        toolRegistryReady.then(function () {
+          var def = toolRegistry[toolId];
+          if (!def || !def["tool-item-id-field"] || !itemId) { toolDeepLinkFallback(); return; }
+          findToolItem(def, itemId).then(function (item) {
+            if (!item) { toolDeepLinkFallback(); return; }
+            newSession();
+            var schema = def["tool-cell-schema"] || {};
+            var title = item[schema.title] != null ? String(item[schema.title]) : "";
+            if (!dotcmd.openTool(toolId, title)) toolDeepLinkFallback();
+          });
+        });
+      }
+      // Look the item up in the tool's own list (`tool-api-path`) by the field it
+      // declared. The list endpoints name their array after the tool (`tasks`,
+      // `documents`, `contacts`, `photos`), so take the first array in the
+      // payload rather than keeping a per-tool key table here.
+      function findToolItem(def, itemId) {
+        var path = def["tool-api-path"], field = def["tool-item-id-field"];
+        if (!path) return Promise.resolve(null);
+        return fetch(path)
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var items = [];
+            for (var k in j) { if (Array.isArray(j[k])) { items = j[k]; break; } }
+            for (var i = 0; i < items.length; i++) {
+              if (items[i] && String(items[i][field]) === itemId) return items[i];
+            }
+            return null;
+          })
+          .catch(function () { return null; });
       }
       // Chat mit Karte (C): a fresh 1:1 chat with the tool's card already open,
       // so the resident can both look and ask in one place.

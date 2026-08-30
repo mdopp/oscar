@@ -123,7 +123,10 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
 # closed role vocabulary a role maps a field to; `actions` references action ids
 # only. Anything outside this is browser-only and native must skip/degrade — so
 # we forbid it here rather than let it silently break a native consumer.
-_CELL_SCHEMA_STRING_ROLES = ("title", "subtitle", "badge", "state", "icon")
+# `id` is the one role that is never DRAWN: it names the field that addresses the
+# row (#1256) — what the item deep link is built from — so a schema states which
+# of the item's fields identifies it instead of a consumer probing for one.
+_CELL_SCHEMA_STRING_ROLES = ("id", "title", "subtitle", "badge", "state", "icon")
 _CELL_SCHEMA_LIST_ROLES = ("meta", "actions")
 _CELL_SCHEMA_ROLES = _CELL_SCHEMA_STRING_ROLES + _CELL_SCHEMA_LIST_ROLES
 
@@ -229,6 +232,54 @@ def compose_path_violations(tool_id: str, compose_path: str) -> list[str]:
     return []
 
 
+# The catalog-driven ITEM deep link (#1256, cross-repo contract with
+# mdopp/solaris-android#107). A tapped row needs an address, and an address needs
+# to know WHICH of the item's fields carries its id — the app used to probe
+# `entity_id`/`id`/`item_id`/`uid`/`key` in that order and guess. `tool-item-id-
+# field` ends the guessing: the def names the field, the router builds the one
+# route below out of it, and a tool that names none has no item route at all (a
+# consumer leaves the row un-tappable rather than linking into nowhere). The
+# `item` segment is its own, so an item id can never be mistaken for `new` or a
+# future subpage, and an id with dots (`entity_id`) passes through whole.
+TOOL_ITEM_ROUTE = "#/p/{tool_id}/item/{item_id}"
+
+
+def _cell_schema_fields(schema: dict[str, Any]) -> set[str]:
+    """The item fields a cell-schema says the rendered row carries (`actions`
+    names action ids, not fields, so it is excluded)."""
+    out: set[str] = set()
+    if not isinstance(schema, dict):
+        return out
+    for role, value in schema.items():
+        if role == "actions":
+            continue
+        for field in value if isinstance(value, list) else [value]:
+            if isinstance(field, str) and field:
+                out.add(field)
+    return out
+
+
+def item_id_field_violations(
+    item_id_field: str, cell_schema: dict[str, Any]
+) -> list[str]:
+    """Lint a def's declared `tool-item-id-field` — empty means clean.
+
+    No declaration is clean (the tool simply offers no item route). A declaration
+    must name a field the def's own `tool-cell-schema` provides — normally its
+    `id` role. A field the schema never mentions would build an address out of a
+    value the renderer has no contract for, which is exactly the guessing this
+    declaration replaces."""
+    if not item_id_field:
+        return []
+    provided = _cell_schema_fields(cell_schema)
+    if item_id_field not in provided:
+        return [
+            f"tool-item-id-field '{item_id_field}' is not a field the cell schema "
+            f"provides ({', '.join(sorted(provided)) or 'no fields at all'})"
+        ]
+    return []
+
+
 def _json_field(meta: dict[str, str], key: str) -> dict[str, Any]:
     raw = meta.get(key, "").strip()
     try:
@@ -248,7 +299,9 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
     of the hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the
     actions; `tool-action-params` (#1214) lets a renderer build an action's
     callback body straight from the row it drew; `tool-compose-path` (#1213)
-    declares whether the tool has a create path at all, and where.
+    declares whether the tool has a create path at all, and where;
+    `tool-item-id-field` (#1256) declares which field addresses one item, so a
+    row tap has a route instead of a guessed id.
     """
     actions = [a.strip() for a in meta.get("tool-actions", "").split(",") if a.strip()]
     cell_schema = _json_field(meta, "tool-cell-schema")
@@ -260,6 +313,7 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
         "tool-api-path": meta.get("tool-api-path", ""),
         "tool-search-path": meta.get("tool-search-path", ""),
         "tool-compose-path": meta.get("tool-compose-path", ""),
+        "tool-item-id-field": meta.get("tool-item-id-field", ""),
         "tool-actions": actions,
         "tool-cell-schema": cell_schema,
         "tool-action-params": action_params,

@@ -8,7 +8,8 @@ tool-label: Foto
 command: .photo
 tool-api-path: /api/photo
 tool-compose-path: #/p/photo/new
-tool-cell-schema: {"title": "name", "meta": ["people"]}
+tool-item-id-field: id
+tool-cell-schema: {"id": "id", "title": "name", "meta": ["people"]}
 version: 1.0.0
 author: Solaris
 license: MIT

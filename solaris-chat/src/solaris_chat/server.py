@@ -2863,8 +2863,9 @@ def build_app(
         """The tool catalog for native/device-token consumers (#1021, ADR 0011).
 
         Same payload `GET /api/defs/tool` serves — `tool-id`, `tool-label`,
-        `tool-api-path`, `tool-search-path`, `tool-compose-path`, `tool-actions`,
-        `tool-cell-schema`, `tool-action-params` —
+        `tool-api-path`, `tool-search-path`, `tool-compose-path`,
+        `tool-item-id-field`, `tool-actions`, `tool-cell-schema`,
+        `tool-action-params` —
         but on the proxy-bypassed `/napi/` surface (device-token-ONLY, wrapped in
         `native(...)`), so an Android home-screen widget can consume a new `.tool`
         with zero native code. Only the tool kind is mirrored here: the native
