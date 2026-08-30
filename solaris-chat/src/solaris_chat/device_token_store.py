@@ -144,6 +144,26 @@ def list_for_uid(db_path: str, owner_uid: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_owner_uids(db_path: str) -> set[str]:
+    """Every resident with a live paired device — uids only, no token metadata.
+
+    The household-wide read the owner-scoped `list_for_uid` cannot serve: HA
+    notice targeting (#1276) needs the *set* of addressable residents before it
+    knows which one it is addressing. Revoked rows are excluded, so unpairing a
+    device removes its owner once nothing else is paired.
+    """
+    if not Path(db_path).exists():
+        return set()
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT owner_uid FROM device_tokens WHERE revoked = 0"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(r["owner_uid"]) for r in rows if r["owner_uid"]}
+
+
 def revoke(db_path: str, owner_uid: str, token_id: str) -> bool:
     """Revoke one token (owner-checked); True when a row was revoked.
 

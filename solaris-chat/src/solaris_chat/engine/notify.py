@@ -23,8 +23,10 @@ from solaris_chat.logging import log
 
 # The typed event kinds the bus carries (#714). `card_state` is a live HA card
 # update, `reminder` a fired timer, `chat` a backgrounded turn (Phase 1c),
-# `servicebay` a republished ServiceBay approval event (BFF, #811).
-EVENT_KINDS = frozenset({"reminder", "card_state", "chat", "servicebay"})
+# `servicebay` a republished ServiceBay approval event (BFF, #811), `ha` a
+# household notice an HA automation posted (#1276 — best effort, never an
+# alarm; see `solaris_chat.ha_notify`).
+EVENT_KINDS = frozenset({"reminder", "card_state", "chat", "servicebay", "ha"})
 
 
 class EventBus:

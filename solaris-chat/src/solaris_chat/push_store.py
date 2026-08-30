@@ -75,6 +75,25 @@ def list_for_uid(db_path: str, uid: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_owner_uids(db_path: str) -> set[str]:
+    """Every resident with a subscription. Empty when the DB/table is missing.
+
+    The household-wide read the per-resident `list_for_uid` cannot serve: HA
+    notice targeting (#1276) needs the *set* of addressable residents before it
+    knows which one it is addressing.
+    """
+    if not Path(db_path).exists():
+        return set()
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT owner_uid FROM push_subscriptions"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(r["owner_uid"]) for r in rows if r["owner_uid"]}
+
+
 def remove_by_endpoint(db_path: str, endpoint: str) -> int:
     """Delete a subscription by its endpoint URL; returns rows deleted."""
     with _connect(db_path) as conn:
