@@ -2,19 +2,25 @@ name: build-images
 
 # Build and publish container images for Solaris.
 #
-# - On push to `main` and tags `v*`: builds + pushes to GHCR.
+# - On push to `main`: builds + pushes to GHCR (path-filtered).
 # - On pull requests touching image sources: builds without pushing,
 #   so Dockerfiles are validated before merge.
+# - On workflow_call: release-images.yml calls this for every `v*` tag.
 # - On workflow_dispatch: builds + pushes for the dispatched ref (branch or tag).
 #   Use `gh workflow run build-images.yml --ref vX.Y.Z` to manually publish
 #   a versioned release (replaces the delete+repush workaround for #256).
+#
+# There is deliberately NO `tags:` entry in the `push` trigger below (#1275).
+# A `paths:` filter applies to the whole `push` block, tag pushes included, so a
+# release whose diff happened to touch none of the image sources would have built
+# nothing at all. Tags therefore come in through release-images.yml, which has no
+# path filter and cannot acquire one.
 #
 # `:latest` is moved by a push to `main` and by nothing else — see the tags step.
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
@@ -30,11 +36,19 @@ on:
       - 'tts-martin/**'
       - 'wakeword-trainer/**'
       - '.github/workflows/build-images.yml'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to build. Defaults to the caller ref (the tag).'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       ref:
         description: 'Git ref to build (branch or tag, e.g. v0.3.0). Defaults to the ref selected when running the workflow.'
         required: false
+        type: string
         default: ''
 
 permissions:

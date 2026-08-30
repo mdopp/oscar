@@ -3,13 +3,16 @@ name: release-please
 # Maintains a release PR (version bump + CHANGELOG from conventional commits).
 # Merging that PR cuts the `vX.Y.Z` tag + GitHub release.
 #
-# NOTE on the GITHUB_TOKEN no-recursion rule (#256): the tag/release created by
-# release-please via GITHUB_TOKEN does NOT trigger build-images.yml (on: push
-# tags v*) — GitHub deliberately blocks that recursion. The dispatch step below
-# is a best-effort workaround; `gh workflow run` via GITHUB_TOKEN may also be
-# subject to the same rule. The robust fix is a fine-grained PAT stored as the
-# RELEASE_PLEASE_TOKEN secret (operator must add it and swap the token: field).
-# Until then, a manual `gh workflow run build-images.yml --ref vX.Y.Z` works.
+# NOTE on the GITHUB_TOKEN no-recursion rule (#256, #1275): the tag/release
+# created by release-please via GITHUB_TOKEN does NOT trigger the tag workflow
+# (release-images.yml, on: push tags v*) — GitHub deliberately blocks that
+# recursion. The dispatch step below is a best-effort workaround; `gh workflow
+# run` via GITHUB_TOKEN may also be subject to the same rule. The robust fix is
+# a fine-grained PAT stored as the RELEASE_PLEASE_TOKEN secret (operator must add
+# it and swap the token: field). Until then, a manual
+# `gh workflow run build-images.yml --ref vX.Y.Z` works, and
+# release-image-check.yml files an issue for any tag that ended up with no
+# images — so a release that published nothing can no longer pass unnoticed.
 
 on:
   push:
@@ -30,7 +33,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Trigger build-images for the new tag (a tag pushed by GITHUB_TOKEN does
-      # not fire build-images' own `on: push: tags` — GitHub's no-recursion
+      # not fire release-images.yml's `on: push: tags` — GitHub's no-recursion
       # rule, #256). `-R` is load-bearing: the job has no checkout, so without an
       # explicit repo `gh workflow run` dies with "fatal: not a git repository"
       # (observed v0.6.0) and the images are never published for the tag.
