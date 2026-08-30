@@ -1430,8 +1430,13 @@ def render_wakeword_trainer_unit(data_dir: str) -> str:
         "AddDevice=nvidia.com/gpu=all\n"
         "SecurityLabelDisable=true\n"
         "# The queue the chat container writes — same solaris.db, same host path\n"
-        "# the pod mounts at /var/lib/solaris.\n"
-        f"Volume={data_dir}/solarisbay:/var/lib/solaris:Z\n"
+        "# the pod mounts at /var/lib/solaris. SHARED relabel (`:z`), never `:Z`:\n"
+        "# a private relabel stamps this trainer's own MCS categories onto the\n"
+        "# whole volume, and the pod's chat/gatekeeper — recreated with a\n"
+        "# different pair on every deploy — then get EACCES on solaris.db\n"
+        "# (2026-08-30 outage, #1271). `z` writes container_file_t:s0, which\n"
+        "# every category pair dominates, so each trainer start re-asserts it.\n"
+        f"Volume={data_dir}/solarisbay:/var/lib/solaris:z\n"
         "# Training work dir: Piper voices, negative corpora, features and\n"
         "# checkpoints. Tens of GB, and it must survive a restart mid-run.\n"
         f"Volume={data_dir}/solaris/wakeword-train:/work:Z\n"
@@ -1891,6 +1896,68 @@ def install_voice_pipeline(data_dir: str) -> None:
     install_whisper_batch_unit(data_dir)
     install_tts_units()
     install_wakeword_trainer_unit(data_dir)
+
+
+def read_selinux_label(path: str) -> str:
+    """The file's SELinux context, or "" when the host has no SELinux."""
+    try:
+        return os.getxattr(path, "security.selinux").decode().rstrip("\x00")
+    except OSError:
+        return ""
+
+
+def assert_shared_data_label(data_dir: str) -> bool:
+    """Assert that the shared solaris-data volume carries a SHARED SELinux label.
+
+    Four containers of the pod plus the wakeword trainer mount
+    `<data_dir>/solarisbay`. A container that relabels it privately (`:Z`)
+    stamps its own MCS categories on the whole tree, and every container with a
+    different pair — the pod gets a fresh one each time it is recreated — then
+    gets EACCES on solaris.db. That is the 2026-08-30 outage (#1271): correct
+    owner, correct mode, `container_file_t:s0:c1022,c1023` against a chat
+    process at `container_t:s0:c461,c958`, and a restart cannot heal it because
+    the process label travels with the container while the file keeps its own.
+
+    The trainer mount is `:z` now, so nothing we ship writes categories here —
+    this is the tripwire that says so out loud instead of the household finding
+    out through a dead assistant. Returns True when the label was already
+    shared."""
+    target = os.path.join(data_dir, "solarisbay")
+    label = read_selinux_label(target)
+    if not label:
+        return True
+    level = label.split(":", 3)[3] if label.count(":") >= 3 else ""
+    if ":" not in level:
+        return True
+    jlog(
+        "error",
+        "selinux",
+        "shared data volume carries PRIVATE MCS categories — every container "
+        "with another pair is locked out of solaris.db (#1271)",
+        path=target,
+        label=label,
+    )
+    try:
+        cleared = subprocess.run(
+            ["chcon", "-R", "-l", "s0", target],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog("error", "selinux", "could not run chcon", path=target, error=str(e))
+        return False
+    if cleared.returncode != 0:
+        jlog(
+            "error",
+            "selinux",
+            "could not clear the private MCS categories",
+            path=target,
+            error=cleared.stderr[:300],
+        )
+        return False
+    jlog("warn", "selinux", "cleared the private MCS categories", path=target)
+    return False
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -4470,6 +4537,12 @@ def main() -> int:
     # the restart below picks it up. Here, not in step 2: the derivation runs
     # inside the chat container, which step 0 still has down.
     stamp_vapid_public_key()
+
+    # ── 3d. shared-volume SELinux label (#1271) ──────────────────────────────
+    # Last thing before the pod comes back: the restart below hands chat and
+    # gatekeeper a fresh MCS pair, so a volume left with private categories
+    # would greet them with EACCES on solaris.db.
+    assert_shared_data_label(data_dir)
 
     # ── 4. restart ───────────────────────────────────────────────────────────
     time.sleep(3)

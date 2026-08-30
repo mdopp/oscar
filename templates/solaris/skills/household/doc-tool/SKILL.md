@@ -8,8 +8,9 @@ tool-label: Dokument
 command: .doc
 tool-api-path: /api/portal/documents/search
 tool-compose-path: #/p/doc/new
+tool-item-id-field: entity_id
 tool-actions: doc.classify
-tool-cell-schema: {"title": "title", "meta": ["category"]}
+tool-cell-schema: {"id": "entity_id", "title": "title", "meta": ["category"]}
 version: 1.0.0
 author: Solaris
 license: MIT

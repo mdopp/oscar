@@ -38,10 +38,15 @@ A `.tool` is a `templates/solaris/skills/<id>/SKILL.md` with frontmatter:
 **`tool-cell-schema`** (see below). `tool-compose-path` (#1213) is the tool's own
 statement that it HAS a create path, and the deep link that opens it —
 `#/p/<tool-id>/new`; a consumer that can't render a card, such as an Android 1×1
-tile, offers a "create" tile only for tools that declare one. Its sibling
-`#/?tool=<tool-id>` opens the chat with that tool's card already open. Both
+tile, offers a "create" tile only for tools that declare one. `tool-item-id-field`
+(#1256) is the same statement for ONE entry: it names the item field that carries
+the id, so `#/p/<tool-id>/item/<item-id>` addresses a single row and a consumer
+never has to probe `entity_id`/`id`/`uid` for one; a tool that declares no id
+field has no item route. Its sibling
+`#/?tool=<tool-id>` opens the chat with that tool's card already open. All three
 resolve against the catalog, so a new `.tool` needs no app update; an
-unresolvable tool-id lands on `#/p/start`. The
+unresolvable tool-id — or an item id that no longer exists — lands on
+`#/p/start`. The
 server auto-lists it at `/api/defs/tool` (mirroring `/api/defs/command`) and
 **auto-registers its declared actions** on load; the client fetches it at init
 and dispatches via a **tool registry** instead of the hardcoded

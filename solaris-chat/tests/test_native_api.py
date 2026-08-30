@@ -18,7 +18,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from solaris_chat import device_token_store
+from solaris_chat import db_health, device_token_store
 from solaris_chat.engine.notify import EventBus
 from solaris_chat.server import build_app, native_uid
 
@@ -1426,8 +1426,9 @@ def _write_tool_def(skills_dir: Path) -> None:
         "command: .task\n"
         "tool-api-path: /api/portal/tasks?done=1\n"
         "tool-compose-path: #/p/task/new\n"
+        "tool-item-id-field: id\n"
         "tool-actions: task.set_status, task.add\n"
-        'tool-cell-schema: {"title": "title", "meta": ["due"]}\n'
+        'tool-cell-schema: {"id": "id", "title": "title", "meta": ["due"]}\n'
         "---\n\n# Task\n",
         encoding="utf-8",
     )
@@ -1471,8 +1472,67 @@ async def test_napi_defs_tool_valid_token_serves_catalog(aiohttp_client, tmp_pat
     # #1213: the compose declaration rides the device-token catalog too — it is
     # what the app reads to decide whether to offer an "Erfassen" tile at all.
     assert tool["tool-compose-path"] == "#/p/task/new"
+    # #1256: so does the item-id declaration — it is what the app reads to decide
+    # whether a row tap gets an address, instead of probing the item's fields.
+    assert tool["tool-item-id-field"] == "id"
     assert tool["tool-actions"] == ["task.set_status", "task.add"]
-    assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
+    assert tool["tool-cell-schema"] == {"id": "id", "title": "title", "meta": ["due"]}
+
+
+async def test_napi_defs_tool_carries_a_new_tools_item_route(aiohttp_client, tmp_path):
+    # #1256: a `.tool` this build never heard of joins the catalog by dropping a
+    # SKILL.md into the pack — its item route rides along with no server change,
+    # no PWA rebuild and no app update, because the route is built from the
+    # declaration rather than from a per-tool branch.
+    from solaris_chat import skills
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    skills_dir = tmp_path / "skills"
+    _write_tool_def(skills_dir)
+    new = skills_dir / "plant-tool"
+    new.mkdir(parents=True, exist_ok=True)
+    (new / "SKILL.md").write_text(
+        "---\n"
+        "name: solaris-plant-tool\n"
+        "description: The .plant tool.\n"
+        "kind: tool\n"
+        "tool-id: plant\n"
+        "tool-label: Pflanze\n"
+        "command: .plant\n"
+        "tool-api-path: /api/portal/plants\n"
+        "tool-item-id-field: plant_id\n"
+        'tool-cell-schema: {"id": "plant_id", "title": "name"}\n'
+        "---\n\n# Plant\n",
+        encoding="utf-8",
+    )
+    client = await aiohttp_client(
+        build_app(
+            engine=_FakeEngine(),
+            remote_user_header="Remote-User",
+            default_uid="household",
+            solaris_db_path=db,
+            notes_dir=str(tmp_path),
+            skills_dir=str(skills_dir),
+        )
+    )
+    r = await client.get(
+        "/napi/defs/tool", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    j = await r.json()
+    by_id = {t["tool-id"]: t for t in j["defs"]}
+    assert by_id["plant"]["tool-item-id-field"] == "plant_id"
+    assert (
+        skills.item_id_field_violations("plant_id", by_id["plant"]["tool-cell-schema"])
+        == []
+    )
+    # An id with dots survives the route intact — its own `item` segment is what
+    # keeps it from being read as a subpage.
+    assert (
+        skills.TOOL_ITEM_ROUTE.format(tool_id="plant", item_id="plant.7")
+        == "#/p/plant/item/plant.7"
+    )
 
 
 # ---- /napi/action-callback: no admin action on the bypassed prefix (#1170) ---
@@ -1528,3 +1588,78 @@ async def test_napi_non_admin_action_still_runs_for_device_token(
     )
     assert r.status == 200
     assert (await r.json())["detail"] == "pong"
+
+
+# ---- unreadable store ⇒ 503, not 500 (#1272) ------------------------------
+
+
+def test_resolve_raises_unavailable_when_the_path_cannot_be_stat_ed(
+    tmp_path, monkeypatch
+):
+    # The exact #1271 trace: Path.exists() -> os.stat -> PermissionError, thrown
+    # before any auth decision could be made.
+    db = _db(tmp_path)
+
+    def _denied(_self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", _denied)
+    try:
+        device_token_store.resolve(db, "sol_device_whatever")
+    except db_health.Unavailable as exc:
+        assert "PermissionError" in str(exc)
+    else:  # pragma: no cover - the raise is the assertion
+        raise AssertionError("an unreadable store must not resolve silently")
+
+
+def test_resolve_still_degrades_when_only_the_table_is_missing(tmp_path):
+    # schema-init hasn't migrated yet: fail-closed (401), NOT a 503.
+    path = str(tmp_path / "empty.db")
+    sqlite3.connect(path).close()
+    assert device_token_store.resolve(path, "sol_device_x") is None
+
+
+async def test_napi_answers_503_with_retry_after_when_db_unreadable(
+    aiohttp_client, tmp_path
+):
+    # A directory where solaris.db should be: sqlite cannot open it, whatever
+    # uid the test runs as — the same class of fault as the SELinux relabel.
+    unreadable = str(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, unreadable))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_anything"}
+    )
+    assert r.status == 503
+    assert r.headers["Retry-After"] == "30"
+    assert (await r.json())["error"] == "database_unavailable"
+
+
+async def test_napi_still_401s_for_a_bad_token_on_a_readable_db(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_nope"}
+    )
+    assert r.status == 401
+
+
+async def test_napi_programming_error_is_still_a_500(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # Too wide a catch would hide real bugs behind a soothing 503.
+    db = _db(tmp_path)
+
+    def _bug(*_a, **_k):
+        raise TypeError("someone changed a signature")
+
+    monkeypatch.setattr(device_token_store, "resolve", _bug)
+    client = await aiohttp_client(_app(tmp_path, db))
+
+    r = await client.get(
+        "/napi/whoami", headers={"Authorization": "Bearer sol_device_anything"}
+    )
+    assert r.status == 500

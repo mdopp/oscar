@@ -8,8 +8,9 @@ tool-label: Kontakt
 command: .contacts
 tool-api-path: /api/portal/persons
 tool-compose-path: #/p/contacts/new
+tool-item-id-field: id
 tool-actions: contact.add, person.update
-tool-cell-schema: {"title": "name", "meta": ["phone", "email"]}
+tool-cell-schema: {"id": "id", "title": "name", "meta": ["phone", "email"]}
 version: 1.0.0
 author: Solaris
 license: MIT

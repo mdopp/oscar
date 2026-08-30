@@ -31,6 +31,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import db_health
+
 TOKEN_PREFIX = "sol_device_"
 
 
@@ -44,6 +46,30 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _readable(db_path: str) -> bool:
+    """Whether the store file is there — raising when it exists but can't be read.
+
+    `Path.exists()` propagates a `PermissionError` from `os.stat`, and in #1271
+    that escaped the `/napi/` auth gate before any auth decision was made, so
+    native clients saw a 500 and hammered it every minute. An unreadable store
+    is infrastructure: name it as such and let the gate answer 503."""
+    try:
+        return Path(db_path).exists()
+    except OSError as exc:
+        raise db_health.Unavailable(db_health.unavailable_reason(exc)) from exc
+
+
+def _reraise_if_unavailable(exc: sqlite3.OperationalError) -> None:
+    """Let an unopenable database through as `Unavailable`; swallow the rest.
+
+    `sqlite3.OperationalError` covers both "no such table" — the schema-init
+    sidecar hasn't migrated yet, which the callers degrade to empty on purpose —
+    and "unable to open database file". Only the latter is a 503."""
+    reason = db_health.unavailable_reason(exc)
+    if reason:
+        raise db_health.Unavailable(reason) from exc
 
 
 def create(db_path: str, owner_uid: str, label: str = "") -> tuple[str, str]:
@@ -73,7 +99,7 @@ def resolve(db_path: str, token: str) -> str | None:
     fallback uid — so an invalid token can't be treated as authenticated."""
     if not token or not token.startswith(TOKEN_PREFIX):
         return None
-    if not Path(db_path).exists():
+    if not _readable(db_path):
         return None
     token_hash = _hash(token)
     try:
@@ -91,7 +117,8 @@ def resolve(db_path: str, token: str) -> str | None:
             )
             conn.commit()
             return row["owner_uid"]
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        _reraise_if_unavailable(exc)
         return None
 
 
@@ -103,7 +130,7 @@ def resolve_device(db_path: str, token: str) -> tuple[str, str] | None:
     owner — one resident may pair several devices, each with its own widgets."""
     if not token or not token.startswith(TOKEN_PREFIX):
         return None
-    if not Path(db_path).exists():
+    if not _readable(db_path):
         return None
     token_hash = _hash(token)
     try:
@@ -121,7 +148,8 @@ def resolve_device(db_path: str, token: str) -> tuple[str, str] | None:
             )
             conn.commit()
             return row["id"], row["owner_uid"]
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        _reraise_if_unavailable(exc)
         return None
 
 

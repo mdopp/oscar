@@ -8,8 +8,9 @@ tool-label: Aufgabe
 command: .task
 tool-api-path: /api/portal/tasks?done=1
 tool-compose-path: #/p/task/new
+tool-item-id-field: id
 tool-actions: task.set_status, task.add, task.update
-tool-cell-schema: {"title": "title", "meta": ["due"], "actions": ["task.set_status"]}
+tool-cell-schema: {"id": "id", "title": "title", "meta": ["due"], "actions": ["task.set_status"]}
 tool-action-params: {"task.set_status": {"entity_id": "$id", "status": "done"}, "task.add": {"title": "$title", "due": "$due"}, "task.update": {"entity_id": "$id", "title": "$title", "due": "$due"}}
 version: 1.0.0
 author: Solaris
@@ -39,3 +40,8 @@ tool-registry dispatch lands (#1005); this def does not change its behaviour.
   name off the row, anything else is a literal. So a row's Erledigt button is
   `{"entity_id": <row.id>, "status": "done"}` for any renderer, with no
   per-tool knowledge (#1214).
+- **Eine Aufgabe öffnen:** `tool-item-id-field: id` names the field that
+  addresses one row, so a tap on it opens `#/p/task/item/<id>` — the same route
+  every tool that declares an id field gets, built from the catalog alone
+  (#1256). A tool that declares none has no item route, and an id that no longer
+  exists lands on `#/p/start`.
