@@ -1,0 +1,31 @@
+name: release-images
+
+# The tag half of the image pipeline (#1275).
+#
+# This exists as its own file for one reason: a `paths:` filter in GitHub
+# Actions applies to the ENTIRE `push` event of a workflow, tag pushes included.
+# build-images.yml needs that filter for its `main` pushes (six images, one of
+# them a ~10 GB TensorFlow build) — but with `tags: ['v*']` in the same block a
+# release whose diff touched none of the image sources would silently build
+# nothing, leaving the tag with no images in GHCR. Splitting the tag trigger
+# into a workflow that has no `paths:` makes a tag build unconditional: there is
+# nothing here for a path filter to be attached to.
+#
+# It does NOT fix the second half of #1275: a tag created by release-please with
+# `secrets.GITHUB_TOKEN` starts no workflow at all (GitHub's no-recursion rule),
+# so this trigger only fires for a tag pushed with a real credential. Until the
+# operator adds the RELEASE_PLEASE_TOKEN PAT, the tag build still arrives via the
+# best-effort `gh workflow run` dispatch in release-please.yml — and
+# release-image-check.yml is what makes it loud when neither route worked.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: build-images
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-images.yml

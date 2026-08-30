@@ -1,4 +1,4 @@
-"""HA household notices — `POST /api/ha/notify` (#1276).
+"""HA household notices — `POST /api/ha/notify` (#1276, #1280).
 
 The automation says what happened; Solaris decides whose phone shows it. What
 is pinned here: the payload is closed, a target resolves only to a resident
@@ -7,6 +7,11 @@ no automation change, an undeliverable push neither errors nor delays the
 caller, the loopback auth of the model lease (#1260) holds, and the endpoint
 says out loud that it is not an alarm channel.
 
+Also pinned (#1280): a fired timer or reminder rides the **same** event kind,
+`category` tells the two apart so they stay separately mutable, a payload in
+the shipped v0.46.0 shape (no `category`) is still accepted, and Web Push keeps
+running unchanged next to the new event.
+
 The two tables (migrations 0020/0021) are replayed with raw SQL — a chat test
 must NOT import alembic (CI runs solaris-chat in a clean env without it).
 """
@@ -14,12 +19,14 @@ must NOT import alembic (CI runs solaris-chat in a clean env without it).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sqlite3
 
 import pytest
 
-from solaris_chat import device_token_store, ha_notify, push_store
+from solaris_chat import device_token_store, ha_notify, push_store, server
 from solaris_chat.engine.notify import EventBus, Notifier
+from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.server import build_app
 
 _SCHEMA = """
@@ -103,7 +110,14 @@ async def _settle(sent: list[str], expected: int) -> None:
 
 
 def test_payload_key_set_is_closed():
-    assert ha_notify.PAYLOAD_KEYS == ("target", "title", "body", "urgency", "actions")
+    assert ha_notify.PAYLOAD_KEYS == (
+        "target",
+        "title",
+        "body",
+        "urgency",
+        "actions",
+        "category",
+    )
     parsed = ha_notify.parse_payload(
         {"target": "anna", "title": "Waschmaschine", "body": "fertig"}
     )
@@ -144,16 +158,86 @@ def test_actions_stay_on_the_apps_existing_action_path():
     assert parsed["actions"] == [{"action": "lock.front_door", "title": "Schließen"}]
 
 
+# ---- the category, and that it was added additively ------------------------
+
+
+def test_a_category_picks_the_channel_and_defaults_to_house():
+    # Reminders and house notices must stay separately mutable: whoever mutes
+    # the laundry notice must not thereby lose a timer.
+    assert ha_notify.CATEGORIES == ("house", "timer", "reminder")
+    assert ha_notify.DEFAULT_CATEGORY == "house"
+    for category in ha_notify.CATEGORIES:
+        parsed = ha_notify.parse_payload(
+            {"target": "anna", "title": "x", "category": category}
+        )
+        assert parsed["category"] == category
+    with pytest.raises(ValueError, match="invalid_category"):
+        ha_notify.parse_payload({"target": "anna", "title": "x", "category": "alarm"})
+
+
+def test_a_v0_46_0_shaped_payload_without_a_category_is_still_accepted():
+    # The exact shipped key set. It must keep parsing, and land on `house`.
+    shipped = {
+        "target": "anna",
+        "title": "Fenster offen",
+        "body": "Küche",
+        "urgency": "high",
+        "actions": [{"action": "cover.close", "title": "Schließen"}],
+    }
+    parsed = ha_notify.parse_payload(shipped)
+    assert parsed["category"] == "house"
+    assert parsed["urgency"] == "high"
+    assert parsed["actions"] == [{"action": "cover.close", "title": "Schließen"}]
+
+
+def test_every_producer_builds_the_same_event_shape():
+    # One receiver, one shape — the producers differ only by `category`.
+    house = ha_notify.event_data("anna", "Post da", "im Briefkasten")
+    timer = ha_notify.event_data("anna", "Timer abgelaufen", "Tee", category="timer")
+    assert set(house) == set(timer)
+    assert house["kind"] == timer["kind"] == ha_notify.EVENT_KIND
+    assert house["category"] == "house" and timer["category"] == "timer"
+
+
+def test_a_wecker_is_not_given_a_category_called_alarm():
+    # `engine_timers.kind == "alarm"` is a wake-up clock, but a category named
+    # "alarm" on a best-effort channel invites exactly the misreading the
+    # module docstring exists to prevent.
+    assert ha_notify.TIMER_CATEGORIES["alarm"] == "timer"
+    assert "alarm" not in ha_notify.CATEGORIES
+
+
 # ---- it is not an alarm channel, and says so -------------------------------
+
+
+def _handler_comment() -> str:
+    """The comment block above the `/api/ha/notify` handler."""
+    src = inspect.getsource(server)
+    return src.split("# -- the household notice", 1)[1].split("async def", 1)[0]
 
 
 def test_the_endpoint_documents_that_it_is_not_an_alarm_channel():
     # In the code, not only in the ticket — otherwise somebody eventually hangs
-    # a smoke alarm off a best-effort push path.
+    # a smoke alarm off a best-effort push path. Four places, all four load
+    # bearing: the constant every response echoes, the module docstring, the
+    # handler comment, and this test.
     assert "alarm" in ha_notify.NOT_AN_ALARM
     assert "NOT AN ALARM CHANNEL" in (ha_notify.__doc__ or "")
+    assert "NOT AN ALARM CHANNEL" in _handler_comment()
     # No urgency level promises delivery; the highest one is presentation.
     assert ha_notify.URGENCY_LEVELS == ("low", "normal", "high")
+
+
+def test_the_not_an_alarm_statement_covers_the_timers_that_moved_onto_this_kind():
+    # With reminders in scope the statement is easier to read as over-cautious,
+    # which is precisely when somebody hangs a smoke alarm off it. Both places
+    # must say out loud that a category does not change the promise, and that
+    # the speaker announce stays the primary path for a timer.
+    for text in ((ha_notify.__doc__ or ""), _handler_comment()):
+        lowered = text.lower()
+        assert "timer" in lowered
+        assert "category" in lowered
+        assert "scheduler" in lowered or "announcement" in lowered
 
 
 async def test_every_response_repeats_the_best_effort_caveat(
@@ -198,6 +282,7 @@ async def test_a_notice_reaches_every_paired_device_of_that_resident(
                 "body": "ist fertig",
                 "urgency": "normal",
                 "actions": [],
+                "category": "house",
             },
         )
     ]
@@ -409,3 +494,119 @@ async def test_malformed_json_is_refused_without_delivering(
     assert (await r.json())["reason"] == "invalid_json"
     await asyncio.sleep(0.05)
     assert sent == [] and bus.published == []
+
+
+# ---- timers and reminders ride the same event kind (#1280) -----------------
+
+_TIMERS_SCHEMA = (
+    "CREATE TABLE engine_timers (id TEXT PRIMARY KEY, owner_uid TEXT, kind TEXT,"
+    " label TEXT, fire_at TEXT, session_id TEXT, room TEXT DEFAULT '',"
+    " status TEXT DEFAULT 'pending')"
+)
+
+
+class _RecordingNotifier:
+    """Stands in for the Web Push notifier, recording what it was asked to send."""
+
+    def __init__(self) -> None:
+        self.pushes: list[tuple] = []
+
+    async def push(self, uid, title, body, data=None):
+        self.pushes.append((uid, title, body, data))
+
+
+def _timer_db(tmp_path, *, kind: str, label: str) -> str:
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute(_TIMERS_SCHEMA)
+    conn.execute(
+        "INSERT INTO engine_timers (id, owner_uid, kind, label, fire_at, status)"
+        " VALUES ('t1', 'anna', ?, ?, '2000-01-01T00:00:00+00:00', 'pending')",
+        (kind, label),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.mark.parametrize(
+    ("kind", "category", "title"),
+    [
+        ("timer", "timer", "Timer abgelaufen"),
+        ("alarm", "timer", "Wecker"),
+        ("reminder", "reminder", "Erinnerung"),
+    ],
+)
+async def test_a_fired_timer_reaches_a_device_on_the_ha_event_kind(
+    tmp_path, kind, category, title
+):
+    db = _timer_db(tmp_path, kind=kind, label="Tee")
+    bus = _RecordingBus()
+    # No HA configured, so the announce fails — the notice goes out regardless.
+    sched = TimerScheduler(db, "", "", event_bus=bus)
+    await sched._fire_due()
+    assert bus.published == [
+        (
+            "anna",
+            ha_notify.EVENT_KIND,
+            {
+                "kind": ha_notify.EVENT_KIND,
+                "target": "anna",
+                "title": title,
+                "body": "Tee",
+                "urgency": "normal",
+                "actions": [],
+                "category": category,
+            },
+        )
+    ]
+
+
+async def test_a_timer_and_a_house_notice_carry_different_categories(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The whole reason for the field: muting the house's notices must not mute
+    # the resident's timers.
+    app, db, bus, _sent = _app(tmp_path, monkeypatch)
+    push_store.upsert(db, "anna", "https://push/a1", "p", "a")
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/ha/notify", json={"target": "anna", "title": "Waschmaschine"}
+    )
+    assert r.status == 202
+    conn = sqlite3.connect(db)
+    conn.execute(_TIMERS_SCHEMA)
+    conn.execute(
+        "INSERT INTO engine_timers (id, owner_uid, kind, label, fire_at, status)"
+        " VALUES ('t1', 'anna', 'timer', 'Tee', '2000-01-01T00:00:00+00:00',"
+        " 'pending')"
+    )
+    conn.commit()
+    conn.close()
+    await TimerScheduler(db, "", "", event_bus=bus)._fire_due()
+    kinds = {k for _uid, k, _d in bus.published}
+    categories = [d["category"] for _uid, _k, d in bus.published]
+    # One kind for the receiver to handle, two channels for it to offer.
+    assert kinds == {ha_notify.EVENT_KIND}
+    assert categories == ["house", "timer"]
+
+
+async def test_web_push_for_a_fired_timer_is_unchanged_by_the_native_event(tmp_path):
+    # The native channel is ADDITIVE: as long as anyone has the PWA installed,
+    # Web Push must keep delivering exactly what it delivered in v0.46.0.
+    db = _timer_db(tmp_path, kind="reminder", label="Wäsche")
+    notifier = _RecordingNotifier()
+    bus = _RecordingBus()
+    await TimerScheduler(db, "", "", notifier=notifier, event_bus=bus)._fire_due()
+    assert notifier.pushes == [
+        ("anna", "Erinnerung", "Wäsche", {"kind": "reminder", "timer_id": "t1"})
+    ]
+    assert len(bus.published) == 1
+
+
+async def test_a_scheduler_without_an_event_bus_still_fires(tmp_path):
+    # The bus is optional; a timer must never depend on it to ring.
+    db = _timer_db(tmp_path, kind="timer", label="Tee")
+    notifier = _RecordingNotifier()
+    await TimerScheduler(db, "", "", notifier=notifier)._fire_due()
+    assert len(notifier.pushes) == 1

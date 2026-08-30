@@ -3258,13 +3258,17 @@ def build_app(
 
     # -- the household notice Home Assistant posts (#1276) ------------------
     #
-    # THIS IS NOT AN ALARM CHANNEL. Delivery is best effort: an open client gets
-    # the notice over the `/napi/portal/events` SSE stream, a backgrounded PWA
-    # through Web Push, and an unreachable phone gets it when it comes back or
-    # not at all. Nothing here retries, queues, escalates or rings, and no
-    # `urgency` value changes that — see `solaris_chat.ha_notify`. A smoke
-    # detector, an intrusion or anything that must wake somebody needs a real
-    # alerting transport, which does not exist yet.
+    # THIS IS NOT AN ALARM CHANNEL, and that holds for every `category` on it —
+    # the fired timers and reminders that moved onto this event kind (#1280)
+    # included. Delivery is best effort: an open client gets the notice over the
+    # `/napi/portal/events` SSE stream, a backgrounded PWA through Web Push, and
+    # an unreachable phone gets it when it comes back or not at all. Nothing
+    # here retries, queues, escalates or rings, and no `urgency` value and no
+    # category changes that — see `solaris_chat.ha_notify`. A smoke detector, an
+    # intrusion or anything that must wake somebody needs a real alerting
+    # transport, which does not exist yet. A timer someone depends on is rung by
+    # the speaker announce in `engine/scheduler.py`, which stays its primary
+    # path; the event is the copy for a phone out of earshot.
     #
     # Auth is the model lease's loopback pattern (#1260), deliberately not a
     # third scheme and deliberately NOT under `/napi/` (Authelia-bypassed,
@@ -3320,14 +3324,14 @@ def build_app(
                 {"ok": False, "reason": "unknown_target"}, status=404
             )
         bus_uid, push_uids = resolved
-        data = {
-            "kind": ha_notify.EVENT_KIND,
-            "target": bus_uid,
-            "title": notice["title"],
-            "body": notice["body"],
-            "urgency": notice["urgency"],
-            "actions": notice["actions"],
-        }
+        data = ha_notify.event_data(
+            bus_uid,
+            notice["title"],
+            notice["body"],
+            urgency=notice["urgency"],
+            actions=notice["actions"],
+            category=notice["category"],
+        )
         if event_bus is not None:
             event_bus.publish(bus_uid, ha_notify.EVENT_KIND, data)
         task = asyncio.create_task(
@@ -3340,6 +3344,7 @@ def build_app(
             target=bus_uid,
             residents=len(push_uids),
             urgency=notice["urgency"],
+            category=notice["category"],
         )
         return web.json_response(
             {

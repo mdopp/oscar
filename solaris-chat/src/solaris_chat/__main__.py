@@ -59,6 +59,11 @@ async def _run() -> None:
         settings.vapid_private_key,
         settings.vapid_subject,
     )
+    # Live status propagation (#714): the event bus fans HA state changes to
+    # every open /p/start client via SSE; the HA-WS watcher feeds it, bounded to
+    # the residents' pinned entities, and pushes only noteworthy transitions when
+    # no client is watching that uid.
+    event_bus = EventBus()
     scheduler = TimerScheduler(
         settings.solaris_db_path,
         settings.hass_url,
@@ -66,13 +71,9 @@ async def _run() -> None:
         settings.alarm_sound_media_id,
         settings.alarm_sound_path,
         notifier=notifier,
+        event_bus=event_bus,
     )
     scheduler.start()
-    # Live status propagation (#714): the event bus fans HA state changes to
-    # every open /p/start client via SSE; the HA-WS watcher feeds it, bounded to
-    # the residents' pinned entities, and pushes only noteworthy transitions when
-    # no client is watching that uid.
-    event_bus = EventBus()
     # Per-device native watch-sets (#810): a native widget can watch an entity the
     # resident hasn't web-favorited; ha_watch unions these into its pinned owners.
     native_watch = NativeWatchStore()

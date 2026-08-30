@@ -111,26 +111,54 @@ no "process fully dead + push + no third-party" option on Android; this is it.
   - `chat` — a backgrounded/finished chat turn or a server-injected card.
   - `servicebay` — a ServiceBay **approval** event, republished from SB's SSE:
     `data:{id,kind,summary}` → show an **approval notification**. (Verdict flow below.)
-  - `ha` — a **household notice** an HA automation posted (#1276, app side
-    mdopp/solaris-android#116): `data:{kind:"ha", target, title, body, urgency, actions}`
-    → show a notification on its own channel. `urgency ∈ {low,normal,high}` is
-    **presentation only**. `actions` is `[{action,title}]` (≤3), meant to be mapped onto
+  - `ha` — a **notification** for this resident (#1276, #1280; app side
+    mdopp/solaris-android#116):
+    `data:{kind:"ha", target, title, body, urgency, actions, category}`
+    → show a notification on the channel `category` names. `urgency ∈ {low,normal,high}`
+    is **presentation only**. `actions` is `[{action,title}]` (≤3), meant to be mapped onto
     the app's existing `WidgetActionActivity` path — confirmation dialog + the
     server-side `sensitive_action` 403 gate — not a second action route.
-    > **Not an alarm channel.** This rides the same best-effort stream as everything
-    > else here: immediate while connected, delayed or lost otherwise. It is for
-    > "Waschmaschine fertig" / "Post da" / "Fenster offen" — never smoke, intrusion, or
-    > anything that has to wake somebody. No `urgency` value changes that.
 
-### Where an `ha` notice comes from (#1276)
+    **`category` (#1280, additive — new since v0.46.0)** — `"house" | "timer" | "reminder"`:
 
-HA automations no longer name a phone (`notify.mobile_app_<device>`); they name a
-**person**, and Solaris resolves that to their paired devices — so pairing a new phone
-changes no automation.
+    | value | producer | what it is |
+    |---|---|---|
+    | `house` | `POST /api/ha/notify` | a household notice an HA automation posted |
+    | `timer` | the timer scheduler | a fired timer **or** a fired Wecker (`kind:"alarm"`) |
+    | `reminder` | the timer scheduler | a fired reminder |
+
+    Give each category its **own** notification channel: they must stay separately
+    mutable — someone who mutes the house's notices must not thereby lose their timers.
+    There is deliberately **no** `alarm` category; a Wecker arrives as `timer`, because a
+    category by that name on a best-effort stream reads like a promise this stream does
+    not make.
+
+    `category` is **optional and additive**: a v0.46.0-shaped event or POST body without
+    it is still valid and means `house`, so a client written against v0.46.0 keeps
+    working. Treat an unknown future value as `house` rather than dropping the notice.
+    > **Not an alarm channel — for every category, timers and reminders included.** This
+    > rides the same best-effort stream as everything else here: immediate while
+    > connected, delayed or lost otherwise. It is for "Waschmaschine fertig" / "Post da"
+    > / "Fenster offen" — never smoke, intrusion, or anything that has to wake somebody.
+    > No `urgency` value and no `category` changes that. A Solaris timer or Wecker is
+    > rung by the **speaker announcement** on the Voice PE satellite, which stays its
+    > primary path; the `ha` event is the copy for a phone out of earshot.
+
+### Where an `ha` notice comes from (#1276, #1280)
+
+Two producers, one event kind:
+
+- **`POST /api/ha/notify`** — an HA automation (`category:"house"`). Automations no
+  longer name a phone (`notify.mobile_app_<device>`); they name a **person**, and
+  Solaris resolves that to their paired devices — so pairing a new phone changes no
+  automation.
+- **the timer scheduler** — a fired timer, Wecker or reminder (`category:"timer"` /
+  `"reminder"`), published straight onto the owner's stream. Server-side only: there is
+  no endpoint to post one, and no HTTP body to write.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/ha/notify` | `{target, title, body?, urgency?, actions?}` (closed key set) | **202** `{ok,target,residents,delivery}` · **400** bad payload · **403** not a loopback neighbour · **404** `{reason:"unknown_target"}` |
+| POST | `/api/ha/notify` | `{target, title, body?, urgency?, actions?, category?}` (closed key set) | **202** `{ok,target,residents,delivery}` · **400** bad payload, incl. `{reason:"invalid_category"}` · **403** not a loopback neighbour · **404** `{reason:"unknown_target"}` |
 
 - **Auth = reachability**, the model lease's pattern (#1260): peer-bound to the host
   loopback, and refused when an `X-Forwarded-For`/`X-Real-IP` header shows the call came
@@ -194,6 +222,10 @@ Both are Authelia-gated **and** admin-gated. The GET deliberately omits SB's
 - **Selective push:** the server sends a Web Push only when no SSE subscriber is open
   for that uid (backgrounded). Payload `{title, body, data:{kind:"chat"|"reminder"|"card_state"|"servicebay"|"ha", …}}`;
   service worker `/sw.js` shows it and deep-links on click.
+- **Unchanged by #1280.** Carrying timers and reminders on the `ha` event kind was
+  **additive**: the browser PWA still gets its fired timer as the same Web Push it always
+  did (`data:{kind:"timer"|"alarm"|"reminder", timer_id}`), and nothing here is removed
+  while anyone still has the PWA installed.
 
 > Note: device-token `/napi/push/subscribe` twins were briefly added in v0.26.0 for a
 > UnifiedPush experiment that the architecture has since rejected (native app uses SSE,

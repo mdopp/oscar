@@ -7,6 +7,11 @@ rides HA's pipeline) — HA stays the device tool, the schedule itself lives
 here, not in HA.
 Fail-open: an unreachable HA marks the timer `failed` and logs; it never
 kills the loop.
+
+The announcement is and stays the **primary** delivery. A fired timer also goes
+out to the owner's phones twice over, both best effort and both secondary: Web
+Push to an installed PWA (#713) and an `ha`-kind bus event to a paired native
+device (#1280). Neither is an alarm channel — see `solaris_chat.ha_notify`.
 """
 
 from __future__ import annotations
@@ -20,10 +25,19 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat import ha_notify
 from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.logging import log
 
 _POLL_S = 5.0
+
+# The notification headline per timer kind, shared by the Web Push and the
+# native `ha` event so a resident on both channels reads the same words.
+_TITLES = {
+    "timer": "Timer abgelaufen",
+    "alarm": "Wecker",
+    "reminder": "Erinnerung",
+}
 
 
 def _conn(db_path: str) -> sqlite3.Connection:
@@ -98,6 +112,7 @@ class TimerScheduler:
         alarm_sound_media_id: str = "",
         alarm_sound_path: str = "",
         notifier: Any = None,
+        event_bus: Any = None,
     ):
         self._db_path = db_path
         self._hass_url = hass_url.rstrip("/")
@@ -109,6 +124,12 @@ class TimerScheduler:
         # notification out to the owner's PWA. The speaker announce stays
         # primary; a missing/disabled notifier just skips the push.
         self._notifier = notifier
+        # Best-effort native notice (#1280): the same `ha` event kind an HA
+        # household notice uses, so the app needs one receiver, not two. Added
+        # ALONGSIDE the Web Push above, which is unchanged — the PWA channel
+        # only goes away if somebody decides to remove it, not as a side effect
+        # of this.
+        self._event_bus = event_bus
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -137,6 +158,7 @@ class TimerScheduler:
             timer = dict(row)
             ok = await self._announce(timer)
             await self._push(timer)
+            self._publish(timer)
             with _conn(self._db_path) as conn:
                 conn.execute(
                     "UPDATE engine_timers SET status = ? WHERE id = ?",
@@ -237,16 +259,38 @@ class TimerScheduler:
             return
         label = timer.get("label") or ""
         kind = timer.get("kind") or "timer"
-        title = {
-            "timer": "Timer abgelaufen",
-            "alarm": "Wecker",
-            "reminder": "Erinnerung",
-        }.get(kind, kind.capitalize())
+        title = _TITLES.get(kind, kind.capitalize())
         await self._notifier.push(
             timer.get("owner_uid") or "",
             title,
             label or title,
             {"kind": kind, "timer_id": timer.get("id")},
+        )
+
+    def _publish(self, timer: dict[str, Any]) -> None:
+        """Publish a fired timer on the `ha` event kind (#1280).
+
+        The same kind an HA household notice rides, carrying `category` so a
+        resident can mute the house's notices without losing their timers. This
+        is a third best-effort copy: the speaker announce above stays primary
+        and `_push` (Web Push) is untouched.
+        """
+        if self._event_bus is None:
+            return
+        uid = timer.get("owner_uid") or ""
+        if not uid:
+            return
+        kind = timer.get("kind") or "timer"
+        title = _TITLES.get(kind, kind.capitalize())
+        self._event_bus.publish(
+            uid,
+            ha_notify.EVENT_KIND,
+            ha_notify.event_data(
+                uid,
+                title,
+                timer.get("label") or title,
+                category=ha_notify.TIMER_CATEGORIES.get(kind, "reminder"),
+            ),
         )
 
     def _alarm_sound_can_play(self) -> bool:

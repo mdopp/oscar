@@ -4,6 +4,11 @@ name: ci
 # bridge, database/alembic, ServiceBay post-deploy scripts). Image builds
 # live in build-images.yml; template-/skill-/docs-only changes are gated by
 # real-box /verify, not CI.
+#
+# The path filter covers `.github/workflows/**`, not just this file: the static
+# assertions in templates/tests are the only guard over the release→image
+# trigger chain (#1275), and a guard that doesn't run when its subject changes
+# is decoration.
 
 on:
   pull_request:
@@ -13,7 +18,7 @@ on:
       - 'ruff.toml'
       - '.pre-commit-config.yaml'
       - 'scripts/**'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
       - 'solaris-chat/**/static/**'
       - 'solaris-chat/.importlinter'
   push:
@@ -24,7 +29,7 @@ on:
       - 'ruff.toml'
       - '.pre-commit-config.yaml'
       - 'scripts/**'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
       - 'solaris-chat/**/static/**'
       - 'solaris-chat/.importlinter'
 
