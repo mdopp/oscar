@@ -164,8 +164,9 @@ approvals and updates.
 - **`since`** is the `ts` of the last notice the client handled; strictly newer ones come
   back, **oldest first**. Omit it to get the whole window. An unparsable value is a
   **400** rather than a silent full replay.
-- **`now`** is the server clock in the same form: store it as the next cursor when the
-  list comes back empty, or the client keeps re-asking for the whole window.
+- **`now`** is the server clock in the same form, and it is **the next `since`** — always,
+  not only when the list comes back empty. A client that advances the cursor with its own
+  clock instead drifts against the server's and re-opens the very gap this endpoint closes.
 - **Scope** is the same two streams the SSE serves — the caller's own uid and the shared
   household one. A device token authenticates; it never sees another resident's notices.
 - **Retention: `retention_hours` = 6 hours, and the field is authoritative** — read it,
