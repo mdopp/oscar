@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.46.0](https://github.com/mdopp/solarisbay/compare/v0.45.0...v0.46.0) (2026-08-30)
+
+
+### Features
+
+* **chat:** let HA address a resident instead of a phone for notifications ([5e48c90](https://github.com/mdopp/solarisbay/commit/5e48c90beabd3b5164d074fc66b1b6cdbb7805aa)), closes [#1276](https://github.com/mdopp/solarisbay/issues/1276)
+* **chat:** open one tool entry from a catalog-driven item route ([1844ae0](https://github.com/mdopp/solarisbay/commit/1844ae098fc7cbaa72c9791b95590bdbabc45013)), closes [#1256](https://github.com/mdopp/solarisbay/issues/1256)
+
+
+### Bug Fixes
+
+* **chat:** answer 503 when the device-token store is unreadable ([6462bea](https://github.com/mdopp/solarisbay/commit/6462bea7741b41c9322a927a661af3db6c3da335)), closes [#1272](https://github.com/mdopp/solarisbay/issues/1272)
+* **chat:** make /health prove the database answers before reporting ok ([f057925](https://github.com/mdopp/solarisbay/commit/f05792538eb2effc09f05c05abebd7a380c20e06)), closes [#1273](https://github.com/mdopp/solarisbay/issues/1273)
+* **template:** mount the shared solaris volume with a shared SELinux label ([00b206f](https://github.com/mdopp/solarisbay/commit/00b206fe7beccc922b5ac61b844f057beb697316)), closes [#1271](https://github.com/mdopp/solarisbay/issues/1271)
+
 ## [0.45.0](https://github.com/mdopp/solarisbay/compare/v0.44.3...v0.45.0) (2026-08-27)
 
 
