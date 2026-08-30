@@ -558,9 +558,25 @@ def test_wakeword_trainer_unit_mounts_the_queue_db_and_work_dir(pd):
     assert "SecurityLabelDisable=true" in unit
     # The queue lives in the pod's solaris.db — without this mount the trainer
     # polls an empty path forever and every enqueued run just sits there.
-    assert "Volume=/mnt/data/solarisbay:/var/lib/solaris:Z" in unit
+    assert "Volume=/mnt/data/solarisbay:/var/lib/solaris:z" in unit
     assert "Volume=/mnt/data/solaris/wakeword-train:/work:Z" in unit
     assert "ShmSize=8g" in unit
+
+
+def test_wakeword_trainer_never_relabels_the_shared_volume_privately(pd):
+    """#1271: `:Z` on the volume the pod also mounts stamps this container's own
+    MCS categories on solaris.db, and chat/gatekeeper — recreated with a
+    different pair on every deploy — get EACCES. Box-observed 2026-08-30:
+    `container_file_t:s0:c1022,c1023` against `container_t:s0:c461,c958`, /napi
+    500ing before any auth decision. `/work` is the trainer's alone, so it may
+    stay private."""
+    unit = pd.render_wakeword_trainer_unit("/mnt/data")
+    shared = [
+        ln
+        for ln in unit.splitlines()
+        if ln.startswith("Volume=") and "/mnt/data/solarisbay:" in ln
+    ]
+    assert shared == ["Volume=/mnt/data/solarisbay:/var/lib/solaris:z"]
 
 
 def test_wakeword_trainer_unit_allows_a_long_first_pull(pd):

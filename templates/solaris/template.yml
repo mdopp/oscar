@@ -544,6 +544,12 @@ spec:
   # The Solaris data volume holds solaris.db (SQLite, populated by the
   # schema-init initContainer), the engine SOUL.md and the sb-admin-token
   # file. Reused as-is ({{DATA_DIR}}/solarisbay) — NO data migration.
+  # SHARED between schema-init, chat, gatekeeper and the wakeword-trainer
+  # Quadlet. `podman kube play` mounts a hostPath with `rbind` only and never
+  # relabels it (box-verified), so the pod cannot lock anyone out — but any
+  # companion `.container` unit that mounts this path must use `:z`, never
+  # `:Z`: a private relabel stamps its own MCS categories on solaris.db and
+  # every other container gets EACCES until someone runs chcon (#1271).
   - name: solaris-data
     hostPath:
       path: {{DATA_DIR}}/solarisbay

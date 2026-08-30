@@ -277,7 +277,9 @@ def test_the_sample_paths_are_the_ones_the_quadlet_mounts(script, trainer):
     # the host dir the trainer Quadlet mounts at /var/lib/solaris.
     pd = _load("solaris_pd", REPO / "templates" / "solaris" / "post-deploy.py")
     unit = pd.render_wakeword_trainer_unit("/mnt/data")
-    assert "Volume=/mnt/data/solarisbay:/var/lib/solaris:Z" in unit
+    # `:z`, never `:Z` (#1271): the pod shares this volume and `podman kube play`
+    # never relabels, so a private relabel here locks the pod out of solaris.db.
+    assert "Volume=/mnt/data/solarisbay:/var/lib/solaris:z" in unit
     assert str(script.DEFAULT_SAMPLES_DB) == "/var/lib/solaris/solaris.db"
     assert trainer.DB_PATH.startswith("/var/lib/solaris/")
 
