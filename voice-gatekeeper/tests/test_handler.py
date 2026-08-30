@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStart
 from wyoming.info import Describe
 
+from gatekeeper import handler as handler_mod
 from gatekeeper.handler import (
     MAX_AUDIO_BYTES,
     GatekeeperHandler,
@@ -86,3 +88,48 @@ async def test_audio_start_resets_the_byte_count():
     )
     await handler.handle_event(AudioStart(rate=16000, width=2, channels=1).event())
     assert handler._audio_bytes == 0
+
+
+class _RecordingWhisper:
+    """Stands in for the Whisper Wyoming client, capturing what we send it."""
+
+    def __init__(self, sent):
+        self._sent = sent
+
+    @classmethod
+    def bind(cls, sent):
+        class _Factory:
+            @staticmethod
+            def from_uri(_uri):
+                return cls(sent)
+
+        return _Factory
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def write_event(self, event):
+        self._sent.append(event)
+
+    async def read_event(self):
+        return Transcript(text="turn on the light").event()
+
+
+async def test_transcribe_uses_the_configured_system_language(monkeypatch):
+    """SOLARIS_LANGUAGE must reach Whisper — "de" was hardcoded here (#1288)."""
+    monkeypatch.setenv("SOLARIS_LANGUAGE", "en")
+    sent = []
+    monkeypatch.setattr(handler_mod, "AsyncClient", _RecordingWhisper.bind(sent))
+
+    handler = GatekeeperHandler(None, None, _StubInfo())
+    handler._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    handler._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00")
+    ]
+
+    assert await handler._transcribe() == "turn on the light"
+    opening = [e for e in sent if Transcribe.is_type(e.type)]
+    assert Transcribe.from_event(opening[0]).language == "en"

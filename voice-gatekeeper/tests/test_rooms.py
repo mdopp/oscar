@@ -94,3 +94,18 @@ async def test_set_room_requires_token_when_set(aiohttp_client, db_path):
         headers={"Authorization": "Bearer secret"},
     )
     assert good.status == 200
+
+
+async def test_list_rooms_requires_token_when_set(aiohttp_client, db_path):
+    """GET /rooms leaks the whole satellite->room map without this (#1290)."""
+    app = web.Application()
+    add_routes(app, db_path=db_path, push_token="secret")
+    client = await aiohttp_client(app)
+    anon = await client.get("/rooms")
+    assert anon.status == 401
+    assert (await anon.json())["reason"] == "unauthorized"
+    bad = await client.get("/rooms", headers={"Authorization": "Bearer wrong"})
+    assert bad.status == 401
+    good = await client.get("/rooms", headers={"Authorization": "Bearer secret"})
+    assert good.status == 200
+    assert "rooms" in await good.json()
