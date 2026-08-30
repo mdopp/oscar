@@ -21,8 +21,12 @@ metadata:
     # are companion Quadlets written by post-deploy, so the ServiceBay `voice`
     # stack is no longer a dependency (#456).
     servicebay.dependencies: "ollama,home-assistant,nginx,auth"
-    # One health probe for the service: the chat server serves /health (200,
-    # no auth) once up. ServiceBay can't substitute a variable placeholder
+    # One health probe for the service: /health (no auth) is a READINESS check
+    # (#1273) — it opens solaris.db read-only and answers 503 with the reason
+    # when it can't, so the tile can no longer stay green through an outage the
+    # way it did for a day in #1271. Neighbours (ollama, HA, Radicale) are
+    # deliberately NOT folded in: cascading dependencies cascade false alarms.
+    # ServiceBay can't substitute a variable placeholder
     # inside an annotation block scalar (#136), so the port is the literal
     # default; an operator changing CHAT_PORT must update this literal by hand too.
     servicebay.healthcheck: |

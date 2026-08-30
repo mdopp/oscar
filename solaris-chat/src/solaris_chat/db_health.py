@@ -48,10 +48,13 @@ def unavailable_reason(exc: BaseException) -> str | None:
 def probe(db_path: str) -> str | None:
     """None when solaris.db can be read, else a one-line reason (#1273).
 
-    Opens the file read-only and runs `SELECT 1`: cheap enough for the 30s
+    Opens the file read-only and counts its schema: cheap enough for the 30s
     healthcheck interval, and it covers permissions, SELinux labels, a missing
-    file and corruption in one shot. `mode=ro` matters — a plain
-    `sqlite3.connect` would CREATE a missing database and report health.
+    file and corruption in one shot. Two details are load-bearing. `mode=ro`,
+    because a plain `sqlite3.connect` would CREATE a missing database and then
+    report health. And reading `sqlite_master` rather than `SELECT 1`, because
+    SQLite doesn't touch the file header until something needs the schema — a
+    file of pure garbage answers `SELECT 1` quite happily.
 
     Deliberately checks only this service's own database. Ollama, Home Assistant
     and Radicale stay out of it: a probe that folds in neighbours goes red
@@ -61,7 +64,7 @@ def probe(db_path: str) -> str | None:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
         try:
-            conn.execute("SELECT 1").fetchone()
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
         finally:
             conn.close()
     except Exception as exc:

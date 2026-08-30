@@ -2412,6 +2412,35 @@ def build_app(
         raise web.HTTPFound(ANDROID_APK_URL)
 
     async def health(_request: web.Request) -> web.Response:
+        """Readiness — can this service do its job? (#1273)
+
+        The old handler returned `{"ok": True}` unconditionally, so it proved
+        only that aiohttp accepts requests. Through the whole #1271 outage the
+        ServiceBay tile stayed green while `/napi/*` threw 500 on every request
+        and the scheduler, cron and HA watchers logged errors every minute; it
+        surfaced after more than a day, because a resident picked up their phone.
+
+        So the probe opens the one dependency this service owns and is useless
+        without — `solaris.db` — read-only and reads its schema. That is exactly
+        the fault that broke: `Path.exists()` raised `PermissionError`.
+
+        NOT checked, deliberately: Ollama, Home Assistant, Radicale, Paperless.
+        A probe that folds in neighbours goes red whenever one of them coughs,
+        which makes the tile worthless again, only in the other direction —
+        Solaris without Ollama is still a working chat server with its history.
+        An overview of the neighbours belongs in its own field, never in the
+        status code ServiceBay's tile hangs on.
+
+        Stays unauthenticated, and answers the same 503 the `/napi/` gate does
+        for the same state — one state, one answer.
+        """
+        reason = await asyncio.to_thread(db_health.probe, solaris_db_path)
+        if reason:
+            log.error("health.db_unavailable", db=solaris_db_path, reason=reason)
+            return web.json_response(
+                {"ok": False, "error": "database_unavailable", "reason": reason},
+                status=503,
+            )
         return web.json_response({"ok": True})
 
     async def ha_call(request: web.Request) -> web.Response:
