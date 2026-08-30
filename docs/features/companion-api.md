@@ -138,11 +138,46 @@ no "process fully dead + push + no third-party" option on Android; this is it.
     working. Treat an unknown future value as `house` rather than dropping the notice.
     > **Not an alarm channel — for every category, timers and reminders included.** This
     > rides the same best-effort stream as everything else here: immediate while
-    > connected, delayed or lost otherwise. It is for "Waschmaschine fertig" / "Post da"
+    > connected, and otherwise only as good as the catch-up below — recoverable for a
+    > few hours if the client asks, gone after that. It is for "Waschmaschine fertig" / "Post da"
     > / "Fenster offen" — never smoke, intrusion, or anything that has to wake somebody.
     > No `urgency` value and no `category` changes that. A Solaris timer or Wecker is
     > rung by the **speaker announcement** on the Voice PE satellite, which stays its
     > primary path; the `ha` event is the copy for a phone out of earshot.
+
+### Catching up on what was missed — `GET /napi/notifications` (#1284)
+
+The stream has **no backlog**: an `ha` event exists only for whoever is subscribed at
+the instant it is published. A screen-off wake that listens for a few seconds therefore
+used to catch a notice only by luck — everything else was **lost**, not delayed. This
+endpoint is the other half: ask it once on wake, the way the fetch pass already asks for
+approvals and updates.
+
+| Method | Path | Query | Returns |
+|---|---|---|---|
+| GET | `/napi/notifications` | `since=<ts>` (optional) | `{ok, notifications:[…], now, retention_hours, delivery}` · **400** `{reason:"invalid_since"}` · **401** without a device token |
+
+- **Each item is the `ha` event exactly as it went out on the stream** — same
+  `{kind,target,title,body,urgency,actions,category}` — plus `id` (opaque, monotonic)
+  and `ts` (`2026-08-30T01:02:03.123Z`, UTC). Feed it to the same notification code the
+  SSE `ha` event feeds; nothing new to parse.
+- **`since`** is the `ts` of the last notice the client handled; strictly newer ones come
+  back, **oldest first**. Omit it to get the whole window. An unparsable value is a
+  **400** rather than a silent full replay.
+- **`now`** is the server clock in the same form: store it as the next cursor when the
+  list comes back empty, or the client keeps re-asking for the whole window.
+- **Scope** is the same two streams the SSE serves — the caller's own uid and the shared
+  household one. A device token authenticates; it never sees another resident's notices.
+- **Retention: `retention_hours` = 6 hours, and the field is authoritative** — read it,
+  don't hard-code it. The backlog is pruned on every write, by age *and* by a per-stream
+  row cap, so it cannot grow without bound. These payloads name residents and describe
+  what is happening in their home: this is a catch-up window, deliberately not a message
+  archive, and there is no way to ask for more history.
+
+> **This still promises nothing.** A notice is missed if the client never asks, asks
+> later than the window, or the burst blew past the cap. The channel stays best effort —
+> what changed is only that a screen-off gap of a few hours is now *survivable*, where
+> before it was fatal. Nothing here retries, escalates or rings.
 
 ### Where an `ha` notice comes from (#1276, #1280)
 
