@@ -3,8 +3,7 @@ name: solaris-status
 description: A read-only health probe across every Solaris dependency (solaris.db, Ollama, Home Assistant, ServiceBay-MCP, voice). Use for "is everything working?" questions.
 kind: skill
 scope: household
-command: /status
-version: 1.0.0
+version: 1.1.0
 author: Solaris
 license: MIT
 ---
@@ -12,7 +11,7 @@ license: MIT
 # Solaris — status
 
 Quick "is everything OK?" probe across every Solaris dependency. Read-only — no
-state changes. Also runnable on demand as `/status`.
+state changes. Ask for it in plain language — it is not a typeable command.
 
 ## When to use
 

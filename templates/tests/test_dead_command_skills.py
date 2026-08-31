@@ -15,6 +15,14 @@ SKILL.md files stayed live with their original `command:` bindings. The lever
 that does work is content: a file the template still ships IS overwritten. So a
 retired definition ships as a tombstone (`retired: true`, no `command:`), which
 the engine skips in every registry.
+
+#1309 added the reverse direction. `status` and `notes-search` still declared
+`command: /status` / `command: /notes` long after #965 stopped feeding skill-kind
+defs into the typeable `/` pool, so a resident who typed `/status` got "Unknown
+command" for a capability the shipped skill advertised. Declared-and-unreachable
+is the same defect as declared-and-nonexistent, so both directions are guarded:
+a def without a `command:` must not be offered, and a def *with* one must be
+routable by the surface its kind belongs to.
 """
 
 import re
@@ -77,6 +85,16 @@ def _dot_commands_offered() -> list[str]:
     return re.findall(r'\["(\.[^"]+)"', block.group(1))
 
 
+def _slash_command_kinds() -> set[str]:
+    """The def kinds `loadCommandPool()` actually feeds into the typeable `/`
+    pool, read off the `typeable` expression in index.html rather than
+    hardcoded — so this tracks the frontend if it ever changes again."""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    block = re.search(r"var typeable = (.*?);\n", html, re.S)
+    assert block, "typeable command pool not found in index.html"
+    return set(re.findall(r'kind: "([a-z]+)"', block.group(1)))
+
+
 def test_retired_cloud_audit_skills_ship_as_tombstones():
     # Present again (the additive transport can only be beaten by overwriting),
     # but carrying nothing: no command binding, no body to act on.
@@ -120,6 +138,41 @@ def test_a_def_without_a_command_is_never_offered_as_a_dot_command():
             f"{def_id} declares kind: tool with no command — the catalog would "
             f"make it typeable as '.{meta.get('tool-id') or def_id}'"
         )
+
+
+def test_a_def_that_declares_a_command_is_reachable_as_one():
+    """The reverse of the test above (#1309): a live def that declares a
+    `command:` must be routable, or it advertises a command that answers
+    "Unknown command".
+
+    Two surfaces route a declaration, and each only accepts certain kinds:
+    `.`-commands come from `DOT_COMMANDS` or the `kind: tool` catalog, and
+    `/`-commands come from `loadCommandPool()`, which since #965 draws on
+    command- and scheduler-kind defs only — never on skills. A skill has no
+    editable body, so a `/`-alias could only send its own trigger string as a
+    turn, which is text and not a skill invocation.
+    """
+    slash_kinds = _slash_command_kinds()
+    offered = set(_dot_commands_offered())
+    for path, (meta, _text) in _live_defs().items():
+        cmd = meta.get("command", "").strip()
+        if not cmd:
+            continue
+        kind = meta.get("kind", "").strip()
+        rel = path.relative_to(ROOT)
+        if cmd.startswith("."):
+            assert kind == "tool" or cmd in offered, (
+                f"{rel} declares {cmd} but is kind: {kind or '(none)'} and is not "
+                f"in DOT_COMMANDS — nothing routes it"
+            )
+        elif cmd.startswith("/"):
+            assert kind in slash_kinds, (
+                f"{rel} declares {cmd} but the `/` pool is built from "
+                f"{sorted(slash_kinds)} defs only — typing {cmd} answers "
+                f"'Unknown command'. Drop the declaration or route the kind."
+            )
+        else:
+            raise AssertionError(f"{rel} declares {cmd!r}: no surface has that prefix")
 
 
 def test_every_offered_dot_command_has_a_live_def_declaring_it():
