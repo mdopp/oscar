@@ -96,7 +96,14 @@ class _RecordingBus(EventBus):
         super().publish(uid, kind, data)
 
 
-def _app(tmp_path, monkeypatch, *, default_uid: str = "household"):
+def _app(
+    tmp_path,
+    monkeypatch,
+    *,
+    default_uid: str = "household",
+    hass_url: str = "",
+    hass_token: str = "",
+):
     """The app plus (bus, sent-endpoints) — Web Push stubbed at the wire."""
     db = _db(tmp_path)
     sent: list[str] = []
@@ -112,6 +119,8 @@ def _app(tmp_path, monkeypatch, *, default_uid: str = "household"):
         notes_dir=str(tmp_path),
         event_bus=bus,
         notifier=Notifier(db, "vapid-pub", "vapid-priv"),
+        hass_url=hass_url,
+        hass_token=hass_token,
     )
     return app, db, bus, sent
 
@@ -157,23 +166,201 @@ def test_payload_rejects_bad_values():
         ha_notify.parse_payload({"target": "anna", "title": ""})
     with pytest.raises(ValueError, match="invalid_urgency"):
         ha_notify.parse_payload({"target": "anna", "title": "x", "urgency": "alarm"})
-    for bad in ("x", [{"action": "close", "title": ""}], [{"action": "close"}] * 9):
+    close = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
+    for bad in (
+        "x",
+        [close | {"title": ""}],
+        [close] * 9,
+        # The retired one-string shape: refused, not guessed at.
+        [{"action": "cover.close_cover", "title": "Schließen"}],
+        # Both halves must be named, and the service must belong to the entity.
+        [{"entity_id": "cover.kueche", "title": "Schließen"}],
+        [close | {"service": "close_cover"}],
+        [close | {"service": "light.turn_on"}],
+        [close | {"entity_id": "kueche"}],
+        # `confirm` is a boolean, not a string a receiver has to interpret.
+        [close | {"confirm": "true"}],
+    ):
         with pytest.raises(ValueError, match="invalid_actions"):
             ha_notify.parse_payload({"target": "a", "title": "x", "actions": bad})
 
 
-def test_actions_stay_on_the_apps_existing_action_path():
-    # `{action,title}` and nothing else: the app maps this onto its
-    # WidgetActionActivity path (confirm dialog + `sensitive_action` gate).
-    assert ha_notify.ACTION_KEYS == ("action", "title")
+def test_an_action_names_the_entity_and_the_service_separately():
+    # `{entity_id,service,title,confirm}` and nothing else (#1283): the receiver
+    # copies entity/service verbatim into the app's existing
+    # WidgetActionActivity path (confirm dialog + `sensitive_action` gate) and
+    # infers nothing from the shape of a string.
+    assert ha_notify.ACTION_KEYS == ("entity_id", "service", "title", "confirm")
+    action = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
     parsed = ha_notify.parse_payload(
-        {
-            "target": "anna",
-            "title": "Tür offen",
-            "actions": [{"action": "lock.front_door", "title": "Schließen"}],
-        }
+        {"target": "anna", "title": "Fenster offen", "actions": [action]}
     )
-    assert parsed["actions"] == [{"action": "lock.front_door", "title": "Schließen"}]
+    # `confirm` is added by the server; the caller supplied three keys.
+    assert parsed["actions"] == [action | {"confirm": True}]
+
+
+def test_a_notification_can_never_carry_an_unlock():
+    # The one outcome the confirm gate exists to prevent, on the one surface
+    # that reaches the lock screen. `lock` and `alarm_control_panel` are not
+    # values this field can hold, so an unlock is unrepresentable — not merely
+    # discouraged. Same choice as the missing `alarm` category.
+    assert "lock" not in ha_notify.ACTIONABLE_DOMAINS
+    assert "alarm_control_panel" not in ha_notify.ACTIONABLE_DOMAINS
+    for entity_id, service in (
+        ("lock.haustuer", "lock.unlock"),
+        ("lock.haustuer", "lock.open"),
+        ("lock.haustuer", "lock.lock"),
+        ("alarm_control_panel.haus", "alarm_control_panel.alarm_disarm"),
+        ("button.tueroeffner", "button.press"),
+    ):
+        forbidden = [{"entity_id": entity_id, "service": service, "title": "Auf"}]
+        with pytest.raises(ValueError, match="forbidden_action_domain"):
+            ha_notify.parse_payload(
+                {"target": "anna", "title": "Tür", "actions": forbidden}
+            )
+        # And not through a producer that never saw the HTTP edge either.
+        with pytest.raises(ValueError, match="forbidden_action_domain"):
+            ha_notify.event_data("anna", "Tür", actions=forbidden)
+
+
+# ---- `confirm`: the receiver is told, never left to guess (#1283) ----------
+
+
+def _cover_action(entity_id: str, **extra) -> dict:
+    return {
+        "entity_id": entity_id,
+        "service": "cover.open_cover",
+        "title": "Öffnen",
+    } | extra
+
+
+def _parse_one(action: dict, device_classes: dict | None = None) -> dict:
+    parsed = ha_notify.parse_payload(
+        {"target": "anna", "title": "x", "actions": [action]}, device_classes
+    )
+    return parsed["actions"][0]
+
+
+def test_a_garage_door_action_says_it_needs_a_confirmation():
+    # `cover` is two unrelated things wearing one domain. The garage door stays
+    # openable from the notification — the receiver is simply told to ask first,
+    # instead of guessing that from the entity's name.
+    assert ha_notify.CONFIRM_COVER_CLASSES == frozenset(
+        {"garage", "door", "gate", "window"}
+    )
+    for device_class in sorted(ha_notify.CONFIRM_COVER_CLASSES):
+        action = _cover_action("cover.tor")
+        assert _parse_one(action, {"cover.tor": device_class})["confirm"] is True
+    # Case is HA's business, not the contract's.
+    assert _parse_one(_cover_action("cover.tor"), {"cover.tor": "Garage"})["confirm"]
+
+
+def test_a_shutter_action_does_not_ask_and_neither_do_the_harmless_domains():
+    # The daily blind must not grow a confirmation dialog — that is how a
+    # confirmation stops meaning anything.
+    for device_class in ("shutter", "blind", "awning", "curtain", "shade"):
+        action = _cover_action("cover.kueche")
+        assert _parse_one(action, {"cover.kueche": device_class})["confirm"] is False
+    for entity_id, service in (
+        ("light.flur", "light.turn_on"),
+        ("switch.kaffee", "switch.turn_on"),
+        ("climate.bad", "climate.set_temperature"),
+    ):
+        action = {"entity_id": entity_id, "service": service, "title": "An"}
+        assert _parse_one(action)["confirm"] is False
+
+
+def test_a_cover_whose_class_cannot_be_resolved_confirms():
+    # HA unreachable, entity unknown, or simply no device_class set: unknown
+    # means confirm. Every garage door confirming is correct-but-annoying; a
+    # garage door not confirming is the bug.
+    action = _cover_action("cover.unbekannt")
+    for classes in (None, {}, {"cover.andere": "shutter"}, {"cover.unbekannt": ""}):
+        assert _parse_one(action, classes)["confirm"] is True
+    # Same through the producer path that never sees the HTTP edge.
+    event = ha_notify.event_data("anna", "Tor", actions=[action])
+    assert event["actions"][0]["confirm"] is True
+
+
+def test_a_caller_can_raise_confirm_but_never_lower_it():
+    # The server computes it; the caller's flag is OR'd in, never substituted.
+    lowered = _cover_action("cover.tor", confirm=False)
+    assert _parse_one(lowered, {"cover.tor": "garage"})["confirm"] is True
+    assert _parse_one(lowered, None)["confirm"] is True
+    # Raising is allowed — an automation may want its own light confirmed.
+    raised = {
+        "entity_id": "light.flur",
+        "service": "light.turn_on",
+        "title": "An",
+        "confirm": True,
+    }
+    assert _parse_one(raised)["confirm"] is True
+    # And a raise survives the re-validation in event_data.
+    event = ha_notify.event_data("anna", "Flur", actions=[_parse_one(raised)])
+    assert event["actions"][0]["confirm"] is True
+
+
+async def test_the_endpoint_confirms_a_cover_it_cannot_classify(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # HA is not configured here, so no device_class resolves — the delivered
+    # event must still carry `confirm: true` rather than omitting the question.
+    app, db, bus, _sent = _app(tmp_path, monkeypatch)
+    push_store.upsert(db, "anna", "https://push/a1", "p", "a")
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/ha/notify",
+        json={
+            "target": "anna",
+            "title": "Tor offen",
+            "actions": [_cover_action("cover.garagentor")],
+        },
+    )
+    assert r.status == 202
+    assert bus.published[0][2]["actions"][0]["confirm"] is True
+
+
+async def test_the_endpoint_lowers_confirm_only_for_a_resolved_harmless_cover(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The one path that may lower it: the read-only entity-state read the card
+    # path already does. A garage keeps its confirmation, a shutter loses it.
+    classes = {"cover.garagentor": "garage", "cover.kueche": "shutter"}
+
+    async def _fake_card(_url, _token, entity_id):
+        if entity_id not in classes:
+            return None
+        return {"entity_id": entity_id, "device_class": classes[entity_id]}
+
+    monkeypatch.setattr(server, "fetch_card", _fake_card)
+    app, db, bus, _sent = _app(
+        tmp_path, monkeypatch, hass_url="http://ha", hass_token="t"
+    )
+    push_store.upsert(db, "anna", "https://push/a1", "p", "a")
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/ha/notify",
+        json={
+            "target": "anna",
+            "title": "Haus",
+            "actions": [
+                _cover_action("cover.garagentor"),
+                _cover_action("cover.kueche"),
+                _cover_action("cover.unbekannt"),
+            ],
+        },
+    )
+    assert r.status == 202
+    delivered = bus.published[0][2]["actions"]
+    assert [a["confirm"] for a in delivered] == [True, False, True]
 
 
 # ---- the category, and that it was added additively ------------------------
@@ -193,19 +380,25 @@ def test_a_category_picks_the_channel_and_defaults_to_house():
         ha_notify.parse_payload({"target": "anna", "title": "x", "category": "alarm"})
 
 
-def test_a_v0_46_0_shaped_payload_without_a_category_is_still_accepted():
-    # The exact shipped key set. It must keep parsing, and land on `house`.
+def test_a_payload_without_a_category_is_still_accepted():
+    # `category` stays optional: the shipped key set without it must keep
+    # parsing, and land on `house`. (The action *shape* did change — #1283.)
+    action = {
+        "entity_id": "cover.kueche",
+        "service": "cover.close_cover",
+        "title": "Schließen",
+    }
     shipped = {
         "target": "anna",
         "title": "Fenster offen",
         "body": "Küche",
         "urgency": "high",
-        "actions": [{"action": "cover.close", "title": "Schließen"}],
+        "actions": [action],
     }
     parsed = ha_notify.parse_payload(shipped)
     assert parsed["category"] == "house"
     assert parsed["urgency"] == "high"
-    assert parsed["actions"] == [{"action": "cover.close", "title": "Schließen"}]
+    assert parsed["actions"] == [action | {"confirm": True}]
 
 
 def test_every_producer_builds_the_same_event_shape():
