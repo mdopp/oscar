@@ -43,7 +43,11 @@ async def test_fast_turn_runs_on_sol():
     fake = _FakeEngine(["Licht ist an."])
     client = _client(fake)
     reply = await client.converse(
-        text="schalte das licht an", uid="michael", endpoint="e", trace_id="t"
+        text="schalte das licht an",
+        uid="michael",
+        endpoint="e",
+        trace_id="t",
+        remember=True,
     )
     assert reply == "Licht ist an."
     assert fake.bodies[0]["model"] == MODEL
@@ -62,6 +66,7 @@ async def test_thorough_cue_stays_on_the_one_model():
         uid="michael",
         endpoint="e",
         trace_id="t",
+        remember=True,
     )
     assert fake.bodies[0]["model"] == MODEL
 
@@ -74,6 +79,7 @@ async def test_room_hint_prefixes_turn():
         uid="michael",
         endpoint="e",
         trace_id="t",
+        remember=True,
         location="Büro",
     )
     sent = fake.bodies[0]["messages"][-1]["content"]
@@ -84,9 +90,11 @@ async def test_room_hint_prefixes_turn():
 async def test_history_rides_following_turns():
     fake = _FakeEngine(["Antwort eins.", "Antwort zwei."])
     client = _client(fake)
-    await client.converse(text="erste frage", uid="michael", endpoint="e", trace_id="t")
     await client.converse(
-        text="zweite frage", uid="michael", endpoint="e", trace_id="t"
+        text="erste frage", uid="michael", endpoint="e", trace_id="t", remember=True
+    )
+    await client.converse(
+        text="zweite frage", uid="michael", endpoint="e", trace_id="t", remember=True
     )
     second = fake.bodies[1]["messages"]
     contents = [m["content"] for m in second]
@@ -95,11 +103,37 @@ async def test_history_rides_following_turns():
     assert second[-1]["content"] == "zweite frage"
 
 
+async def test_unmatched_speakers_never_share_a_history_bucket():
+    # Two people speaker-ID failed to match — a delivery person at the door,
+    # then hours later a babysitter — both arrive as uid `guest`. Before #1289
+    # that single sentinel keyed one rolling history, so the second person's
+    # turn was prompted with the first person's exchange.
+    fake = _FakeEngine(["In Tokio ist es 20 Uhr.", "Es ist 12 Uhr."])
+    client = _client(fake)
+    await client.converse(
+        text="wie spät ist es in tokio",
+        uid="guest",
+        endpoint="voice-pe:flur",
+        trace_id="t1",
+        remember=False,
+    )
+    await client.converse(
+        text="wie spät ist es",
+        uid="guest",
+        endpoint="voice-pe:flur",
+        trace_id="t2",
+        remember=False,
+    )
+    second = fake.bodies[1]["messages"]
+    assert second == [{"role": "user", "content": "wie spät ist es"}]
+    assert client._history == {}
+
+
 async def test_error_returns_empty_and_keeps_history_clean():
     fake = _FakeEngine(status=500)
     client = _client(fake)
     reply = await client.converse(
-        text="hallo", uid="michael", endpoint="e", trace_id="t"
+        text="hallo", uid="michael", endpoint="e", trace_id="t", remember=True
     )
     assert reply == ""
     # The failed turn must not pollute the rolling history: the next turn
@@ -109,14 +143,18 @@ async def test_error_returns_empty_and_keeps_history_clean():
         "http://engine/ollama", "", transport=httpx.MockTransport(fake2.handler)
     )
     client2._history = client._history  # carry over the (empty) history map
-    await client2.converse(text="hallo", uid="michael", endpoint="e", trace_id="t")
+    await client2.converse(
+        text="hallo", uid="michael", endpoint="e", trace_id="t", remember=True
+    )
     assert len(fake2.bodies[0]["messages"]) == 1
 
 
 async def test_bearer_token_sent_when_set():
     fake = _FakeEngine()
     client = _client(fake, token="secret")
-    await client.converse(text="hallo", uid="michael", endpoint="e", trace_id="t")
+    await client.converse(
+        text="hallo", uid="michael", endpoint="e", trace_id="t", remember=True
+    )
     assert fake.headers[0].get("authorization") == "Bearer secret"
 
 
