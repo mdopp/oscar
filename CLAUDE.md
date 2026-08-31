@@ -75,6 +75,24 @@ work back, that rule is wrong: fix the rule, then keep going.
   checking the Solaris runtime — not by CI alone (CI only builds images). If
   you can't verify on the box, say so explicitly.
 
+## Retiring a delivered artifact — replace it, never delete it
+
+ServiceBay's asset-transport is **additive and has no delete path at all** (confirmed in
+their code; `mdopp/servicebay#2703`). A file removed from a template's source tree stays
+on the box forever, serving its old content.
+
+- To retire anything under `templates/**` that gets delivered — a skill, a hook, a tool
+  def — **replace it with a tombstone**: the file returns, stripped of its `command:`
+  binding and of anything the model can act on. A `git rm` looks right in review and
+  changes nothing on the box.
+- Then check one level up: a tombstone still listed as a capability or a dot-command is
+  the same defect one storey higher — something offered that does nothing.
+
+**Why:** #1293 retired `/audit` and `/debug` because they instructed the model to confirm
+a write it could not make. The deletion merged, CI was green, and both commands kept
+working in production. The box verify caught it; four more skills deleted in June turned
+out to be still live, one of them binding the same hook as its own replacement.
+
 ## Releases
 
 - Releases are automated via **release-please**. It maintains a release PR that

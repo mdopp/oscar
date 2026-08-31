@@ -17,6 +17,7 @@ import asyncio
 from aiohttp import web
 from gatekeeper.logging import log
 
+from .auth import auth_ok
 from .rooms_store import delete_room, list_rooms, set_room
 
 VOICE_PE_PREFIX = "voice-pe:"
@@ -24,17 +25,11 @@ _MAX_ROOM_LEN = 64
 _MAX_SAT_LEN = 128
 
 
-def _auth_ok(request: web.Request, token: str) -> bool:
-    if not token:
-        return True
-    return request.headers.get("Authorization", "") == f"Bearer {token}"
-
-
 def add_routes(app: web.Application, *, db_path: str, push_token: str) -> None:
     """Attach room endpoints to an existing aiohttp app (shares the push port)."""
 
     async def set_room_route(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )
@@ -76,7 +71,7 @@ def add_routes(app: web.Application, *, db_path: str, push_token: str) -> None:
         )
 
     async def list_rooms_route(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )
@@ -84,7 +79,7 @@ def add_routes(app: web.Application, *, db_path: str, push_token: str) -> None:
         return web.json_response({"rooms": rooms})
 
     async def delete_room_route(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )

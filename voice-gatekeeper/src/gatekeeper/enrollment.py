@@ -25,6 +25,7 @@ import re
 from aiohttp import web
 from gatekeeper.logging import log
 
+from .auth import auth_ok
 from .embeddings_store import (
     EMBEDDING_DIM,
     delete_embedding,
@@ -34,12 +35,6 @@ from .embeddings_store import (
 from .speaker import average_embeddings, get_extractor
 
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-
-
-def _auth_ok(request: web.Request, token: str) -> bool:
-    if not token:
-        return True
-    return request.headers.get("Authorization", "") == f"Bearer {token}"
 
 
 def add_routes(
@@ -57,7 +52,7 @@ def add_routes(
     the push app keeps the gatekeeper to a single sidecar HTTP port."""
 
     async def enrol(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )
@@ -166,7 +161,7 @@ def add_routes(
         )
 
     async def list_enrolments(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )
@@ -174,7 +169,7 @@ def add_routes(
         return web.json_response({"uids": uids})
 
     async def delete_enrolment(request: web.Request) -> web.Response:
-        if not _auth_ok(request, push_token):
+        if not auth_ok(request, push_token):
             return web.json_response(
                 {"ok": False, "reason": "unauthorized"}, status=401
             )
