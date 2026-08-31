@@ -63,6 +63,34 @@ that no notice can name a lock at all. Refusing it here makes an unlock
 **unrepresentable** in this payload rather than merely discouraged, the same
 choice as the deliberately missing `alarm` category below.
 
+## `confirm` says whether the receiver must ask first (#1283)
+
+`cover` is two unrelated things wearing one domain: shutters, blinds, awnings
+and curtains (harmless) and garage doors, gates, entrance doors and window
+openers (not harmless). The domain alone cannot tell them apart, so a receiver
+would have to guess from the entity name — exactly the guessing this whole
+change exists to abolish. So the answer is stated in the payload: every action
+carries a boolean `confirm`.
+
+It is **computed here, from the entity's HA `device_class`**, and never taken
+on trust from the caller. A caller may pass `confirm: true` to raise it (an
+automation that wants its own light action confirmed is welcome to); a caller
+can never lower it — a `confirm: false` on a garage door is ignored.
+
+The derivation **fails closed**. A cover whose `device_class` is `garage`,
+`door`, `gate` or `window` confirms, and so does a cover whose class could not
+be resolved at all — HA unreachable, entity unknown, no class set. Every garage
+door confirming is correct-but-annoying; a garage door not confirming is the
+bug. Resolution lives at the HTTP edge (`server.py`, the read-only
+`/api/states/<id>` read the card path already does) and is passed in; with no
+classes in hand every cover confirms, so `event_data` is safe for a producer
+that never resolved anything.
+
+This is deliberately NOT `engine/confirm.py`'s `SENSITIVE_COVER_CLASSES`: that
+set gates a *chat* action and leaves `window` out on purpose (a window in a
+conversation is a blind you open every morning). On a lock screen a window
+opener is a hole in the house, and a notification action is not a conversation.
+
 The payload key set is closed, like the model lease (#1260) — an unknown field
 is refused rather than ignored, so the contract with HA (and with the app,
 `docs/features/companion-api.md`) cannot drift by accident. `category` was
@@ -73,6 +101,7 @@ payload the shipped v0.46.0 contract allows is still accepted unchanged.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from solaris_chat import device_token_store, push_store
@@ -106,15 +135,26 @@ DEFAULT_CATEGORY = "house"
 TIMER_CATEGORIES = {"timer": "timer", "alarm": "timer", "reminder": "reminder"}
 # One action, as the app maps it onto its existing WidgetActionActivity path
 # (confirmation dialog + the server-side `sensitive_action` gate) — a second
-# action route would be redundant and the weaker choice security-wise. All three
-# keys are required: the receiver copies `entity_id`/`service` verbatim into
-# `/napi/ha/call` and derives nothing (#1283).
-ACTION_KEYS = ("entity_id", "service", "title")
+# action route would be redundant and the weaker choice security-wise. The
+# receiver copies `entity_id`/`service` verbatim into `/napi/ha/call` and
+# derives nothing (#1283). A closed set on both sides: every emitted action
+# carries all four keys.
+ACTION_KEYS = ("entity_id", "service", "title", "confirm")
+
+# What a caller must supply. `confirm` is the one key a caller may omit,
+# because the server computes it — passing it can only ever raise it.
+_REQUIRED_ACTION_KEYS = ("entity_id", "service", "title")
 
 # Which domains may EVER be actionable from a notification — see the module
 # docstring. `lock` and `alarm_control_panel` are absent by design; adding
 # either would put an unlock one tap from the lock screen.
 ACTIONABLE_DOMAINS = ("light", "switch", "cover", "climate")
+
+# Cover device_classes that must be confirmed before the receiver acts. The
+# complement — shutter, blind, awning, curtain, shade, damper — is the daily
+# blind nobody should have to confirm. Anything not in either list (including
+# an unresolved class) confirms, because it is not provably harmless.
+CONFIRM_COVER_CLASSES = frozenset({"garage", "door", "gate", "window"})
 
 # HA slug pair, for both `entity_id` and the dotted `service`. A single-segment
 # or three-segment value is refused rather than repaired.
@@ -129,17 +169,41 @@ MAX_TITLE = 120
 MAX_BODY = 500
 
 
-def _parse_actions(raw: Any) -> list[dict[str, str]]:
+def needs_confirm(
+    entity_id: str, device_classes: Mapping[str, str] | None = None
+) -> bool:
+    """Whether the receiver must ask the resident before running this action.
+
+    Only `cover` is ambiguous — HA gives a garage door and a kitchen blind the
+    same domain, and the entity name is not evidence. So a cover confirms
+    unless its `device_class` proves it harmless, and an unresolved class
+    (absent from `device_classes`, or empty) confirms too. Everything else —
+    `light`, `switch`, `climate` — does not."""
+    if entity_id.split(".", 1)[0] != "cover":
+        return False
+    device_class = (device_classes or {}).get(entity_id) or ""
+    if not device_class.strip():
+        return True
+    return device_class.strip().lower() in CONFIRM_COVER_CLASSES
+
+
+def _parse_actions(
+    raw: Any, device_classes: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if not isinstance(raw, list) or len(raw) > MAX_ACTIONS:
         raise ValueError("invalid_actions")
-    actions: list[dict[str, str]] = []
+    actions: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) != set(ACTION_KEYS):
+        if not isinstance(item, dict) or set(item) - set(ACTION_KEYS):
             raise ValueError("invalid_actions")
-        values = [item[key] for key in ACTION_KEYS]
+        if any(key not in item for key in _REQUIRED_ACTION_KEYS):
+            raise ValueError("invalid_actions")
+        values = [item[key] for key in _REQUIRED_ACTION_KEYS]
         if not all(isinstance(v, str) and v.strip() for v in values):
+            raise ValueError("invalid_actions")
+        if "confirm" in item and not isinstance(item["confirm"], bool):
             raise ValueError("invalid_actions")
         entity_id, service, title = (v.strip() for v in values)
         if not _DOTTED_RE.match(entity_id) or not _DOTTED_RE.match(service):
@@ -149,12 +213,28 @@ def _parse_actions(raw: Any) -> list[dict[str, str]]:
             raise ValueError("invalid_actions")
         if domain not in ACTIONABLE_DOMAINS:
             raise ValueError("forbidden_action_domain")
-        actions.append({"entity_id": entity_id, "service": service, "title": title})
+        # The caller's flag is OR'd in, never substituted: it can raise a
+        # confirm the server did not ask for, and can never lower one it did.
+        confirm = needs_confirm(entity_id, device_classes) or bool(item.get("confirm"))
+        actions.append(
+            {
+                "entity_id": entity_id,
+                "service": service,
+                "title": title,
+                "confirm": confirm,
+            }
+        )
     return actions
 
 
-def parse_payload(body: Any) -> dict[str, Any]:
-    """The normalised notice from a request body, or `ValueError(<reason>)`."""
+def parse_payload(
+    body: Any, device_classes: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """The normalised notice from a request body, or `ValueError(<reason>)`.
+
+    `device_classes` maps an action's `entity_id` to its HA `device_class`; an
+    entity missing from it is treated as unresolved and its action confirms.
+    Omitting it therefore confirms every `cover` — the fail-closed default."""
     if not isinstance(body, dict):
         raise ValueError("invalid_payload")
     if set(body) - set(PAYLOAD_KEYS):
@@ -179,7 +259,7 @@ def parse_payload(body: Any) -> dict[str, Any]:
         "title": title.strip()[:MAX_TITLE],
         "body": text.strip()[:MAX_BODY],
         "urgency": urgency,
-        "actions": _parse_actions(body.get("actions")),
+        "actions": _parse_actions(body.get("actions"), device_classes),
         "category": category,
     }
 
@@ -190,8 +270,9 @@ def event_data(
     body: str = "",
     *,
     urgency: str = DEFAULT_URGENCY,
-    actions: list[dict[str, str]] | None = None,
+    actions: list[dict[str, Any]] | None = None,
     category: str = DEFAULT_CATEGORY,
+    device_classes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The `ha` event body, one shape for every producer.
 
@@ -201,7 +282,8 @@ def event_data(
 
     Actions are re-validated here, not just at the HTTP edge: this is the one
     place every producer passes through, so a lock or alarm action cannot reach
-    a phone even from a caller that never saw `parse_payload` (#1283).
+    a phone, and no cover can lose its `confirm`, even from a caller that never
+    saw `parse_payload` (#1283). Without `device_classes` every cover confirms.
     """
     return {
         "kind": EVENT_KIND,
@@ -209,7 +291,7 @@ def event_data(
         "title": title,
         "body": body,
         "urgency": urgency,
-        "actions": _parse_actions(actions),
+        "actions": _parse_actions(actions, device_classes),
         "category": category,
     }
 

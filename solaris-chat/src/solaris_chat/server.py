@@ -3299,6 +3299,29 @@ def build_app(
             except Exception as e:  # noqa: BLE001 — best effort, per resident
                 log.error("chat.ha_notify.push_failed", uid=uid, error=str(e))
 
+    async def _notice_cover_classes(actions: list[dict[str, Any]]) -> dict[str, str]:
+        """`entity_id -> device_class` for every `cover` a notice action names.
+
+        The only thing that may lower an action's `confirm` from the fail-closed
+        default (#1283). Reuses the read-only `/api/states/<id>` read the card
+        path and the `/napi/ha/call` confirm gate already do — no second HA
+        client — for at most `MAX_ACTIONS` entities. An entity that does not
+        resolve, because HA is unreachable or unconfigured or the id is unknown,
+        is simply absent, and `ha_notify` then keeps `confirm: true`.
+        """
+        classes: dict[str, str] = {}
+        if not hass_url or not hass_token:
+            return classes
+        cover_ids = sorted(
+            {a["entity_id"] for a in actions if a["entity_id"].startswith("cover.")}
+        )
+        for entity_id in cover_ids:
+            card = await fetch_card(hass_url, hass_token, entity_id)
+            device_class = (card or {}).get("device_class")
+            if device_class:
+                classes[entity_id] = str(device_class)
+        return classes
+
     async def ha_notify_post(request: web.Request) -> web.Response:
         if not is_loopback_caller(request):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
@@ -3312,6 +3335,13 @@ def build_app(
             notice = ha_notify.parse_payload(body)
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
+        # A `cover` is a garage door or a blind and the domain cannot tell them
+        # apart, so the parse above already confirmed every one of them. Reading
+        # the real device_class is the only thing that lowers that, and the raw
+        # body is re-parsed with it so the fail-closed default cannot stick.
+        device_classes = await _notice_cover_classes(notice["actions"])
+        if device_classes:
+            notice = ha_notify.parse_payload(body, device_classes)
         resolved = ha_notify.resolve(
             solaris_db_path, notice["target"], household_uid=default_uid
         )
@@ -3331,6 +3361,7 @@ def build_app(
             urgency=notice["urgency"],
             actions=notice["actions"],
             category=notice["category"],
+            device_classes=device_classes,
         )
         if event_bus is not None:
             event_bus.publish(bus_uid, ha_notify.EVENT_KIND, data)
