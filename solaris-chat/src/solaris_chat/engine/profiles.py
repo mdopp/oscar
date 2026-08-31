@@ -47,6 +47,7 @@ from solaris_chat.engine.tools.skill_promotion import (
     build_skill_draft_tools,
     build_skill_promotion_tools,
 )
+from solaris_chat.engine.tools.status import build_status_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
@@ -148,6 +149,17 @@ def build_engine_clients(
     household_tools += build_timer_tools(db_path, _current_uid, _current_room)
     household_tools += build_wakeword_tools(db_path, _current_uid)
     household_tools += choice_tools
+    # get_solaris_status (#1310): "läuft alles?" is a reasonable resident
+    # question, and with nothing to call the model answered it by inventing
+    # sensor entities. This probe is household-only and household-shaped — three
+    # booleans, no arguments, no ServiceBay reach; the admin toolbox stays the
+    # only place `get_health_checks`/`diagnose`/`get_logs` live.
+    household_tools += build_status_tools(
+        db_path=db_path,
+        hass_url=hass_url,
+        hass_token=hass_token,
+        gatekeeper_url=gatekeeper_url,
+    )
     # calendar_create (#1125): writes straight to Radicale via the existing
     # dav_client. Registered only where that DAV target exists, so an install
     # without Radicale doesn't pay the tool schema's prefill (G-2).

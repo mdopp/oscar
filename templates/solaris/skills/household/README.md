@@ -10,10 +10,10 @@ The `solaris` ServiceBay template bind-mounts this directory into the `solaris-c
 
 | Directory | `name:` | Phase | One-liner |
 |---|---|---|---|
-| `status/` | `solaris-status` | 0 | Pings every Solaris dependency (`solaris.db`, Ollama, Home Assistant, ServiceBay-MCP; voice probes once Phase 1 voice is deployed) and returns per-component status. Read-only. |
+| `status/` | `solaris-status` | 0 | Answers "läuft alles?" from the household profile's own `get_solaris_status` probe — Gedächtnis (`solaris.db`), Haussteuerung, Sprachsteuerung. No arguments, read-only, no ServiceBay reach. |
 | `problem-summarizer/` | `solaris-problem-summarizer` | 0 | Distils resolved problem→indicators→solution sequences from system logs + past diagnostic chats into a structured Markdown KB at `/opt/data/notes/knowledge-base/troubleshooting.md`. On-request + weekly cron. |
 
-Both operate through ServiceBay-MCP (`get_health_checks`/`diagnose`) and the engine's own tools — no external `solaris_*` libraries or separate companion scripts.
+`problem-summarizer` operates through ServiceBay-MCP and the engine's own tools; `status` deliberately does not (#1310). ServiceBay's toolbox is the operator's — lifecycle, logs, deploys — and it is registered only on the admin profile, so a household pack that instructs `get_health_checks`/`diagnose` names something the profile cannot reach and the model fills the gap by inventing. No external `solaris_*` libraries or separate companion scripts either way.
 
 ## What's *not* a skill in Solaris
 
