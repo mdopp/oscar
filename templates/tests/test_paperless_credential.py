@@ -150,6 +150,7 @@ def test_mint_token_unreachable_returns_none(pd, monkeypatch):
 
 
 def test_converge_mints_persists_and_stamps(pd, tmp_path, monkeypatch):
+    monkeypatch.setattr(pd, "converge_paperless_superuser", lambda *a: True)
     monkeypatch.setattr(pd, "post_json", lambda *a, **k: (200, {"token": "T0K"}))
     monkeypatch.delenv("PAPERLESS_URL", raising=False)
     monkeypatch.delenv("PAPERLESS_ADMIN_USER", raising=False)
@@ -173,6 +174,7 @@ def test_converge_falls_back_to_persisted_token_when_mint_fails(
     (tmp_path / "solarisbay" / pd.PAPERLESS_TOKEN_FILE).write_text(
         "old-tok\n", encoding="utf-8"
     )
+    monkeypatch.setattr(pd, "converge_paperless_superuser", lambda *a: False)
     monkeypatch.setattr(pd, "post_json", lambda *a, **k: (0, None))
     monkeypatch.delenv("PAPERLESS_URL", raising=False)
     pod_yml = _setup(pd, tmp_path, monkeypatch)
@@ -181,10 +183,80 @@ def test_converge_falls_back_to_persisted_token_when_mint_fails(
 
 
 def test_converge_noop_when_paperless_absent(pd, tmp_path, monkeypatch):
-    # No persisted token + mint fails (paperless not installed) → clean no-op.
+    # No container to exec into + mint fails (paperless not installed) → no-op.
+    monkeypatch.setattr(pd, "converge_paperless_superuser", lambda *a: False)
     monkeypatch.setattr(pd, "post_json", lambda *a, **k: (0, None))
     monkeypatch.delenv("PAPERLESS_URL", raising=False)
     pod_yml = _setup(pd, tmp_path, monkeypatch)
     before = pod_yml.read_text(encoding="utf-8")
     assert pd.converge_paperless_credential(str(tmp_path)) is False
     assert pod_yml.read_text(encoding="utf-8") == before
+
+
+def test_superuser_converge_passes_credentials_through_the_exec_env(pd, monkeypatch):
+    """The reset must go through `manage.py shell` + set_password — createsuperuser
+    only ever creates a MISSING user, which is why the mint 401'd (#1296)."""
+    calls = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **_kw):
+        calls["argv"] = argv
+        return _Proc()
+
+    monkeypatch.setattr(pd.subprocess, "run", fake_run)
+    assert pd.converge_paperless_superuser("solaris", "pw-123") is True
+    argv = calls["argv"]
+    assert argv[:2] == ["podman", "exec"]
+    assert pd.PAPERLESS_CONTAINER in argv
+    assert argv[-4:-1] == ["manage.py", "shell", "-c"]
+    assert "SOLARIS_PAPERLESS_USER=solaris" in argv
+    assert "SOLARIS_PAPERLESS_PASSWORD=pw-123" in argv
+    # The secret is read from the env inside the container, never interpolated.
+    assert "pw-123" not in argv[-1]
+    assert "set_password" in argv[-1]
+
+
+def test_superuser_converge_returns_false_on_nonzero_exit(pd, monkeypatch):
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(pd.subprocess, "run", lambda *a, **k: _Proc())
+    assert pd.converge_paperless_superuser("solaris", "pw") is False
+
+
+def test_converge_resets_the_admin_password_before_minting(pd, tmp_path, monkeypatch):
+    """A deploy must converge the LIVE admin password to the managed one first;
+    minting against paperless's own bootstrap password can only 401 (#1296)."""
+    order = []
+
+    def fake_converge(user, password):
+        order.append(("reset", user, password))
+        return True
+
+    def fake_post(_url, payload, timeout=10.0):
+        order.append(("mint", payload["username"], payload["password"]))
+        return 200, {"token": "T0K"}
+
+    monkeypatch.setattr(pd, "converge_paperless_superuser", fake_converge)
+    monkeypatch.setattr(pd, "post_json", fake_post)
+    monkeypatch.delenv("PAPERLESS_URL", raising=False)
+    monkeypatch.delenv("PAPERLESS_ADMIN_USER", raising=False)
+    pod_yml = _setup(pd, tmp_path, monkeypatch)
+
+    assert pd.converge_paperless_credential(str(tmp_path)) is True
+    assert [step[0] for step in order] == ["reset", "mint"]
+    # Same user AND same password on both sides — the mismatch was the bug.
+    assert order[0][1:] == order[1][1:]
+    assert (
+        order[0][2]
+        == (tmp_path / "solarisbay" / pd.PAPERLESS_ADMIN_PASSWORD_FILE)
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+    assert _env_map(pod_yml.read_text(encoding="utf-8"))["PAPERLESS_TOKEN"] == "T0K"
