@@ -20,6 +20,7 @@ from aiohttp import web
 from gatekeeper.logging import log
 from wyoming.client import AsyncClient
 
+from .auth import auth_ok
 from .tts import synthesize_to_writer
 
 
@@ -37,13 +38,11 @@ def build_app(
     async def push(request: web.Request) -> web.Response:
         trace_id = request.headers.get("X-Trace-Id") or str(uuid.uuid4())
 
-        if push_token:
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {push_token}":
-                log.warn("gatekeeper.push.unauthorized", trace_id=trace_id)
-                return web.json_response(
-                    {"ok": False, "reason": "unauthorized"}, status=401
-                )
+        if not auth_ok(request, push_token):
+            log.warn("gatekeeper.push.unauthorized", trace_id=trace_id)
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
 
         try:
             body = await request.json()
