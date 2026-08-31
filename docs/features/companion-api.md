@@ -277,6 +277,47 @@ Two producers, one event kind:
 - **Fail-open for HA:** the response is written before any push leaves the box, so an
   unreachable phone can neither fail nor delay the automation.
 
+#### `notify.solaris` — what an automation actually calls (#1314)
+
+**Nobody edits `configuration.yaml` for this.** The Solaris post-deploy writes the
+`rest` notify platform entry itself on every deploy, so after an install (or a rebuild
+of the box) `notify.solaris` is simply there in HA's action picker:
+
+```yaml
+action: notify.solaris
+data:
+  target: martin          # a resident uid, or `household`
+  title: Waschmaschine
+  message: Der Waschgang ist fertig.
+  data:
+    category: reminder    # house (default) | timer | reminder
+    urgency: low          # low | normal (default) | high
+```
+
+- `message` → the endpoint's `body`, `title` → `title`, `target` → `target`. The
+  endpoint's field names and the platform's are the same three, so neither side needed
+  changing.
+- `category` and `urgency` ride the platform's `data_template`, not a second
+  `rest_command`: HA's legacy notify always hands the platform the caller's `data:`, and
+  the rest platform merges each rendered `data_template` value **flat** into the JSON
+  body — the shape the endpoint's closed key set requires. Omit them and the endpoint's
+  own defaults (`house` / `normal`) are sent.
+- **`target` is required.** The `rest` platform only sends it when the call names one,
+  and the endpoint refuses a notice it cannot address (400 `invalid_target`) rather than
+  broadcasting it to the whole house — the same fail-closed rule as an unknown target.
+- `actions` are **not** reachable through `notify.solaris`; the platform has no place to
+  put a list of them. An automation that needs action buttons posts to the endpoint
+  directly with a `rest_command` (below).
+- The post-deploy **merges, never clobbers**: an existing `notify:` list gets our entry
+  appended inside it, and a `notify:` it cannot read as a block sequence (an `!include`,
+  a mapping) is left completely alone — the feature then does not install, which is the
+  recoverable failure. The write is idempotent, is validated through HA's
+  `/api/config/core/check_config` before anything restarts, and is reverted if HA does
+  not confirm it. A first write restarts HA, because a YAML notify platform only comes
+  into being at setup; a converged box writes nothing and restarts nothing.
+
+The direct form, for a payload the notify platform cannot express (`actions`):
+
 ```yaml
 # configuration.yaml
 rest_command:

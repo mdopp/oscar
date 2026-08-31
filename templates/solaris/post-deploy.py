@@ -4345,6 +4345,252 @@ def _assign_pe_pipeline(token: str) -> None:
         )
 
 
+# ── notify.solaris — the HA-side sender for /api/ha/notify (#1314) ──────────
+#
+# `/api/ha/notify` shipped and the Android receive side shipped, but nothing in
+# Home Assistant could reach either: there was no `notify.solaris`, so posting a
+# household notice meant hand-editing `configuration.yaml`. HA's built-in `rest`
+# notify platform closes that with a few lines of YAML and no code on either
+# side — the endpoint's `title`, `body` and `target` are exactly the three
+# fields that platform can name — so the post-deploy writes them, the way it
+# already writes the rest of this box's HA wiring.
+#
+# `category` and `urgency` ride the platform's `data_template`, NOT a second
+# `rest_command`. HA's legacy notify always hands the caller's `data:` to the
+# platform (`notify/legacy.py` sets it unconditionally, as `None` when absent),
+# and the rest platform renders each `data_template` value against those kwargs
+# and merges the result FLAT into the JSON body — which is the shape the
+# endpoint's closed key set demands. `(data or {}).get(…)` therefore yields the
+# automation's value, or the endpoint's own default when it passed no data.
+# Keeping `category` matters: it picks the notification channel on the phone,
+# and a reminder and a house notice must stay separately mutable (#1280).
+#
+# There is NEVER a second `notify:` key. A duplicate mapping key displaces the
+# operator's existing notification services, which is the worst thing this
+# function could do to a live house: so an existing `notify:` list is merged
+# into, and an existing `notify:` this code cannot read as a block sequence (an
+# `!include`, a mapping) is left completely alone and the feature simply does
+# not install.
+NOTIFY_MARK_BEGIN = "# >>> solaris notify.solaris — managed by the post-deploy >>>"
+NOTIFY_MARK_END = "# <<< solaris notify.solaris <<<"
+
+_TOP_KEY_RE = re.compile(r"^([A-Za-z0-9_.-]+)[ \t]*:(.*)$")
+_SEQ_ITEM_RE = re.compile(r"^([ \t]+)-[ \t]")
+
+
+def _notify_data_template(key: str, default: str) -> str:
+    """One `data_template` line, assembled instead of written out.
+
+    ServiceBay Mustache-renders this script before executing it and eats
+    anything in double braces, so the Jinja tag HA needs cannot appear
+    literally in this file (templates/tests/test_post_deploy_mustache.py)."""
+    expr = " (data or {}).get('" + key + "', '" + default + "') "
+    return "    " + key + ': "' + "{" * 2 + expr + "}" * 2 + '"'
+
+
+def _notify_solaris_item(chat_port: str, indent: str) -> list[str]:
+    """The `notify:` list entry that makes `notify.solaris` exist, at `indent`."""
+    item = [
+        "- name: solaris",
+        "  platform: rest",
+        f'  resource: "http://127.0.0.1:{chat_port}/api/ha/notify"',
+        "  method: POST_JSON",
+        "  message_param_name: body",
+        "  title_param_name: title",
+        "  target_param_name: target",
+        "  data_template:",
+        _notify_data_template("category", "house"),
+        _notify_data_template("urgency", "normal"),
+    ]
+    return [indent + line for line in item]
+
+
+def _strip_managed_notify(lines: list[str]) -> list[str] | None:
+    """`lines` without our marked block — None when a begin marker never ends
+    (a half-edited file is not one to rewrite)."""
+    out: list[str] = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if not skipping and stripped == NOTIFY_MARK_BEGIN:
+            skipping = True
+            continue
+        if skipping:
+            if stripped == NOTIFY_MARK_END:
+                skipping = False
+            continue
+        out.append(line)
+    return None if skipping else out
+
+
+def _top_level_notify_index(lines: list[str]) -> int:
+    """Index of a column-0 `notify:` key, or -1."""
+    for i, line in enumerate(lines):
+        match = _TOP_KEY_RE.match(line)
+        if match and match.group(1) == "notify":
+            return i
+    return -1
+
+
+def _notify_insert_at(lines: list[str], key_index: int) -> tuple[int, str] | None:
+    """`(line index, indent)` at which our entry joins the existing `notify:`
+    sequence — None when that value is not a block sequence we may extend."""
+    rest = _TOP_KEY_RE.match(lines[key_index]).group(2).strip()  # type: ignore[union-attr]
+    if rest and not rest.startswith("#"):
+        return None
+    end = len(lines)
+    for j in range(key_index + 1, len(lines)):
+        if lines[j].strip() and not lines[j][:1].isspace():
+            end = j
+            break
+    section = lines[key_index + 1 : end]
+    indents = [m.group(1) for m in map(_SEQ_ITEM_RE.match, section) if m]
+    if not indents:
+        return None
+    last = max(k for k, line in enumerate(section) if line.strip())
+    return key_index + 1 + last + 1, indents[-1]
+
+
+def _patched_ha_notify_yaml(src: str, chat_port: str) -> tuple[str, str]:
+    """`(new_text, outcome)` for `configuration.yaml`.
+
+    Pure. Our previous block is removed before anything else, so the entry is
+    re-rendered from scratch on every deploy (a changed CHAT_PORT lands) and a
+    `notify:` the operator added since migrates from a standalone block into
+    theirs. `foreign_notify` / `unterminated_marker` return `src` byte-for-byte.
+    """
+    lines = src.splitlines()
+    stripped = _strip_managed_notify(lines)
+    if stripped is None:
+        return src, "unterminated_marker"
+    key_index = _top_level_notify_index(stripped)
+    if key_index >= 0:
+        spot = _notify_insert_at(stripped, key_index)
+        if spot is None:
+            return src, "foreign_notify"
+        at, indent = spot
+        block = [
+            indent + NOTIFY_MARK_BEGIN,
+            *_notify_solaris_item(chat_port, indent),
+            indent + NOTIFY_MARK_END,
+        ]
+        out = stripped[:at] + block + stripped[at:]
+        return "\n".join(out) + "\n", "merged"
+    block = [
+        NOTIFY_MARK_BEGIN,
+        "notify:",
+        *_notify_solaris_item(chat_port, "  "),
+        NOTIFY_MARK_END,
+    ]
+    body = "\n".join(stripped).rstrip("\n")
+    head = f"{body}\n\n" if body else ""
+    return head + "\n".join(block) + "\n", "appended"
+
+
+def _write_ha_config(path: str, text: str) -> bool:
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError as e:
+        jlog("warn", "ha", "could not write configuration.yaml", error=str(e))
+        return False
+    return True
+
+
+def converge_ha_notify_service(token: str, chat_port: str, data_dir: str) -> bool:
+    """Make `notify.solaris` exist in HA, without an operator touching YAML.
+
+    `configuration.yaml` is **seed-only** (servicebay#2597): ServiceBay writes it
+    once and thereafter reconciles individual keys, because re-rendering it used
+    to silently eat the operator's own `sensor:`/`template:`/`mqtt:` blocks. So
+    this appends or merges a marked block and never re-renders the file — every
+    byte outside our own block is carried through untouched.
+
+    That "untouched" is load-bearing beyond tidiness: the file carries an
+    `auth_oidc` `client_secret`, and ServiceBay's MCP `read_file` hands that back
+    as `<redacted>` — a read-modify-write over THAT path would write the literal
+    string back and lock the operator out of Home Assistant. This runs on the box
+    and reads the file straight off the filesystem with `open()`, where nothing
+    redacts; the redaction only exists on the MCP tool path, which nothing here
+    touches. Never route this read through it.
+    """
+    path = os.path.join(
+        data_dir, "home-assistant", "homeassistant", "configuration.yaml"
+    )
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog(
+            "info", "ha", "no HA configuration.yaml — notify.solaris skipped", e=str(e)
+        )
+        return False
+    new, outcome = _patched_ha_notify_yaml(src, chat_port)
+    if outcome == "foreign_notify":
+        jlog(
+            "warn",
+            "ha",
+            "configuration.yaml already has a notify: this cannot extend safely "
+            "— left untouched, notify.solaris NOT installed",
+            path=path,
+        )
+        return False
+    if outcome == "unterminated_marker":
+        jlog(
+            "warn",
+            "ha",
+            "managed notify block has no end marker — configuration.yaml untouched",
+            path=path,
+        )
+        return False
+    if new == src:
+        jlog("info", "ha", "notify.solaris already configured — no write, no restart")
+        return True
+    if not _write_ha_config(path, new):
+        return False
+    # Never restart HA on a config that has not been proved to parse: a rejected
+    # file leaves the house with no Home Assistant at all. On anything short of
+    # an explicit `valid` the operator's file goes back exactly as it was.
+    status, result = _ha_post("/api/config/core/check_config", token, {})
+    errors = result.get("errors") if isinstance(result, dict) else None
+    if not (isinstance(result, dict) and result.get("result") == "valid"):
+        if not _write_ha_config(path, src):
+            jlog("error", "ha", "REVERT of configuration.yaml FAILED", path=path)
+            return False
+        jlog(
+            "warn",
+            "ha",
+            "HA did not confirm the patched configuration.yaml — reverted, "
+            "notify.solaris NOT installed",
+            status=status,
+            errors=str(errors)[:300],
+        )
+        return False
+    jlog(
+        "info",
+        "ha",
+        "wrote notify.solaris into configuration.yaml",
+        path=path,
+        outcome=outcome,
+    )
+    # A YAML notify platform only comes into being at setup: `notify`'s own
+    # reload re-registers services for an integration that is ALREADY loaded,
+    # and `rest` is not one — so nothing short of a restart creates
+    # `notify.solaris`. Only ever reached on a real change, so a converged box
+    # never restarts HA for this.
+    status, _ = _ha_post("/api/services/homeassistant/restart", token, {})
+    jlog(
+        "info" if status == 200 else "warn",
+        "ha",
+        "requested HA restart to load notify.solaris",
+        status=status,
+    )
+    _wait_for_ha_api(token)
+    return True
+
+
 def wire_voice_pipeline(
     token: str, chat_port: str, api_key: str, data_dir: str = "/mnt/data"
 ) -> None:
@@ -4689,6 +4935,13 @@ def main() -> int:
             env("JELLYFIN_USERNAME") or JELLYFIN_SOLARIS_USER,
             jellyfin_password,
         )
+        # Give HA a way to REACH the notice endpoint (#1314): `/api/ha/notify`
+        # and the phone's receive side both shipped, but no `notify.solaris`
+        # service existed, so an automation could only get there by the operator
+        # hand-editing configuration.yaml. Before the voice wiring, because a
+        # first write restarts HA and this waits for it to come back — the
+        # wiring below then meets a live HA rather than a restarting one.
+        converge_ha_notify_service(ha_token, chat_port, data_dir)
         # Prime whisper on the household's own device/room/scene names (#1142).
         # Before the wiring, so the Assist registration below meets the
         # restarted container rather than racing its restart.
