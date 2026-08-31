@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.49.0](https://github.com/mdopp/solarisbay/compare/v0.48.0...v0.49.0) (2026-08-31)
+
+
+### Features
+
+* **chat:** give the household profile a status tool it really has ([c9bf57d](https://github.com/mdopp/solarisbay/commit/c9bf57db15c56531801d8b52c77646f36acecc96)), closes [#1310](https://github.com/mdopp/solarisbay/issues/1310)
+* **chat:** give the household profile the gatekeeper room MCP ([6e089b0](https://github.com/mdopp/solarisbay/commit/6e089b0ad79f908c30d40d4293ff3fb4e2f01f28)), closes [#1295](https://github.com/mdopp/solarisbay/issues/1295)
+
+
+### Bug Fixes
+
+* **chat:** stop advertising /status and /notes as dot-commands ([41f4a4e](https://github.com/mdopp/solarisbay/commit/41f4a4e747ee741567bb06c6d1b8eefd6148be1b)), closes [#1309](https://github.com/mdopp/solarisbay/issues/1309)
+* **gatekeeper:** make a forgotten auth check fail a test ([0bbd778](https://github.com/mdopp/solarisbay/commit/0bbd77847078fdbe4e13b6f5cc7f647867666243)), closes [#1300](https://github.com/mdopp/solarisbay/issues/1300)
+
 ## [0.48.0](https://github.com/mdopp/solarisbay/compare/v0.47.0...v0.48.0) (2026-08-31)
 
 
