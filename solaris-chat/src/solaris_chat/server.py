@@ -42,6 +42,7 @@ from solaris_chat import (
     model_lease,
     notes_portal_db,
     notes_search,
+    notice_backlog,
     personalities,
     push_store,
     reasoning,
@@ -3272,8 +3273,13 @@ def build_app(
     # included. Delivery is best effort: an open client gets the notice over the
     # `/napi/portal/events` SSE stream, a backgrounded PWA through Web Push, and
     # an unreachable phone gets it when it comes back or not at all. Nothing
-    # here retries, queues, escalates or rings, and no `urgency` value and no
-    # category changes that — see `solaris_chat.ha_notify`. A smoke detector, an
+    # here retries, escalates or rings, and no `urgency` value and no category
+    # changes that — see `solaris_chat.ha_notify`. The one thing that IS kept is
+    # a short backlog (#1284): the event is also written to
+    # `notice_backlog` so a client that was not listening can ask
+    # `/napi/notifications?since=…` what it missed, for a few hours. That is a
+    # catch-up window, not a delivery guarantee — past the window, or with
+    # nothing ever fetching, the notice is still gone. A smoke detector, an
     # intrusion or anything that must wake somebody needs a real alerting
     # transport, which does not exist yet. A timer someone depends on is rung by
     # the speaker announce in `engine/scheduler.py`, which stays its primary
@@ -3343,6 +3349,7 @@ def build_app(
         )
         if event_bus is not None:
             event_bus.publish(bus_uid, ha_notify.EVENT_KIND, data)
+        notice_backlog.record(solaris_db_path, bus_uid, data)
         task = asyncio.create_task(
             _fan_out_ha_notice(push_uids, notice["title"], notice["body"], data)
         )
@@ -3363,6 +3370,42 @@ def build_app(
                 "delivery": ha_notify.NOT_AN_ALARM,
             },
             status=202,
+        )
+
+    async def napi_notifications(request: web.Request) -> web.Response:
+        """What this resident missed while nothing was listening (#1284).
+
+        `?since=<ts>` — the `ts` of the last notice the client saw, or absent
+        for the whole retention window; oldest first, so replaying them in
+        order matches the order they were published. The streams read are the
+        two `/napi/portal/events` subscribes to (own + household), so the
+        catch-up can never show a resident an event the live stream wouldn't.
+
+        `now` is the cursor to store when the list comes back empty. It stays
+        best effort in both directions: a notice older than `retention_hours`
+        is gone, and nothing here promises a client ever asks.
+        """
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        raw = request.query.get("since", "").strip()
+        cursor = None
+        if raw:
+            try:
+                cursor = notice_backlog.normalize_since(raw)
+            except ValueError:
+                return web.json_response(
+                    {"ok": False, "reason": "invalid_since"}, status=400
+                )
+        streams = list(dict.fromkeys([uid, favorites_store.HOUSEHOLD]))
+        return web.json_response(
+            {
+                "ok": True,
+                "notifications": notice_backlog.fetch(
+                    solaris_db_path, streams, since=cursor
+                ),
+                "now": notice_backlog.now(),
+                "retention_hours": notice_backlog.RETENTION_HOURS,
+                "delivery": ha_notify.NOT_AN_ALARM,
+            }
         )
 
     async def list_sessions(request: web.Request) -> web.Response:
@@ -6407,6 +6450,9 @@ def build_app(
     app.router.add_get("/napi/portal/cameras", native(portal_cameras))
     app.router.add_get("/napi/portal/state", native(portal_state))
     app.router.add_get("/napi/portal/events", native(portal_events))
+    # The catch-up half of that stream (#1284): the stream itself has no
+    # backlog, so a client that was not listening asks here what it missed.
+    app.router.add_get("/napi/notifications", native(napi_notifications))
     app.router.add_post("/napi/portal/watch", native(portal_watch))
     app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))

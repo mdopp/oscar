@@ -28,7 +28,7 @@ def _cfg(db_path: str) -> Config:
 
 def test_single_linear_head(tmp_path):
     script = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db")))
-    assert script.get_heads() == ["0033_voice_uid_stash_room"]
+    assert len(script.get_heads()) == 1  # name-free: every later migration re-points it
 
 
 def test_upgrade_widens_the_key_and_keeps_existing_rows(tmp_path):
