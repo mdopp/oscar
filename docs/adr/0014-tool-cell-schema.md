@@ -1,4 +1,4 @@
-# `tool-cell-schema` — the renderer-agnostic cell contract (ADR 0011, #1022)
+# `tool-cell-schema` — the renderer-agnostic cell contract (ADR 0014, #1022)
 
 A `.tool`'s `tool-cell-schema` maps an item's **fields** to **semantic roles** —
 never to markup. This is the promise that one `SKILL.md` drives both the PWA card

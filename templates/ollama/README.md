@@ -197,6 +197,7 @@ See `docs/TEMPLATE_AUTHORING.md` § Health checks for the contract.
 ## Logging
 
 Ollama's upstream image emits human-readable lines on stdout —
-fine for `get_container_logs` / `get_podman_logs`. The post-deploy
+fine for `get_logs(source="container", container=<service>-<app>)`.
+The post-deploy
 script emits JSON-shaped lines per `docs/TEMPLATE_LOGGING.md` for
 the events under its control (pull start, progress, ready).

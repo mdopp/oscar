@@ -14,10 +14,10 @@ for the design rationale (conversation invariants, prompt budget) see
 
 - **Talk to it.** Ask questions, control the home, set timers, play music.
   A spoken command answers in ≈1.3 s after you stop speaking.
-- **Two chat modes.** *Zuhause* (household) runs the fast `gemma4:e2b` model
-  with the household soul; *Solaris Gründlich* runs the thorough `gemma4:12b`
-  for deeper answers. A separate *ServiceBay maintenance* persona (admin only)
-  can operate the box.
+- **Two chat modes.** Both run `gemma4:e4b`: *Zuhause* (household) is the fast
+  hot path with the household soul; *Solaris Gründlich* runs the same model
+  with reasoning on for deeper answers. A separate *ServiceBay maintenance*
+  persona (admin only) can operate the box.
 - **Home control.** Backed by Home Assistant — lights, covers, media, sensors.
   Confirm-gated devices (locks, garage/gate covers) always ask before acting.
 
@@ -82,5 +82,7 @@ Wired by `templates/solaris/post-deploy.py` at install; the engine reads:
 | `HASS_URL` / `HASS_TOKEN` | Home Assistant API + long-lived token |
 | `SOLARIS_API_KEY` | Bearer for the `/ollama` facade + `/api/chat` |
 
-Models are managed by the `ollama` template: `gemma4:e2b`, `gemma4:12b`,
-`nomic-embed-text` stay resident on the GPU (`OLLAMA_MAX_LOADED_MODELS=3`).
+Models are managed by the `ollama` template: `gemma4:e4b` and
+`nomic-embed-text` stay resident on the GPU (`OLLAMA_MAX_LOADED_MODELS=2`).
+`gemma4:12b` is pulled too and available as an alternate model from the
+panel's Model picker, but is not the default for either chat mode.
