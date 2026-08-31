@@ -75,7 +75,11 @@ def add_routes(app: web.Application, *, db_path: str, push_token: str) -> None:
             {"ok": True, "satellite_id": satellite_id, "room": room}
         )
 
-    async def list_rooms_route(_request: web.Request) -> web.Response:
+    async def list_rooms_route(request: web.Request) -> web.Response:
+        if not _auth_ok(request, push_token):
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
         rooms = await asyncio.to_thread(list_rooms, db_path)
         return web.json_response({"rooms": rooms})
 

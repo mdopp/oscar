@@ -1,9 +1,9 @@
 # `solaris-whisper-batch` — the batch transcription endpoint
 
-The contract for the **second** whisper container: one `large-v3-turbo` model on
-the GPU that turns an hours-long recording into timestamped segments. It is not
-the household voice path — that is the Wyoming server on `:10300` and it is
-untouched by anything here.
+The contract for the **second** whisper container: a `large-v3-turbo` model that
+turns an hours-long recording into timestamped segments, on the GPU **only while
+there is work**. It is not the household voice path — that is the Wyoming server
+on `:10300` and it is untouched by anything here.
 
 > **Source of truth is the code, not this file:** `WHISPER_BATCH_MODULE` in
 > `templates/solaris/post-deploy.py`. Fields are added, never renamed or removed.
@@ -79,7 +79,24 @@ caller that wants to compare.
 | 403 | `path` is not a regular file inside the recordings mount. |
 | 404 | Not `/transcribe`. |
 | 500 | This one file failed; the service stays up. |
-| 503 | The model is not loaded yet — the port binds only after the model is on the card, so this is rare. |
+| 503 | The GPU worker could not be started or died before it answered. |
+
+## Model lifecycle — the card is borrowed, not held
+
+The endpoint process holds no model. The **first** request starts a worker child
+that loads `large-v3-turbo` onto the card; the worker is stopped once no request
+has arrived for `WHISPER_BATCH_IDLE_S` (default **300 s**), and stopping it is
+what returns the 2216 MiB to the driver — CTranslate2's CUDA allocator caches
+every block it frees, so unloading the model inside a long-lived process would
+give the card back nothing.
+
+What this costs the caller: **one model load per idle period**, not per request.
+A session submitted as back-to-back chunks pays it once, on the first chunk; the
+rest run against the warm worker. The recording itself decodes at 23.7x realtime
+(box-measured), so a 4h track is ~10 min of work either way.
+
+Requests are **serialised** — one model, one card. A second request waits for the
+first, it is not refused.
 
 ## What the service keeps
 

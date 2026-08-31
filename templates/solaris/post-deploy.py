@@ -463,6 +463,12 @@ WHISPER_BATCH_PORT = "10301"
 # one CPU core (box-measured 2026-08-14) — a 4h track in ~10 min.
 WHISPER_BATCH_MODEL = "large-v3-turbo"
 WHISPER_BATCH_COMPUTE = "float16"
+# Seconds of no job before the card is given back (#1259). The batch model is a
+# guest on a card the household chat model has to fit on: 2216 MiB held around
+# the clock for a service used for an hour a week is what decides whether the
+# resident model stays loaded. Long enough that the chunks of one session share
+# a warm worker, short enough that the card is free the rest of the day.
+WHISPER_BATCH_IDLE_S = "300"
 # foundry-chronicle's session tracks on the shared box. Mounted read-only at the
 # SAME path they have on the host, so a caller sends the path it already knows,
 # and only when the directory is actually there.
@@ -483,9 +489,10 @@ WHISPER_BATCH_RUN_SCRIPT = (
 """
     + WHISPER_CUDA_LIB_PREAMBLE
     + """
-# The endpoint binds only once the model is loaded, so the readiness check IS
-# "the model is on the card". A first start also downloads large-v3-turbo into
-# the empty cache, hence the wider window than the household unit's.
+# The main process holds no model, so readiness is just "the port is up" — the
+# model is loaded into a child process per job and given back when idle (#1259).
+# A first start still downloads large-v3-turbo into the empty cache before it
+# binds, hence the wider window than the household unit's.
 exec \\
     s6-notifyoncheck -d -n 900 -w 1000 \\
         -c "nc -z localhost ${WHISPER_BATCH_PORT:-10301}" \\
@@ -495,8 +502,17 @@ exec \\
 
 WHISPER_BATCH_MODULE = '''"""Timestamped batch transcription for Solaris (#1161).
 
-The main process of the solaris-whisper-batch container: one faster-whisper
-model on the GPU behind POST /transcribe.
+The main process of the solaris-whisper-batch container: POST /transcribe in
+front of one faster-whisper model that is on the GPU only while there is work
+(#1259).
+
+This process never touches the card. It spawns a worker child that loads the
+model for the first job and stops it once no job has arrived for IDLE_S, so the
+2216 MiB are borrowed for the minutes a transcription runs instead of held
+around the clock on a card the household chat model shares. A process exit is
+what actually returns them: CTranslate2's CUDA allocator caches freed blocks,
+so dropping the model inside a long-lived process would give the driver nothing
+back.
 
 Nothing of the caller's data touches our disk. The recording is read in place
 through a read-only mount, the segments live in memory until the response is
@@ -510,7 +526,10 @@ import dataclasses
 import inspect
 import json
 import os
+import subprocess
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import faster_whisper
@@ -522,6 +541,9 @@ MODEL = os.environ.get("WHISPER_BATCH_MODEL", "large-v3-turbo")
 COMPUTE = os.environ.get("WHISPER_BATCH_COMPUTE", "float16")
 BEAM = int(os.environ.get("WHISPER_BATCH_BEAM") or 1)
 CACHE = os.environ.get("WHISPER_BATCH_CACHE", "/config")
+IDLE_S = float(os.environ.get("WHISPER_BATCH_IDLE_S") or 300)
+IDLE_TICK_S = 15.0
+WORKER_FLAG = "--worker"
 
 # Silero's knobs for a table of people talking for tens of minutes (#1204).
 # These are faster-whisper 1.2.1's own defaults, pinned rather than inherited:
@@ -538,6 +560,10 @@ VAD_PARAMETERS = {
 }
 
 _loaded = {}
+# The GPU worker child and when it last finished a job. Guarded by the lock:
+# one model, one card, one job at a time.
+_worker = {"proc": None, "used": 0.0}
+_worker_lock = threading.Lock()
 
 
 def shape_problem():
@@ -552,6 +578,10 @@ def shape_problem():
     for needed in ("hotwords", "vad_filter", "vad_parameters"):
         if needed not in params:
             return f"faster_whisper.WhisperModel.transcribe takes no {needed}"
+    # The cache is filled here, off the card, so that a first start still
+    # absorbs the download instead of putting it inside a caller's request.
+    if not callable(getattr(faster_whisper, "download_model", None)):
+        return "faster_whisper no longer exposes download_model"
     info = {f.name for f in dataclasses.fields(TranscriptionInfo)}
     if not {"duration", "duration_after_vad"} <= info:
         return "faster_whisper TranscriptionInfo no longer reports duration_after_vad"
@@ -629,6 +659,128 @@ def transcribe_file(model, path, language, hotwords, vad):
     )
 
 
+def run_one(model, job):
+    """The whole 200 payload for one recording.
+
+    Runs in the worker, because the hotword budget needs the loaded model's
+    tokenizer and only the worker has one."""
+    kept, dropped = fit_hotwords(model, job.get("hotwords") or [])
+    vad = bool(job.get("vad", True))
+    segments, audio, silence = transcribe_file(
+        model, job["path"], job.get("language"), kept, vad
+    )
+    return {
+        "segments": segments,
+        "hotwords_dropped_count": len(dropped),
+        "hotwords_dropped": dropped,
+        "vad": vad,
+        "audio_seconds": audio,
+        "silence_dropped_seconds": silence,
+    }
+
+
+def worker_main():
+    """The child that owns the card: load once, answer jobs, exit on EOF.
+
+    One JSON line in, one JSON line out, stdout for answers and stderr for the
+    log — so nothing here may print to stdout. Exiting is the point of the
+    process: that is what hands the 2216 MiB back to the driver."""
+    model = faster_whisper.WhisperModel(
+        MODEL, device="cuda", compute_type=COMPUTE, download_root=CACHE
+    )
+    sys.stderr.write(
+        f"solaris-whisper-batch: worker loaded {MODEL}/{COMPUTE} on cuda\\n"
+    )
+    sys.stderr.flush()
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 0
+        if not line.strip():
+            continue
+        try:
+            answer = run_one(model, json.loads(line))
+        except Exception as e:  # one bad file must not take the worker down
+            answer = {"error": f"{type(e).__name__}: {e}"}
+        sys.stdout.write(json.dumps(answer) + "\\n")
+        sys.stdout.flush()
+
+
+def start_worker():
+    """A fresh worker child. Inherits our environment, so it reads the same
+    MODEL/COMPUTE/CACHE."""
+    return subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), WORKER_FLAG],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _stop_locked():
+    """Give the card back. Closing stdin ends the worker's read loop; the kill
+    is for a worker wedged inside CUDA."""
+    proc = _worker["proc"]
+    _worker["proc"] = None
+    if proc is None:
+        return False
+    try:
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        proc.kill()
+        proc.wait()
+    return True
+
+
+def stop_worker():
+    with _worker_lock:
+        return _stop_locked()
+
+
+def reap_idle_worker():
+    """Stop the worker when nothing has needed it for IDLE_S."""
+    with _worker_lock:
+        if _worker["proc"] is None or time.monotonic() - _worker["used"] < IDLE_S:
+            return False
+        sys.stderr.write(
+            f"solaris-whisper-batch: idle {IDLE_S:.0f}s, releasing the GPU\\n"
+        )
+        sys.stderr.flush()
+        return _stop_locked()
+
+
+def idle_reaper():
+    while True:
+        time.sleep(IDLE_TICK_S)
+        reap_idle_worker()
+
+
+def run_job(job):
+    """Hand ONE job to the worker and wait for its answer, starting a worker if
+    there is none.
+
+    Serialised on purpose: one model on one card, and the caller submits a
+    session's chunks one after the other anyway. The cold start is paid by the
+    first chunk after an idle period, not by every chunk."""
+    with _worker_lock:
+        proc = _worker["proc"]
+        if proc is None or proc.poll() is not None:
+            proc = _worker["proc"] = start_worker()
+        try:
+            proc.stdin.write(json.dumps(job) + "\\n")
+            proc.stdin.flush()
+            answer = proc.stdout.readline()
+        except (OSError, ValueError) as e:
+            _stop_locked()
+            raise RuntimeError(f"gpu worker went away: {e}") from e
+        _worker["used"] = time.monotonic()
+        if not answer:
+            _stop_locked()
+            raise RuntimeError("gpu worker died before it answered")
+        return json.loads(answer)
+
+
 class SegmentHandler(BaseHTTPRequestHandler):
     """POST /transcribe {"path", "language", "hotwords": [...], "vad": true}."""
 
@@ -648,33 +800,26 @@ class SegmentHandler(BaseHTTPRequestHandler):
         if not path:
             self._json(403, {"error": f"path must be a file under {ROOT}"})
             return
-        model = _loaded.get("model")
-        if model is None:
-            self._json(503, {"error": "faster-whisper model not loaded yet"})
-            return
         words = [w for w in (str(x).strip() for x in request.get("hotwords") or []) if w]
-        kept, dropped = fit_hotwords(model, words)
-        # Default ON: a caller that sends nothing - every caller written before
-        # this field existed - gets the silence detection, not the old behaviour.
-        vad = bool(request.get("vad", True))
+        job = {
+            "path": path,
+            "language": request.get("language"),
+            "hotwords": words,
+            # Default ON: a caller that sends nothing - every caller written
+            # before this field existed - gets the silence detection.
+            "vad": bool(request.get("vad", True)),
+        }
         try:
-            segments, audio, silence = transcribe_file(
-                model, path, request.get("language"), kept, vad
+            answer = run_job(job)
+        except (OSError, ValueError, RuntimeError) as e:
+            self._json(
+                503, {"error": f"gpu worker unavailable: {type(e).__name__}: {e}"}
             )
-        except Exception as e:  # one bad file must not take the service down
-            self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
-        self._json(
-            200,
-            {
-                "segments": segments,
-                "hotwords_dropped_count": len(dropped),
-                "hotwords_dropped": dropped,
-                "vad": vad,
-                "audio_seconds": audio,
-                "silence_dropped_seconds": silence,
-            },
-        )
+        if "error" in answer:  # one bad file must not take the service down
+            self._json(500, answer)
+            return
+        self._json(200, answer)
 
     def log_message(self, fmt, *args):
         sys.stderr.write(f"solaris-whisper-batch: {self.command} {self.path}\\n")
@@ -714,15 +859,15 @@ def main():
             "refusing to start a listener with nothing it may read.\\n"
         )
         return 1
-    # Load BEFORE binding: the port coming up is the readiness signal s6 waits
-    # for, so a caller that connects never meets a half-loaded model.
-    _loaded["model"] = faster_whisper.WhisperModel(
-        MODEL, device="cuda", compute_type=COMPUTE, download_root=CACHE
-    )
+    # Fill the cache BEFORE binding, on the CPU: this keeps a first start's
+    # ~1.6 GB download inside TimeoutStartSec instead of inside the first
+    # caller's request, and it puts nothing on the card.
+    faster_whisper.download_model(MODEL, cache_dir=CACHE)
+    threading.Thread(target=idle_reaper, daemon=True).start()
     sys.stderr.write(
         f"solaris-whisper-batch: faster-whisper {faster_whisper.__version__}, "
-        f"{MODEL}/{COMPUTE} on cuda, POST :{PORT}/transcribe, "
-        f"reading {ROOT} read-only\\n"
+        f"{MODEL}/{COMPUTE} on cuda per job, idle release after {IDLE_S:.0f}s, "
+        f"POST :{PORT}/transcribe, reading {ROOT} read-only\\n"
     )
     sys.stderr.flush()
     serve().serve_forever()
@@ -730,7 +875,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(worker_main() if WORKER_FLAG in sys.argv[1:] else main())
 '''
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
@@ -1348,6 +1493,9 @@ def render_whisper_batch_unit(data_dir: str, recordings_root: str, cpus: int) ->
         f"Environment=WHISPER_BATCH_PORT={WHISPER_BATCH_PORT}\n"
         f"Environment=WHISPER_BATCH_MODEL={WHISPER_BATCH_MODEL}\n"
         f"Environment=WHISPER_BATCH_COMPUTE={WHISPER_BATCH_COMPUTE}\n"
+        f"Environment=WHISPER_BATCH_IDLE_S={WHISPER_BATCH_IDLE_S}\n"
+        # The card is here for a job, not for the day: the main process holds no
+        # model and the worker child that does is stopped after IDLE_S (#1259).
         "AddDevice=nvidia.com/gpu=all\n"
         "SecurityLabelDisable=true\n"
         # Its own cache, not the household's: a different model, and a batch

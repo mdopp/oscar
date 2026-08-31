@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from importlib.metadata import version
+from pathlib import Path
 
 import pytest
 
@@ -633,6 +634,62 @@ async def test_chat_image_only_resolves_the_hook_from_the_registry(
     resp = await client.post("/api/chat", json={"input": "hallo"})
     assert resp.status == 200
     assert calls == []
+
+
+async def test_chat_image_only_folds_the_bound_hook_body_into_the_turn(
+    aiohttp_client, tmp_path
+):
+    # #1292: the bound hook used to be resolved and then thrown away, so a
+    # photographed document ran on the generic prompt and the ingestion
+    # pipeline never happened. Household definition bodies are not in the system
+    # prompt, so the bound body has to ride the turn text. Run it against the
+    # shipped pack: the photo turn must carry `media-ingestion-multimodal`.
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "templates"
+        / "solaris"
+        / "skills"
+        / "household"
+    )
+    fake = _FakeEngine()
+    app = build_app(
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        skills_dir=str(pack),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"images": ["QQ"]})
+    assert resp.status == 200
+    sent = fake.turns[0][1]
+    assert "Multimodal Ingestion Pipeline" in sent
+    assert "/opt/data/notes/" in sent
+    # The generic instruction stays as the turn's closing line.
+    assert sent.endswith(_IMAGE_PROMPT)
+    # Frontmatter is stripped — the model gets prose, not YAML.
+    assert "kind: hook" not in sent
+
+
+async def test_chat_image_only_falls_back_when_nothing_is_bound(
+    aiohttp_client, tmp_path
+):
+    # An empty registry must not invent a pipeline: the turn is the generic
+    # prompt alone, and nothing claims an ingestion ran.
+    fake = _FakeEngine()
+    app = build_app(
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        skills_dir=str(tmp_path / "empty"),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"images": ["QQ"]})
+    assert resp.status == 200
+    _assert_turns(fake.turns, [("sess-1", _IMAGE_PROMPT)])
 
 
 async def test_chat_defaults_to_fast_reasoning(aiohttp_client, tmp_path):
@@ -2095,11 +2152,14 @@ def test_shipped_pack_groups_into_the_four_kinds():
     assert by_kind["skill"] == {
         "status",
         "notes-search",
-        "audit-query",
         "dynamic-skills",
         "media",
     }
-    assert by_kind["command"] == {"debug-set"}
+    # #1293: `audit-query` and `debug-set` were retired — they drove
+    # `cloud_audit`/`system_settings`, which no tool reads or writes, so the
+    # model could only fabricate the confirmation. The pack ships no
+    # command-kind def now.
+    assert by_kind["command"] == set()
     # #1006: every existing .tool now ships as a declarative kind:tool plugin
     # (task is the reference; the rest joined in slice 4).
     assert by_kind["tool"] == {

@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -45,6 +46,11 @@ def _clean_stub_modules():
     for name in STUB_MODULES:
         sys.modules.pop(name, None)
     yield
+    # The GPU worker is a real child process, so a test that started one leaves
+    # it running unless it is reaped here.
+    mod = sys.modules.get("solaris_whisper_batch")
+    if mod is not None and hasattr(mod, "stop_worker"):
+        mod.stop_worker()
     for name in STUB_MODULES:
         sys.modules.pop(name, None)
 
@@ -65,6 +71,8 @@ def test_batch_unit_is_a_gpu_container_on_the_stock_image(pd):
     assert "Environment=WHISPER_BATCH_PORT=10301" in unit
     assert "Environment=WHISPER_BATCH_MODEL=large-v3-turbo" in unit
     assert "Environment=WHISPER_BATCH_COMPUTE=float16" in unit
+    # The card is borrowed per job, not held for the day (#1259).
+    assert "Environment=WHISPER_BATCH_IDLE_S=300" in unit
     # Its own model cache, never the household unit's whisper-gpu dir.
     assert "Volume=/mnt/data/voice/whisper-batch:/config:Z" in unit
     assert "whisper-gpu" not in unit
@@ -291,10 +299,14 @@ def _stub_faster_whisper(
         "    TranscriptionInfo,\n"
         "    WhisperModel,\n"
         ")\n\n"
-        '__version__ = "1.2.1"\n'
+        '__version__ = "1.2.1"\n\n\n'
+        "def download_model(size_or_id, cache_dir=None, **kwargs):\n"
+        "    return cache_dir or size_or_id\n"
     )
     (root / "faster_whisper" / "transcribe.py").write_text(
-        "import dataclasses\n\n"
+        "import dataclasses\n"
+        "import json\n"
+        "import os\n\n"
         "CALLS = []\n\n\n"
         "@dataclasses.dataclass\n"
         "class Segment:\n"
@@ -316,11 +328,18 @@ def _stub_faster_whisper(
         "        self.hf_tokenizer = HfTokenizer()\n\n"
         f"    def transcribe(self, {signature}):\n"
         "        filtered = bool(locals().get('vad_filter'))\n"
-        "        CALLS.append(dict(audio=audio, language=language,\n"
-        "                          beam_size=beam_size,\n"
-        "                          hotwords=locals().get('hotwords'),\n"
-        "                          vad_filter=locals().get('vad_filter'),\n"
-        "                          vad_parameters=locals().get('vad_parameters')))\n"
+        "        call = dict(audio=audio, language=language,\n"
+        "                    beam_size=beam_size,\n"
+        "                    hotwords=locals().get('hotwords'),\n"
+        "                    vad_filter=locals().get('vad_filter'),\n"
+        "                    vad_parameters=locals().get('vad_parameters'))\n"
+        "        CALLS.append(call)\n"
+        # The model runs in a worker CHILD process, so the test's own CALLS list
+        # never sees a call — the child appends it to a file instead.
+        "        record = os.environ.get('FW_STUB_CALLS')\n"
+        "        if record:\n"
+        "            with open(record, 'a') as fh:\n"
+        "                fh.write(json.dumps(call) + '\\n')\n"
         "        segments = [Segment(i * 30.0, i * 30.0 + 29.0, 'text %d' % i)\n"
         "                    for i in range(3)]\n"
         "        return iter(segments), TranscriptionInfo(90.0,\n"
@@ -331,6 +350,10 @@ def _stub_faster_whisper(
 def _module(pd, tmp_path, monkeypatch, **stub):
     _stub_faster_whisper(tmp_path, **stub)
     monkeypatch.syspath_prepend(str(tmp_path))
+    # The worker is a real child process (that is the whole of #1259): it needs
+    # the stub on its own import path, and a file to record its calls in.
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setenv("FW_STUB_CALLS", str(tmp_path / "calls.jsonl"))
     path = tmp_path / "solaris_whisper_batch.py"
     path.write_text(pd.WHISPER_BATCH_MODULE)
     spec = importlib.util.spec_from_file_location("solaris_whisper_batch", path)
@@ -351,12 +374,17 @@ def _serve(pd, tmp_path, monkeypatch, **stub):
         probe.bind(("127.0.0.1", 0))
         monkeypatch.setenv("WHISPER_BATCH_PORT", str(probe.getsockname()[1]))
     mod = _module(pd, tmp_path, monkeypatch, **stub)
-    import faster_whisper
-
-    mod._loaded["model"] = faster_whisper.WhisperModel()
     server = mod.serve()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return mod, recordings, server.server_address[1]
+
+
+def _calls(tmp_path):
+    """What the worker child actually asked faster-whisper for."""
+    path = tmp_path / "calls.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
 def _post(port, payload):
@@ -391,9 +419,7 @@ def test_segments_are_timed_relative_to_the_submitted_file(pd, tmp_path, monkeyp
     # three and converts the seconds into its own ms columns.
     assert body["segments"][0] == {"start": 0.0, "end": 29.0, "text": "text 0"}
     assert all(set(s) == {"start", "end", "text"} for s in body["segments"])
-    import faster_whisper.transcribe as stub
-
-    assert stub.CALLS[-1]["language"] == "de"
+    assert _calls(tmp_path)[-1]["language"] == "de"
     mod._loaded["server"].shutdown()
 
 
@@ -429,9 +455,7 @@ def test_over_budget_hotwords_are_reported_not_silently_dropped(
     # 3 tokens per comma-joined name, budget 223 → 74 fit, the rest are NAMED.
     assert body["hotwords_dropped_count"] == 6
     assert body["hotwords_dropped"] == names[74:]
-    import faster_whisper.transcribe as stub
-
-    used = stub.CALLS[-1]["hotwords"]
+    used = _calls(tmp_path)[-1]["hotwords"]
     assert used.startswith("Name0, Name1")
     assert "Name74" not in used
     mod._loaded["server"].shutdown()
@@ -442,9 +466,7 @@ def test_no_hotwords_leaves_them_unset(pd, tmp_path, monkeypatch):
     status, body = _post(port, {"path": str(recordings / "chunk-02.wav")})
     assert status == 200
     assert body["hotwords_dropped"] == []
-    import faster_whisper.transcribe as stub
-
-    assert stub.CALLS[-1]["hotwords"] is None
+    assert _calls(tmp_path)[-1]["hotwords"] is None
     mod._loaded["server"].shutdown()
 
 
@@ -466,10 +488,8 @@ def test_silence_detection_is_on_for_a_caller_that_asks_for_nothing(
     status, body = _post(port, {"path": str(recordings / "chunk-02.wav")})
     assert status == 200
     assert body["vad"] is True
-    import faster_whisper.transcribe as stub
-
-    assert stub.CALLS[-1]["vad_filter"] is True
-    assert stub.CALLS[-1]["vad_parameters"] == mod.VAD_PARAMETERS
+    assert _calls(tmp_path)[-1]["vad_filter"] is True
+    assert _calls(tmp_path)[-1]["vad_parameters"] == mod.VAD_PARAMETERS
     mod._loaded["server"].shutdown()
 
 
@@ -479,9 +499,7 @@ def test_a_caller_can_switch_the_silence_detection_off(pd, tmp_path, monkeypatch
     assert status == 200
     assert body["vad"] is False
     assert body["silence_dropped_seconds"] == 0.0
-    import faster_whisper.transcribe as stub
-
-    assert stub.CALLS[-1]["vad_filter"] is False
+    assert _calls(tmp_path)[-1]["vad_filter"] is False
     mod._loaded["server"].shutdown()
 
 
@@ -586,9 +604,13 @@ def test_the_endpoint_listens_on_loopback_only(pd, tmp_path, monkeypatch):
         server.server_close()
 
 
-def test_a_healthy_start_loads_the_model_on_cuda_and_serves(
+def test_a_healthy_start_serves_without_taking_the_card(
     pd, tmp_path, monkeypatch, capsys
 ):
+    # #1259: the main process holds no model, so an idle container holds no
+    # VRAM. The model cache is still filled before the port binds — on the CPU,
+    # inside TimeoutStartSec — so a first start absorbs the ~1.6 GB download
+    # rather than putting it inside the first caller's request.
     monkeypatch.setenv("WHISPER_BATCH_ROOT", str(tmp_path))
     monkeypatch.setenv("WHISPER_BATCH_PORT", "10301")
     mod = _module(pd, tmp_path, monkeypatch)
@@ -596,14 +618,74 @@ def test_a_healthy_start_loads_the_model_on_cuda_and_serves(
 
     class _Server:
         def serve_forever(self):
-            # The model is on the card BEFORE the port binds: the s6 readiness
-            # check is "nc -z :10301", so a caller never meets a half-load.
-            served.append(mod._loaded["model"])
+            served.append(mod._worker["proc"])
 
     monkeypatch.setattr(mod, "serve", _Server)
     assert mod.main() == 0
-    assert len(served) == 1
-    assert (
-        "faster-whisper 1.2.1, large-v3-turbo/float16 on cuda"
-        in capsys.readouterr().err
-    )
+    assert served == [None]
+    err = capsys.readouterr().err
+    assert "faster-whisper 1.2.1, large-v3-turbo/float16 on cuda per job" in err
+    assert "idle release after 300s" in err
+
+
+# -- the card is borrowed, not held (#1259) -----------------------------------
+#
+# 2216 MiB held around the clock for a service used for an hour a week is what
+# decides whether the household chat model stays resident: freeing it takes the
+# box's available VRAM from ~11.2 to ~13.4 GiB. The model therefore lives in a
+# worker CHILD process — a process exit is the only thing that gives the memory
+# back, because CTranslate2's CUDA allocator caches every block it frees.
+
+
+def test_an_idle_container_holds_no_gpu(pd, tmp_path, monkeypatch):
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    # Nothing on the card until a job arrives.
+    assert mod._worker["proc"] is None
+    status, _ = _post(port, {"path": str(recordings / "chunk-02.wav")})
+    assert status == 200
+    worker = mod._worker["proc"]
+    assert worker is not None and worker.poll() is None
+    # Still busy a moment ago ⇒ the worker stays, so the chunks of one session
+    # share it.
+    assert mod.reap_idle_worker() is False
+    assert worker.poll() is None
+    mod._worker["used"] = time.monotonic() - mod.IDLE_S - 1
+    assert mod.reap_idle_worker() is True
+    assert mod._worker["proc"] is None
+    # GONE, not merely unreferenced: that is what the driver counts.
+    assert worker.wait(timeout=30) is not None
+    mod._loaded["server"].shutdown()
+
+
+def test_the_first_job_after_an_idle_release_still_transcribes(
+    pd, tmp_path, monkeypatch
+):
+    # The cold start is the whole cost of this trade: the first chunk after an
+    # idle period reloads the model. It must be a slower answer, never a wrong
+    # one and never a 5xx.
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    payload = {"path": str(recordings / "chunk-02.wav"), "language": "de"}
+    first = _post(port, payload)
+    mod._worker["used"] = time.monotonic() - mod.IDLE_S - 1
+    assert mod.reap_idle_worker() is True
+    second = _post(port, payload)
+    assert second[0] == 200
+    assert second == first
+    assert second[1]["segments"][0] == {"start": 0.0, "end": 29.0, "text": "text 0"}
+    # Both jobs reached a real model, and the second took the card back.
+    assert len(_calls(tmp_path)) == 2
+    assert mod._worker["proc"] is not None and mod._worker["proc"].poll() is None
+    mod._loaded["server"].shutdown()
+
+
+def test_a_session_of_chunks_pays_the_cold_start_once(pd, tmp_path, monkeypatch):
+    # A caller splits a session into 10-30 min chunks and submits them back to
+    # back; reloading per chunk would trade the headroom for the speed.
+    mod, recordings, port = _serve(pd, tmp_path, monkeypatch)
+    payload = {"path": str(recordings / "chunk-02.wav")}
+    assert _post(port, payload)[0] == 200
+    pid = mod._worker["proc"].pid
+    assert _post(port, payload)[0] == 200
+    assert mod._worker["proc"].pid == pid
+    assert len(_calls(tmp_path)) == 2
+    mod._loaded["server"].shutdown()

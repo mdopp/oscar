@@ -344,8 +344,10 @@ def list_tool_defs(skills_dir: str | Path) -> list[dict[str, Any]]:
 def hooks_for_event(skills_dir: str | Path, event: str) -> list[str]:
     """The hook-kind definition ids bound to `event` (their frontmatter
     `event:` field), sorted by id — the registry server flow points resolve a
-    hook by, instead of hardcoding a skill id. Phase 5 (#483) wires the actual
-    flow points to it; foundation just exposes the lookup."""
+    hook by, instead of hardcoding a skill id. `image-upload` is dispatched (the
+    image-only chat turn folds the bound bodies into its prompt); the remaining
+    bind points the `/hooks` editor offers have no flow point yet and are
+    labelled as such there."""
     out = [
         def_id
         for def_id, meta, _body, _file in _iter_defs(skills_dir)

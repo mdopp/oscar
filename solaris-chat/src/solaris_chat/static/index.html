@@ -536,6 +536,10 @@
       background: rgba(234,179,8,0.10); border-color: rgba(234,179,8,0.45);
     }
     .ha-notice.calm { background: rgba(127,127,127,0.08); border-color: var(--line); }
+    /* #1274: the same notice component, hoisted out of a page card to the top of
+       .main so it is visible on the chat view and every portal page at once —
+       when solaris.db is unreadable, all of them are affected. */
+    .db-notice { flex: 0 0 auto; margin: 10px 12px 0; }
     .ha-notice .ha-notice-title { font-weight: 600; }
     .ha-notice .ha-notice-hint { color: var(--muted); margin-top: 3px; }
     /* #729: an entity favorite HA can't reach — greyed, non-interactive, with a
@@ -1782,6 +1786,11 @@
   <div id="backdrop"></div>
 
   <div class="main">
+    <!-- #1274: outage notice for "Solaris cannot read its own data". Filled and
+         un-hidden by applyDbHealth() from /api/whoami's `db` token; sits above
+         the views so the chat and every portal page carry the same one notice. -->
+    <div id="db-notice" class="ha-notice db-notice" role="status" hidden></div>
+
     <!-- Mobile-only burger lives in the chat-header now (#411: one merged bar),
          so the standalone .topbar is retired. -->
 
@@ -4576,7 +4585,7 @@
       // skills are model-picked, not typeable (#482). Each is [cmd, desc].
       var skillEntries = [];
       // The typeable commands (#482): user-authored command-kind templates +
-      // the built-in inline dual aliases (debug/status/notes/audit). These are
+      // the built-in inline dual aliases (status/notes). These are
       // the ONLY non-built-in entries the `/` autocomplete + /help draw on.
       // Each is [cmd, desc]; commandDefs holds the routing detail by trigger.
       var commandEntries = [];
@@ -4702,7 +4711,7 @@
         }
         if (cmd === "context") { showContext(); return; }
         // A typeable command (#482): user-authored command-kind template or a
-        // built-in inline dual alias (/debug /status /notes /audit). Its body
+        // built-in inline dual alias (/status /notes). Its body
         // expands into the turn prompt (followed by any args typed after it);
         // the inline dual aliases carry no editable body, so they send their own
         // trigger plus the args. Skills/hooks are NOT typeable — they fall
@@ -4740,7 +4749,7 @@
 
       // Populate the typeable-command pool (#482): user-authored command-kind
       // templates PLUS the built-in inline dual aliases (skill-kind defs that
-      // carry a `command:` field — /status //notes //audit). The `/` menu +
+      // carry a `command:` field — /status //notes). The `/` menu +
       // /help draw ONLY on this; skills/hooks aren't typeable. Also refreshes
       // skillEntries for the /skills editor (no longer in the `/` menu).
       function loadCommandPool() {
@@ -4758,9 +4767,9 @@
           // A command's trigger is its `command:` field if set, else `/<id>` for a
           // user template. Scheduler entries that carry a `command:` join as a
           // manual run-now trigger (#485). The built-in inline skill aliases
-          // (/notes /status /audit /debug) are DELIBERATELY excluded from the `/`
+          // (/notes /status) are DELIBERATELY excluded from the `/`
           // menu: they either need admin/MCP tools the household chat lacks
-          // (/status/audit/debug) or are covered by natural language + the . tools
+          // (/status) or are covered by natural language + the . tools
           // (/notes) — so they read as "listed but broken". The skills still fire
           // on a natural question; they just aren't a typeable `/`-command.
           var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
@@ -6893,10 +6902,47 @@
       // The public paperless Web-UI URL (#1043); empty ⇒ the read-only Dokumente
       // portal hides its "In Paperless öffnen" link (no dead link).
       var paperlessUiUrl = "";
+      // #1274: the database-outage notice. `db` is "ok" | "unavailable", from the
+      // same db_health.probe that /health (#1273) and the /napi gate (#1272)
+      // answer with, so the resident, the tile and the app agree. Deliberately an
+      // in-page banner, not a 503 page: the chat already on screen stays readable.
+      function applyDbHealth(db) {
+        var box = document.getElementById("db-notice");
+        if (!box) return;
+        if (db !== "unavailable") { box.hidden = true; box.textContent = ""; return; }
+        if (!box.hidden) return;
+        var title = document.createElement("div");
+        title.className = "ha-notice-title";
+        title.textContent = "⚠️ Solaris kann gerade nicht auf seine Daten zugreifen.";
+        var hint = document.createElement("div");
+        hint.className = "ha-notice-hint";
+        hint.textContent =
+          "Chatverlauf, Notizen, Dokumente und gespeicherte Geräte sind " +
+          "vorübergehend nicht verfügbar, und neue Nachrichten können nicht " +
+          "gespeichert werden. Was hier schon auf dem Bildschirm steht, bleibt " +
+          "lesbar. Der Hinweis verschwindet von selbst, sobald Solaris wieder an " +
+          "seine Daten kommt; falls das länger dauert, bitte im Haushalt Bescheid " +
+          "sagen.";
+        box.textContent = "";
+        box.appendChild(title);
+        box.appendChild(hint);
+        box.hidden = false;
+      }
+      // Re-ask periodically so the banner appears when the store dies mid-session
+      // and lifts on recovery without the resident reloading the page.
+      function refreshDbHealth() {
+        fetch("/api/whoami")
+          .then(function (r) { return r.ok ? r.json() : {}; })
+          .then(function (j) { applyDbHealth(j && j.db); })
+          .catch(function () {});
+      }
+      setInterval(refreshDbHealth, 30000);
+
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
           .then(function (j) {
+            applyDbHealth(j && j.db);
             var uid = (j && j.uid) || "guest";
             document.getElementById("whoami-user").textContent = uid;
             document.getElementById("avatar").textContent = uid.charAt(0) || "·";
@@ -10746,13 +10792,17 @@
       // real trigger rather than free text. Server flow points resolve the hook
       // for an event from this registry (skills.hooks_for_event), so a rebind
       // here changes which definition fires on that event.
+      // Only `image-upload` has a server flow point today (#1292: the image-only
+      // turn folds the bound hook body into its prompt). The rest are declared
+      // bind points with nothing dispatching them yet, so they say so here —
+      // binding a hook to one of them must not look live.
       var HOOK_EVENTS = [
         ["image-upload", "Image upload"],
-        ["guest-session-start", "Guest session starts"],
-        ["topic-circling", "Chat circles one topic"],
-        ["missing-room", "Voice command with no known room"],
-        ["registration-handoff", "Guest chose to register"],
-        ["self-enroll-request", "Resident asks to self-enrol"]
+        ["guest-session-start", "Guest session starts — not dispatched yet"],
+        ["topic-circling", "Chat circles one topic — not dispatched yet"],
+        ["missing-room", "Voice command with no known room — not dispatched yet"],
+        ["registration-handoff", "Guest chose to register — not dispatched yet"],
+        ["self-enroll-request", "Resident asks to self-enrol — not dispatched yet"]
       ];
       var hooksCards = document.getElementById("hooks-cards");
       var hooksList = document.getElementById("hooks-list");

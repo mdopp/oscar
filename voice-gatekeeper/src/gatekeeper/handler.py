@@ -36,7 +36,7 @@ from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 
-from .config import settings
+from .config import settings, system_language_from_env
 from .embeddings_store import insert_embedding, list_embeddings, touch_last_seen
 from .enroll_stash import (
     MAX_ENROLL_SAMPLES,
@@ -657,7 +657,9 @@ class GatekeeperHandler(AsyncEventHandler):
     async def _transcribe(self) -> str:
         assert self._audio_start is not None
         async with AsyncClient.from_uri(settings.whisper_uri) as client:
-            await client.write_event(Transcribe(language="de").event())
+            await client.write_event(
+                Transcribe(language=system_language_from_env()).event()
+            )
             await client.write_event(self._audio_start.event())
             for chunk in self._audio_buffer:
                 await client.write_event(chunk.event())
