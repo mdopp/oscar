@@ -12,7 +12,7 @@ flowchart LR
     PE["🔊 Voice PE"] -- ESPHome --> HA["HA Assist pipeline<br/>whisper GPU · Martin TTS GPU"]
     Browser["💻 Browser"] -- SSO --> Chat
     HA -- "conversation.solaris" --> Chat["Solaris Engine<br/>(solaris-chat)"]
-    Chat -- "per-turn model+think" --> Ollama["ollama (GPU)<br/>e2b · 12b"]
+    Chat -- "per-turn model+think" --> Ollama["ollama (GPU)<br/>e4b"]
     Chat -- "tools · registry · announce" --> HA
     Chat --- DB[("solaris.db")]
     Chat --- Notes[("notes vault")]
@@ -38,8 +38,9 @@ is headed — zones, ADRs and the V1 backlog — is
 
 - **Voice + Chat, German, GPU-fast.** Talk to the Voice PE (wake word
   **"Solaris"**, on-device) or chat in the browser; a spoken command answers in
-  ≈1.3 s. Two chat modes: **Zuhause** (fast `gemma4:e2b`) and **Solaris
-  Gründlich** (thorough `gemma4:12b`). → [chat-and-voice.md](docs/features/chat-and-voice.md)
+  ≈1.3 s. Two chat modes, both on `gemma4:e4b`: **Zuhause** (fast) and
+  **Solaris Gründlich** (thorough, reasoning on).
+  → [chat-and-voice.md](docs/features/chat-and-voice.md)
 - **Home control via Home Assistant.** Lights, covers, media, sensors — with a
   confirmation gate on locks and garage/gate covers. Chat offers 2–4 quick-reply
   chips; voice re-opens the mic when the answer ends in a question.
@@ -96,8 +97,9 @@ is headed — zones, ADRs and the V1 backlog — is
   operator persona: `admin-diagnose`, `admin-logs`, `admin-act` + its
   `SOUL.md`).
 - **ServiceBay templates** (`templates/{ollama,solaris}/`) — two services:
-  `ollama` (the local LLM engine) and `solaris` — one Pod with the `chat`
-  (engine) and `gatekeeper` containers. `post-deploy.py` seeds the soul,
+  `ollama` (the local LLM engine) and `solaris` — one Pod with four
+  containers (`chat`, `gatekeeper`, `openwakeword`, `tts-bridge`) plus two
+  init containers (`notes-perms`, `schema-init`). `post-deploy.py` seeds the soul,
   adopts the HA token, wires the **voice pipeline** (wyoming whisper/piper,
   the Solaris conversation agent, the Assist pipeline on the Voice PE) and
   mints the `servicebay_admin` MCP token.
@@ -140,7 +142,7 @@ solarisbay/
 ├── templates/                       # ServiceBay templates
 │   ├── ollama/                       # the local LLM engine — its own service
 │   └── solaris/                      # the assistant service
-│       ├── template.yml             # one Pod: chat (engine) + gatekeeper
+│       ├── template.yml             # one Pod: chat, gatekeeper, openwakeword, tts-bridge
 │       ├── post-deploy.py           # soul + HA wiring + admin MCP token
 │       ├── variables.json
 │       └── skills/

@@ -116,7 +116,7 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
     return out
 
 
-# The `tool-cell-schema` contract is renderer-AGNOSTIC (#1022, ADR 0011): the
+# The `tool-cell-schema` contract is renderer-AGNOSTIC (#1022, ADR 0014): the
 # schema maps item fields to SEMANTIC ROLES, never to markup — so a DOM renderer
 # (`renderListCell`) and a non-browser one (Android RemoteViews: no HTML/CSS/JS,
 # a fixed set of view types, click → PendingIntent) can both render it. The
@@ -156,7 +156,7 @@ def _action_param_violations(action_id: str, mapping: Any) -> list[str]:
 def cell_schema_violations(
     schema: dict[str, Any], action_params: dict[str, Any] | None = None
 ) -> list[str]:
-    """Renderer-agnostic-schema lint for a `tool-cell-schema` (#1022, ADR 0011).
+    """Renderer-agnostic-schema lint for a `tool-cell-schema` (#1022, ADR 0014).
 
     Returns the reasons a schema would NOT render on a non-browser consumer —
     empty means clean. Enforced: only the closed role vocabulary

@@ -3219,49 +3219,73 @@ def mint_paperless_token(
     return None
 
 
-def create_paperless_superuser(username: str, password: str) -> bool:
-    """Create the managed paperless superuser via `manage.py createsuperuser
-    --noinput` inside the webserver container, with DJANGO_SUPERUSER_PASSWORD in
-    the exec env. paperless-ngx only bootstraps PAPERLESS_ADMIN_USER/PASSWORD on
-    first DB init, so an existing DB (or a pruned pod env) never gets the admin —
-    this creates it so the DRF token mint can succeed. Idempotent: a non-zero exit
-    means the user already exists, which is fine. Best-effort — never raises."""
+# Django code the superuser converge runs inside the webserver container. Both
+# credentials arrive through the exec env (never interpolated into this string).
+_PAPERLESS_SUPERUSER_PY = (
+    "import os;"
+    "from django.contrib.auth import get_user_model;"
+    "U = get_user_model();"
+    "name = os.environ['SOLARIS_PAPERLESS_USER'];"
+    "u, _ = U.objects.get_or_create("
+    "username=name, defaults={'email': name + '@localhost'});"
+    "u.is_active = True;"
+    "u.is_staff = True;"
+    "u.is_superuser = True;"
+    "u.set_password(os.environ['SOLARIS_PAPERLESS_PASSWORD']);"
+    "u.save()"
+)
+
+
+def converge_paperless_superuser(username: str, password: str) -> bool:
+    """Create the managed paperless superuser when missing AND reset its password
+    to `password` on every deploy — the Jellyfin `reset_lldap_solaris_password`
+    pattern (#1296).
+
+    paperless-ngx bootstraps PAPERLESS_ADMIN_USER/PASSWORD only on first DB init,
+    from the install-time ServiceBay secret, which the managed password we own
+    host-side never equals; and `createsuperuser --noinput` refuses to touch an
+    existing user. So without an unconditional reset the live admin password is
+    whatever paperless first booted with and `mint_paperless_token()` always
+    401s. Idempotent (same value each deploy). Best-effort — never raises."""
     try:
         proc = subprocess.run(
             [
                 "podman",
                 "exec",
                 "-e",
-                f"DJANGO_SUPERUSER_PASSWORD={password}",
+                f"SOLARIS_PAPERLESS_USER={username}",
+                "-e",
+                f"SOLARIS_PAPERLESS_PASSWORD={password}",
                 PAPERLESS_CONTAINER,
                 "python3",
                 "manage.py",
-                "createsuperuser",
-                "--noinput",
-                "--username",
-                username,
-                "--email",
-                f"{username}@localhost",
+                "shell",
+                "-c",
+                _PAPERLESS_SUPERUSER_PY,
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        jlog("info", "paperless", "createsuperuser did not run", error=str(e))
+        jlog("info", "paperless", "superuser converge did not run", error=str(e))
         return False
-    if proc.returncode == 0:
-        jlog("info", "paperless", "created managed paperless superuser", user=username)
-        return True
-    # Non-zero exit is expected when the user already exists — not fatal.
+    if proc.returncode != 0:
+        jlog(
+            "warn",
+            "paperless",
+            "could not converge the paperless superuser password",
+            user=username,
+            stderr=proc.stderr[-300:],
+        )
+        return False
     jlog(
         "info",
         "paperless",
-        "createsuperuser non-zero exit (user likely already exists)",
+        "converged the managed paperless superuser password",
         user=username,
-        stderr=proc.stderr[:200],
     )
-    return False
+    return True
 
 
 def _patch_or_insert_paperless_env(src: str, url: str, token: str) -> tuple[str, int]:
@@ -3332,15 +3356,20 @@ def converge_paperless_credential(data_dir: str) -> bool:
         return False
     paperless_url = env("PAPERLESS_URL", PAPERLESS_URL_DEFAULT)
     admin_user = env("PAPERLESS_ADMIN_USER", PAPERLESS_ADMIN_USER_DEFAULT)
+    # Reset BEFORE minting: the live admin password is whatever paperless
+    # bootstrapped with on first DB init (the install-time PAPERLESS_ADMIN_PASSWORD
+    # secret), which the managed password never equals, so a mint attempted first
+    # always 401s (#1296).
+    converged = converge_paperless_superuser(admin_user, password)
     token = mint_paperless_token(paperless_url, admin_user, password)
     if not token:
-        # Mint failed — most often because the managed superuser doesn't exist
-        # yet (paperless only bootstraps PAPERLESS_ADMIN_USER/PASSWORD on first
-        # DB init, and that env is pruned on a re-install; #1036). Create it and
-        # retry the mint once before falling back.
-        if create_paperless_superuser(admin_user, password):
-            token = mint_paperless_token(paperless_url, admin_user, password)
-    if not token:
+        if converged:
+            jlog(
+                "warn",
+                "paperless",
+                "converged the admin password but the DRF token mint still failed",
+                user=admin_user,
+            )
         # paperless not installed / not up yet / creds not accepted — fall back
         # to a previously persisted token so a transient outage doesn't drop the
         # engine's paperless wiring; otherwise no-op cleanly.

@@ -1,7 +1,14 @@
 # ADR 0013 — `/thinking` retires with the per-turn `think` switch
 
-**Status:** Accepted · supersedes the `/thinking` entry in the command list of
+**Status:** Proposed · contingent on ZA-15/E3 landing (see
+[`solaris-zielarchitektur.md`](../solaris-zielarchitektur.md), itself status
+"Entwurf zur Umsetzung" — draft, not yet implemented) · once in effect,
+supersedes the `/thinking` entry in the command list of
 [ADR 0009](0009-command-surfaces-control-and-tool.md)
+
+**Not yet in effect.** `/thinking` is still fully wired today
+(`solaris-chat/src/solaris_chat/static/index.html`) — this ADR records the
+decision for when ZA-15/E3 lands, it does not describe the current system.
 
 ## Context
 
