@@ -70,8 +70,20 @@ def def_kind(meta: dict[str, str]) -> str:
     return kind if kind in KINDS else _DEFAULT_KIND
 
 
+# ServiceBay's asset transport is ADDITIVE (mdopp/servicebay#2703): a file the
+# template stops shipping stays on the box forever with its old content, while a
+# file the template still ships IS overwritten. So a delivered definition is
+# retired by REPLACING its SKILL.md with a tombstone that sets `retired: true`,
+# never by deleting the directory — and a tombstone must reach no registry at
+# all: not the `/` pool, not the `.tool` catalog, not the cron or hook dispatch,
+# not the panel's lists.
+def is_retired(meta: dict[str, str]) -> bool:
+    return meta.get("retired", "").strip().lower() in ("true", "yes", "1")
+
+
 def _iter_defs(skills_dir: str | Path):
-    """Yield `(id, meta, body, file)` for every `<id>/SKILL.md` in the pack."""
+    """Yield `(id, meta, body, file)` for every live `<id>/SKILL.md` in the pack
+    — a tombstoned definition (`retired: true`) is skipped everywhere."""
     root = Path(skills_dir)
     if not root.is_dir():
         return
@@ -80,6 +92,8 @@ def _iter_defs(skills_dir: str | Path):
         if not child.is_dir() or not skill_file.is_file():
             continue
         meta, body = _split_frontmatter(skill_file.read_text(encoding="utf-8"))
+        if is_retired(meta):
+            continue
         yield child.name, meta, body, skill_file
 
 
