@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.48.0](https://github.com/mdopp/solarisbay/compare/v0.47.0...v0.48.0) (2026-08-31)
+
+
+### Features
+
+* **chat:** catch up on notifications missed while nothing was listening ([80a00ea](https://github.com/mdopp/solarisbay/commit/80a00ea2c49c1c963bc6ae0c0ea20854aa164d79)), closes [#1284](https://github.com/mdopp/solarisbay/issues/1284)
+* **chat:** show an in-page banner while solaris.db is unreadable ([34278cc](https://github.com/mdopp/solarisbay/commit/34278cca8e6f88d93bf062581e326384bfef69ad)), closes [#1274](https://github.com/mdopp/solarisbay/issues/1274)
+
+
+### Bug Fixes
+
+* **chat:** check session ownership before cancelling a turn ([77ea042](https://github.com/mdopp/solarisbay/commit/77ea0424783fc50f9db766400af7c3a97d857466)), closes [#1287](https://github.com/mdopp/solarisbay/issues/1287)
+* **chat:** make a notification action name its entity and service separately ([e8937dc](https://github.com/mdopp/solarisbay/commit/e8937dc84124bff19dcb4547e23bcc24351f84cf)), closes [#1283](https://github.com/mdopp/solarisbay/issues/1283)
+* **chat:** run the bound image hook and retire the two lying commands ([7fc3c0e](https://github.com/mdopp/solarisbay/commit/7fc3c0ed1e945fa2a018863ae30e578afc70e6e6)), closes [#1292](https://github.com/mdopp/solarisbay/issues/1292) [#1293](https://github.com/mdopp/solarisbay/issues/1293)
+* **chat:** tell the phone which notification action needs a confirmation ([784aecb](https://github.com/mdopp/solarisbay/commit/784aecbce22caad1b1314ecd00a79808519cb160)), closes [#1283](https://github.com/mdopp/solarisbay/issues/1283)
+* **gatekeeper:** honour SOLARIS_LANGUAGE in STT and guard GET /rooms ([adbab65](https://github.com/mdopp/solarisbay/commit/adbab659f204a1962b54fdba66442a955a044ff3)), closes [#1288](https://github.com/mdopp/solarisbay/issues/1288) [#1290](https://github.com/mdopp/solarisbay/issues/1290)
+* **gatekeeper:** stop sharing one conversation history across all unmatched speakers ([490baee](https://github.com/mdopp/solarisbay/commit/490baee52b1ecb7e6fec14aae6ad424aeb630f41)), closes [#1289](https://github.com/mdopp/solarisbay/issues/1289)
+* **skill:** name the log tool ServiceBay actually advertises ([fb40bb3](https://github.com/mdopp/solarisbay/commit/fb40bb37dc42a7a7762e9f8849bfae8022ecee3c)), closes [#1294](https://github.com/mdopp/solarisbay/issues/1294)
+* **skill:** retire dead commands with a tombstone instead of a deletion ([64c577c](https://github.com/mdopp/solarisbay/commit/64c577ceb0052e0843cec12fea12e07ffc7c365d))
+* **template:** converge the live paperless admin password on every deploy ([fa2b8d7](https://github.com/mdopp/solarisbay/commit/fa2b8d72b3bd055b451ec7ce62a39720a2b768f5)), closes [#1296](https://github.com/mdopp/solarisbay/issues/1296)
+* **template:** give the whisper batch GPU back when no job is running ([a444e5f](https://github.com/mdopp/solarisbay/commit/a444e5f2b51f012bacff7f1aab3e55c094a3e016)), closes [#1259](https://github.com/mdopp/solarisbay/issues/1259)
+
 ## [0.47.0](https://github.com/mdopp/solarisbay/compare/v0.46.0...v0.47.0) (2026-08-30)
 
 
