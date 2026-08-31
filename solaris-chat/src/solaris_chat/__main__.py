@@ -45,6 +45,8 @@ async def _run() -> None:
             notes_dir=settings.notes_dir,
             gatekeeper_url=settings.gatekeeper_url,
             gatekeeper_token=settings.gatekeeper_token,
+            gatekeeper_mcp_url=settings.gatekeeper_mcp_url,
+            gatekeeper_mcp_token=settings.gatekeeper_mcp_token,
             context_window=context_window.value,
             default_uid=settings.default_uid,
             jellyfin_url=settings.jellyfin_url,

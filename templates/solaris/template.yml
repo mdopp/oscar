@@ -264,6 +264,15 @@ spec:
       value: "http://127.0.0.1:10750"
     - name: PUSH_TOKEN
       value: "{{PUSH_TOKEN}}"
+    # The gatekeeper's room MCP (set_room/list_rooms, #1295) — the household
+    # profile's only reach into the satellite->room map. Its own loopback
+    # listener (MCP_PORT 10760 below) with its own bearer, so the engine never
+    # holds PUSH_TOKEN's wider surface. Must match the gatekeeper's
+    # GATEKEEPER_MCP_TOKEN below; blank on both sides = loopback-open.
+    - name: GATEKEEPER_MCP_URL
+      value: "http://127.0.0.1:10760/mcp"
+    - name: GATEKEEPER_MCP_TOKEN
+      value: "{{GATEKEEPER_MCP_TOKEN}}"
     # The household Immich instance the photo-ingest adapter reads (read-only,
     # #206) to map assets/faces/EXIF-geo into OKF events/people/places. Empty
     # IMMICH_BASE_URL disables the adapter; IMMICH_API_KEY is a read-only Immich

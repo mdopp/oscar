@@ -9,8 +9,9 @@ MCP server keeps room enrolment reachable while the push credential stays
 out of the agent.
 
 Runs as its own streamable-HTTP ASGI app on `MCP_PORT` (a third listener
-beside the Wyoming server and the push/HTTP app). `solarisbay`'s
-post-deploy registers it in the engine's `mcp_servers:` block.
+beside the Wyoming server and the push/HTTP app). The engine reaches it from
+the household profile's `RoomMcpToolbox` via `GATEKEEPER_MCP_URL` /
+`GATEKEEPER_MCP_TOKEN` (#1295) — there is no `mcp_servers:` registry block.
 """
 
 from __future__ import annotations

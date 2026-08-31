@@ -42,6 +42,7 @@ from solaris_chat.engine.tools.onboarding_approval import (
 )
 from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
+from solaris_chat.engine.tools.rooms_mcp import RoomMcpToolbox
 from solaris_chat.engine.tools.skill_promotion import (
     build_skill_draft_tools,
     build_skill_promotion_tools,
@@ -101,6 +102,8 @@ def build_engine_clients(
     notes_dir: str = "",
     gatekeeper_url: str = "",
     gatekeeper_token: str = "",
+    gatekeeper_mcp_url: str = "",
+    gatekeeper_mcp_token: str = "",
     context_window: int | None = None,
     default_uid: str = "household",
     jellyfin_url: str = "",
@@ -264,6 +267,19 @@ def build_engine_clients(
             bus=bus,
         )
 
+    # The gatekeeper's room MCP (#1295): `set_room`/`list_rooms` over the pod's
+    # loopback, so a household turn can answer "in welchem Raum stehe ich?"
+    # itself. Its own listener and its own token — the gatekeeper's PUSH_TOKEN
+    # (which also opens /push) stays out of the engine. Household only: the
+    # guest toolbox below is built without it, and `RoomMcpToolbox` withholds
+    # the write from an unidentified voice turn that lands here anyway.
+    household_toolbox: Toolbox = Toolbox(household_tools)
+    if gatekeeper_mcp_url:
+        household_toolbox = CombinedToolbox(
+            household_toolbox,
+            RoomMcpToolbox(gatekeeper_mcp_url, gatekeeper_mcp_token),
+        )
+
     household = make(
         EngineProfile(
             name="household",
@@ -278,7 +294,7 @@ def build_engine_clients(
             registry=registry,
             think_default=False,
             temperature=0.2,
-            toolbox=Toolbox(household_tools),
+            toolbox=household_toolbox,
             default_uid=default_uid,
         )
     )

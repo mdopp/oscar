@@ -65,6 +65,7 @@ it over the host loopback.
 | `SOUL_PATH` | `/var/lib/solaris/SOUL.md` | Household soul (mtime-cached). |
 | `ADMIN_SOUL_PATH` / `ADMIN_SKILLS_DIR` | — | Operator persona prompt. |
 | `SB_MCP_URL` / `SB_MCP_TOKEN_PATH` | — | servicebay_admin toolbox. |
+| `GATEKEEPER_MCP_URL` / `GATEKEEPER_MCP_TOKEN` | `http://127.0.0.1:10760/mcp` / — | The gatekeeper's room MCP on the household toolbox. |
 | `SOLARIS_DB_PATH` | `/var/lib/solaris/solaris.db` | Sessions, timers, traces. |
 | `NOTES_DIR` | `/opt/data/notes` | The notes vault (tools + topics). |
 
