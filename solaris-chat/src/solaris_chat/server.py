@@ -5968,12 +5968,24 @@ def build_app(
         items = mentions_store.list_session_mentions(solaris_db_path, session_id, uid)
         return web.json_response({"ok": True, "mentions": items})
 
-    def _resolve_image_hook() -> None:
+    def _image_turn_prompt() -> str:
         # An image-only turn fires the `image-upload` event; the hook that acts
         # on it is resolved from the registry so a rebind in the `/hooks` editor
-        # changes which definition handles it (no hardcoded id).
+        # changes which definition handles it (no hardcoded id). Household
+        # definition bodies are not in the system prompt, so the bound body has
+        # to ride the turn text — otherwise the photo runs on the generic
+        # prompt and the ingestion pipeline never happens.
         bound = skills.hooks_for_event(skills_dir, _IMAGE_UPLOAD_EVENT)
         log.info("chat.hook.event", event=_IMAGE_UPLOAD_EVENT, hooks=bound)
+        bodies = []
+        for hook_id in bound:
+            one = skills.read_def(skills_dir, "hook", hook_id)
+            body = str((one or {}).get("body") or "").strip()
+            if body:
+                bodies.append(body)
+        if not bodies:
+            return _IMAGE_PROMPT
+        return "\n\n".join(bodies) + "\n\n---\n\n" + _IMAGE_PROMPT
 
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
@@ -5989,8 +6001,7 @@ def build_app(
         if not text and not images:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         if not text:
-            text = _IMAGE_PROMPT
-            _resolve_image_hook()
+            text = _image_turn_prompt()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral_input = bool(body.get("ephemeral"))
@@ -6101,8 +6112,7 @@ def build_app(
         if not text and not images:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         if not text:
-            text = _IMAGE_PROMPT
-            _resolve_image_hook()
+            text = _image_turn_prompt()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral_input = bool(body.get("ephemeral"))

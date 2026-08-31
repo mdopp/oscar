@@ -295,6 +295,24 @@ def test_hooks_event_selector_drives_the_event_field_from_known_bind_points():
     assert "applyEventToRaw(hooksEditor.value, hookEventSel.value)" in fn.group(1)
 
 
+def test_hook_events_with_no_flow_point_say_so_in_the_selector():
+    # #1292: only `image-upload` has a server flow point (the image-only turn
+    # folds the bound body into its prompt). The other bind points dispatch
+    # nothing, so the selector must not present them as live wiring.
+    for ev in (
+        "guest-session-start",
+        "topic-circling",
+        "missing-room",
+        "registration-handoff",
+        "self-enroll-request",
+    ):
+        row = re.search(r'\["' + ev + r'", "([^"]+)"\]', _HTML)
+        assert row, ev
+        assert "not dispatched yet" in row.group(1), ev
+    live = re.search(r'\["image-upload", "([^"]+)"\]', _HTML)
+    assert live and "not dispatched" not in live.group(1)
+
+
 def test_pinned_household_row_opens_the_durable_session():
     # #419: the pinned "Zuhause" row opens the resident's ONE durable household
     # session (from /api/whoami) instead of minting a fresh chat per click; only

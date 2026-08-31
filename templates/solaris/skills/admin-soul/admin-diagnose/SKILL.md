@@ -24,7 +24,7 @@ itself. Read-scoped `servicebay_admin` tools only — for acting, hand off to
 - Any "what's wrong / why is X failing" needing service/container/log/health detail.
 
 Out of scope: acting on the diagnosis (`solaris-admin-act`); household health
-summaries (`solaris-status`); Solaris's own audit tables (`solaris-audit-query`).
+summaries (`solaris-status`).
 
 Resolve service names to containers per the operator soul's service↔container
 model; never ask for a container name.

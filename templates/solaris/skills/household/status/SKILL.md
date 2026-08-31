@@ -46,8 +46,8 @@ lives in ServiceBay's HealthStore.
 
 ## Not covered
 
-- **Skill correctness** → `solaris-audit-query` over `cloud_audit`.
-- **Voice latency** → `solaris-debug-set` + the gatekeeper timestamps.
+- **Container logs / voice latency** → ServiceBay-MCP `get_logs` on the
+  gatekeeper container, not a Solaris command.
 - **HA device state** ("is the office light on?") → an HA-tool query, not a probe.
 
 ## Failure paths

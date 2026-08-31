@@ -4585,7 +4585,7 @@
       // skills are model-picked, not typeable (#482). Each is [cmd, desc].
       var skillEntries = [];
       // The typeable commands (#482): user-authored command-kind templates +
-      // the built-in inline dual aliases (debug/status/notes/audit). These are
+      // the built-in inline dual aliases (status/notes). These are
       // the ONLY non-built-in entries the `/` autocomplete + /help draw on.
       // Each is [cmd, desc]; commandDefs holds the routing detail by trigger.
       var commandEntries = [];
@@ -4711,7 +4711,7 @@
         }
         if (cmd === "context") { showContext(); return; }
         // A typeable command (#482): user-authored command-kind template or a
-        // built-in inline dual alias (/debug /status /notes /audit). Its body
+        // built-in inline dual alias (/status /notes). Its body
         // expands into the turn prompt (followed by any args typed after it);
         // the inline dual aliases carry no editable body, so they send their own
         // trigger plus the args. Skills/hooks are NOT typeable — they fall
@@ -4749,7 +4749,7 @@
 
       // Populate the typeable-command pool (#482): user-authored command-kind
       // templates PLUS the built-in inline dual aliases (skill-kind defs that
-      // carry a `command:` field — /status //notes //audit). The `/` menu +
+      // carry a `command:` field — /status //notes). The `/` menu +
       // /help draw ONLY on this; skills/hooks aren't typeable. Also refreshes
       // skillEntries for the /skills editor (no longer in the `/` menu).
       function loadCommandPool() {
@@ -4767,9 +4767,9 @@
           // A command's trigger is its `command:` field if set, else `/<id>` for a
           // user template. Scheduler entries that carry a `command:` join as a
           // manual run-now trigger (#485). The built-in inline skill aliases
-          // (/notes /status /audit /debug) are DELIBERATELY excluded from the `/`
+          // (/notes /status) are DELIBERATELY excluded from the `/`
           // menu: they either need admin/MCP tools the household chat lacks
-          // (/status/audit/debug) or are covered by natural language + the . tools
+          // (/status) or are covered by natural language + the . tools
           // (/notes) — so they read as "listed but broken". The skills still fire
           // on a natural question; they just aren't a typeable `/`-command.
           var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
@@ -10792,13 +10792,17 @@
       // real trigger rather than free text. Server flow points resolve the hook
       // for an event from this registry (skills.hooks_for_event), so a rebind
       // here changes which definition fires on that event.
+      // Only `image-upload` has a server flow point today (#1292: the image-only
+      // turn folds the bound hook body into its prompt). The rest are declared
+      // bind points with nothing dispatching them yet, so they say so here —
+      // binding a hook to one of them must not look live.
       var HOOK_EVENTS = [
         ["image-upload", "Image upload"],
-        ["guest-session-start", "Guest session starts"],
-        ["topic-circling", "Chat circles one topic"],
-        ["missing-room", "Voice command with no known room"],
-        ["registration-handoff", "Guest chose to register"],
-        ["self-enroll-request", "Resident asks to self-enrol"]
+        ["guest-session-start", "Guest session starts — not dispatched yet"],
+        ["topic-circling", "Chat circles one topic — not dispatched yet"],
+        ["missing-room", "Voice command with no known room — not dispatched yet"],
+        ["registration-handoff", "Guest chose to register — not dispatched yet"],
+        ["self-enroll-request", "Resident asks to self-enrol — not dispatched yet"]
       ];
       var hooksCards = document.getElementById("hooks-cards");
       var hooksList = document.getElementById("hooks-list");
