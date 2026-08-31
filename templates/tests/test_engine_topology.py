@@ -97,6 +97,10 @@ def test_chat_carries_engine_env(raw_template):
         "ADMIN_SKILLS_DIR",
         "SB_MCP_URL",
         "SB_MCP_TOKEN_PATH",
+        # #1295: the household toolbox's client half of the gatekeeper's room
+        # MCP — same token variable as the gatekeeper's own listener below.
+        "GATEKEEPER_MCP_URL",
+        "GATEKEEPER_MCP_TOKEN",
         "HASS_URL",
         "HASS_TOKEN",
         "OLLAMA_URL",

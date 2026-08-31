@@ -158,6 +158,8 @@ class Settings:
     sb_mint_url: str
     gatekeeper_url: str
     gatekeeper_token: str
+    gatekeeper_mcp_url: str
+    gatekeeper_mcp_token: str
     immich_base_url: str
     immich_api_key: str
     # The household paperless-ngx instance the document push adapter (#931) feeds
@@ -372,6 +374,15 @@ class Settings:
                 "GATEKEEPER_URL", "http://127.0.0.1:10750"
             ).strip(),
             gatekeeper_token=os.environ.get("PUSH_TOKEN", "").strip(),
+            # The gatekeeper's room MCP (#1295): a separate loopback listener
+            # with its own bearer, so the household toolbox can remap a
+            # satellite's room without the engine holding PUSH_TOKEN (which
+            # also opens /push). Blank token = the gatekeeper's own
+            # loopback-open default; blank url = no room toolbox at all.
+            gatekeeper_mcp_url=os.environ.get(
+                "GATEKEEPER_MCP_URL", "http://127.0.0.1:10760/mcp"
+            ).strip(),
+            gatekeeper_mcp_token=os.environ.get("GATEKEEPER_MCP_TOKEN", "").strip(),
             # The household Immich instance the photo-ingest adapter reads
             # (read-only) to map assets/faces/EXIF-geo into OKF
             # events/people/places (#206). Empty ⇒ ingest disabled.
