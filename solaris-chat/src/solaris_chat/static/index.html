@@ -4585,8 +4585,8 @@
       // skills are model-picked, not typeable (#482). Each is [cmd, desc].
       var skillEntries = [];
       // The typeable commands (#482): user-authored command-kind templates +
-      // the built-in inline dual aliases (status/notes). These are
-      // the ONLY non-built-in entries the `/` autocomplete + /help draw on.
+      // scheduler run-now triggers (#485). These are the ONLY non-built-in
+      // entries the `/` autocomplete + /help draw on.
       // Each is [cmd, desc]; commandDefs holds the routing detail by trigger.
       var commandEntries = [];
       var commandDefs = {}; // "/foo" -> {id, command, hint}
@@ -4657,9 +4657,9 @@
           .forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         // /help covers the SAME set the `/` autocomplete shows — built-in
         // commands PLUS each typeable command (#482): user-authored templates +
-        // the inline dual aliases. Skills/hooks are NOT here (not typeable). The
-        // fetch may still be in flight on the first /help; the list grows once
-        // it lands.
+        // scheduler run-now triggers. Skills/hooks are NOT here (not typeable).
+        // The fetch may still be in flight on the first /help; the list grows
+        // once it lands.
         if (commandEntries.length) {
           lines.push("");
           lines.push("**Your commands** — typeable templates:");
@@ -4711,11 +4711,10 @@
         }
         if (cmd === "context") { showContext(); return; }
         // A typeable command (#482): user-authored command-kind template or a
-        // built-in inline dual alias (/status /notes). Its body
-        // expands into the turn prompt (followed by any args typed after it);
-        // the inline dual aliases carry no editable body, so they send their own
-        // trigger plus the args. Skills/hooks are NOT typeable — they fall
-        // through to "Unknown command".
+        // scheduler run-now trigger (#485). Its body expands into the turn
+        // prompt, followed by any args typed after it. Skills/hooks are NOT
+        // typeable — they fall through to "Unknown command", and no shipped
+        // skill declares a `/`-command any more (#1309).
         var def = commandDefs["/" + cmd];
         if (def) {
           runCommandTemplate(def, rest.trim());
@@ -4726,9 +4725,7 @@
 
       // Expand a typeable command into a turn (#482, #485). A command- or
       // scheduler-kind def (editable body) fetches its body and sends that — a
-      // scheduler entry's run-now command runs its job body once on demand; a
-      // built-in inline dual alias (a skill-kind def, no own body) sends its
-      // `/trigger` plus the typed args so the engine routes it as today. Arg
+      // scheduler entry's run-now command runs its job body once on demand. Arg
       // substitution into the body is a follow-up (the issue defers it).
       function runCommandTemplate(def, args) {
         function dispatch(body) {
@@ -4738,9 +4735,6 @@
           addUserTurn(prompt, []);
           runTurn(prompt, []);
         }
-        // A dual skill alias has no editable body — send the trigger; a command
-        // or scheduler def runs its own markdown body.
-        if (def.kind === "skill") { dispatch(""); return; }
         fetch("/api/defs/" + (def.kind || "command") + "/" + encodeURIComponent(def.id))
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) { dispatch(j && j.def ? j.def.body : ""); })
@@ -4748,9 +4742,8 @@
       }
 
       // Populate the typeable-command pool (#482): user-authored command-kind
-      // templates PLUS the built-in inline dual aliases (skill-kind defs that
-      // carry a `command:` field — /status //notes). The `/` menu +
-      // /help draw ONLY on this; skills/hooks aren't typeable. Also refreshes
+      // templates PLUS scheduler run-now triggers (#485). The `/` menu + /help
+      // draw ONLY on this; skills/hooks aren't typeable. Also refreshes
       // skillEntries for the /skills editor (no longer in the `/` menu).
       function loadCommandPool() {
         return Promise.all([
@@ -4766,12 +4759,12 @@
             .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           // A command's trigger is its `command:` field if set, else `/<id>` for a
           // user template. Scheduler entries that carry a `command:` join as a
-          // manual run-now trigger (#485). The built-in inline skill aliases
-          // (/notes /status) are DELIBERATELY excluded from the `/`
-          // menu: they either need admin/MCP tools the household chat lacks
-          // (/status) or are covered by natural language + the . tools
-          // (/notes) — so they read as "listed but broken". The skills still fire
-          // on a natural question; they just aren't a typeable `/`-command.
+          // manual run-now trigger (#485). Skill-kind defs are DELIBERATELY not
+          // a source here (#965, ADR 0009): a skill has no editable body, so the
+          // only thing a `/`-alias could send is its own trigger string as a
+          // turn — which is not a skill invocation, just text. Skills fire on a
+          // natural question instead, and since #1309 none declares a `command:`
+          // either, so nothing is advertised that this pool cannot route.
           var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
             .concat(schedDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "scheduler" }; }));
           commandEntries = []; commandDefs = {};

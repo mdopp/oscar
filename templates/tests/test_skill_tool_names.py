@@ -92,3 +92,59 @@ def test_shipped_skill_bodies_only_name_real_tools():
         if missing:
             unknown[str(path.relative_to(ROOT))] = missing
     assert not unknown, f"skill bodies name tools nothing exposes: {unknown}"
+
+
+def _scope(text: str) -> str:
+    """The `scope:` line of a def's frontmatter, or "" when it declares none."""
+    if not text.startswith("---"):
+        return ""
+    lines = text.splitlines()
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return ""
+    for line in lines[1:end]:
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == "scope":
+            return value.strip().strip("'\"")
+    return ""
+
+
+def test_a_household_skill_never_instructs_a_servicebay_tool():
+    """Existing *somewhere* is not enough — it has to exist on the profile that
+    reads the skill (#1310).
+
+    `status/SKILL.md` is `scope: household` and told the model to call
+    `get_health_checks` and `diagnose`. Both are real, so the test above passed;
+    both live only on the admin profile's SB-MCP toolbox, so the household model
+    had nothing to call and answered a status question by inventing sensor
+    entities instead (0 of 3 runs on the box, one firing 32 parallel
+    `ha_get_state` calls). A capability advertised to a profile that cannot
+    reach it produces confident fiction, which is worse than "das kann ich
+    nicht".
+
+    ServiceBay's toolbox is also the operator's — lifecycle, logs, deploys — and
+    the household profile is what a resident and, before any enrolment exists,
+    a voice guest talk to. So the household packs may not name any of it, and
+    the household answer to a status question comes from `get_solaris_status`,
+    a no-argument read-only probe registered in `profiles.py`.
+    """
+    offenders: dict[str, set[str]] = {}
+    for path in sorted((SKILLS / "household").rglob("*.md")):
+        if path.name not in ("SKILL.md", "SOUL.md"):
+            continue
+        text = path.read_text()
+        if _scope(text) not in ("", "household"):
+            continue
+        named = _named_tools(text) & SB_MCP
+        if named:
+            offenders[str(path.relative_to(ROOT))] = named
+    assert not offenders, (
+        f"household skills instruct ServiceBay tools the profile does not hold: "
+        f"{offenders}"
+    )
+
+
+def test_the_household_status_skill_names_the_tool_the_profile_holds():
+    body = (SKILLS / "household" / "status" / "SKILL.md").read_text()
+    assert "get_solaris_status" in _named_tools(body)
+    assert "get_solaris_status" in _engine_tools()

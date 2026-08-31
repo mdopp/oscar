@@ -26,10 +26,11 @@ Two prefixes, named for what they touch:
   heading: **"Tools — Erfassen & Finden"**. Composer placeholder:
   `Nachricht · /control · .tool`.
 
-Skills that carry a `command:` field are **not** exposed as `/` aliases — they
-either need admin/MCP tools the household chat lacks (`/status` `/audit` `/debug`)
-or are covered by natural language + a `.tool` (`/notes`). They still fire on a
-natural question.
+Skill-kind defs are **not** exposed as `/` aliases — a skill has no editable
+body, so a `/`-alias could only send its own trigger string as a turn, which is
+text and not a skill invocation. They fire on a natural question instead. Since
+#1309 no shipped skill declares a `command:` either: a declaration the `/` pool
+cannot route is an advertised command that answers "Unknown command".
 
 ### The `.tool` create-and-find pattern (the load-bearing part)
 

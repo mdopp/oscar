@@ -48,6 +48,7 @@ from solaris_chat.engine.tools.skill_promotion import (
     build_skill_draft_tools,
     build_skill_promotion_tools,
 )
+from solaris_chat.engine.tools.status import build_status_tools
 from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
@@ -103,6 +104,7 @@ def _registered_tools() -> dict[str, list[Tool]]:
         "build_ha_tools": build_ha_tools("http://ha", "tok"),
         "build_calendar_tools": build_calendar_tools(_uid),
         "build_choice_tools": build_choice_tools(),
+        "build_status_tools": build_status_tools(db_path="/tmp/db.sqlite"),
         "build_timer_tools": build_timer_tools("/tmp/db.sqlite", _uid),
         "build_wakeword_tools": build_wakeword_tools("/tmp/db.sqlite", _uid),
         "build_media_tools": build_media_tools("http://ha", "tok"),

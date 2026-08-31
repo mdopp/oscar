@@ -3,8 +3,7 @@ name: solaris-notes-search
 description: Read-only keyword + frontmatter retrieval over the household Obsidian vault via the notes_search tool. Use to find/recall a note, or show everything under a topic.
 kind: skill
 scope: household
-command: /notes
-version: 2.0.0
+version: 2.1.0
 author: Solaris
 license: MIT
 ---
@@ -13,8 +12,8 @@ license: MIT
 
 On-demand retrieval over the household's Obsidian notes vault (`/opt/data/notes`,
 Syncthing-synced) — the **read half** of the knowledge base. Keyword +
-frontmatter search via the `notes_search` tool. Read-only. Also
-runnable on demand as `/notes <query>`.
+frontmatter search via the `notes_search` tool. Read-only. Ask for it in plain
+language or use the `.note` tool — it is not a typeable command.
 
 ## When to use
 

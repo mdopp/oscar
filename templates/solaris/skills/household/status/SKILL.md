@@ -1,56 +1,64 @@
 ---
 name: solaris-status
-description: A read-only health probe across every Solaris dependency (solaris.db, Ollama, Home Assistant, ServiceBay-MCP, voice). Use for "is everything working?" questions.
+description: Sagt, ob Solaris selbst gerade rundläuft — Gedächtnis, Haussteuerung, Sprachsteuerung. Nur lesend. Für "läuft alles?"-Fragen.
 kind: skill
 scope: household
-command: /status
-version: 1.0.0
+version: 2.0.0
 author: Solaris
 license: MIT
 ---
 
-# Solaris — status
+# Solaris — läuft alles?
 
-Quick "is everything OK?" probe across every Solaris dependency. Read-only — no
-state changes. Also runnable on demand as `/status`.
+Eine kurze Selbstauskunft: läuft Solaris gerade rund? Nur lesend — es wird nichts
+geändert, nichts neu gestartet. In normaler Sprache fragen; ein tippbarer Befehl
+ist das nicht.
 
-## When to use
+## Wann
 
-- "Solaris, bist du da?" / "Bist du wach?"
-- "Funktioniert alles?" / "Geht das Licht gerade nicht?"
-- "Ist Home Assistant erreichbar?" / "Wo hakt's gerade?"
-- As the **first** diagnostic step before deeper drill-down — if status is green,
-  the bug is application-side, not infrastructure.
+- „Solaris, bist du da?" / „Bist du wach?"
+- „Läuft alles?" / „Funktioniert gerade alles?"
+- „Ist die Haussteuerung erreichbar?" / „Wo hakt's gerade?"
 
-## Operating sequence
+## Ablauf
 
-1. Call ServiceBay-MCP `get_health_checks` for the platform's aggregated health
-   state. Each result has the shape:
+1. `get_solaris_status` aufrufen. Das Werkzeug nimmt **keine Parameter** und
+   antwortet in dieser Form:
    ```json
-   {"name": "ollama", "ok": true, "latency_ms": 8, "type": "http"}
+   {"alles_ok": true,
+    "teile": [{"teil": "Gedächtnis", "ok": true},
+              {"teil": "Haussteuerung", "ok": true},
+              {"teil": "Sprachsteuerung", "ok": true}]}
    ```
-2. For a result that needs deeper context, call `diagnose <check-id>` for that
-   one check.
-3. Summarise verbally:
-   - **All green** → "Alles ok."
-   - **One red** → name it: "Home Assistant antwortet nicht — ich erreiche die
-     Haussteuerung gerade nicht."
-   - **Multiple red** → group by impact.
+2. Kurz vorlesen:
+   - `alles_ok: true` → „Ja, bei mir läuft alles."
+   - ein Teil `ok: false` → genau diesen Teil benennen: „Die Haussteuerung
+     erreiche ich gerade nicht — Licht und Heizung gehen darum nicht über mich."
+   - mehrere → alle nennen, in der Reihenfolge der Antwort.
 
-## What gets probed
+Nur das vorlesen, was in der Antwort steht. Kein Teil, der dort fehlt, wird
+erwähnt oder erraten.
 
-This skill does **not** define the check set — it is declared at deploy time by
-`solarisbay`'s `post-deploy.py` via `create_health_check` (solaris.db, ollama,
-home-assistant, servicebay-mcp, gatekeeper, the voice containers). The full set
-lives in ServiceBay's HealthStore.
+## Was geprüft wird
 
-## Not covered
+- **Gedächtnis** — ob Solaris seine eigenen Notizen, Aufgaben und Erinnerungen
+  gerade lesen kann.
+- **Haussteuerung** — ob Home Assistant antwortet (Licht, Heizung, Rollos).
+- **Sprachsteuerung** — ob die Sprachbrücke antwortet.
 
-- **Container logs / voice latency** → ServiceBay-MCP `get_logs` on the
-  gatekeeper container, not a Solaris command.
-- **HA device state** ("is the office light on?") → an HA-tool query, not a probe.
+Ein Teil, den diese Installation nicht hat, steht nicht in der Antwort und wird
+auch nicht erwähnt.
 
-## Failure paths
+## Nicht dafür
 
-- ServiceBay-MCP unreachable → "Ich kann das gerade selbst nicht prüfen —
-  ServiceBay antwortet nicht." (something is broken at the platform level).
+- **Einzelne Geräte** („ist das Bürolicht an?") → das ist eine Gerätefrage, kein
+  Statuscheck. Dafür gibt es die Home-Assistant-Werkzeuge.
+- **Tiefere Diagnose** — Logs, Container, Dienste, Neustarts. Das gehört dem
+  Betreiberzugang und ist hier bewusst nicht erreichbar. Wenn ein Teil rot ist
+  und jemand mehr wissen will: sagen, dass der Betreiber nachsehen muss.
+
+## Wenn das Werkzeug selbst nicht antwortet
+
+Dann ehrlich sagen: „Das kann ich dir gerade nicht sagen." Niemals einen Zustand
+raten und niemals einzelne Sensoren abfragen, um daraus einen Gesamtzustand zu
+bauen.
