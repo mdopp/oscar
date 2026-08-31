@@ -15,8 +15,10 @@ from wyoming.info import Describe
 
 from gatekeeper import handler as handler_mod
 from gatekeeper.handler import (
+    GUEST_UID,
     MAX_AUDIO_BYTES,
     GatekeeperHandler,
+    SpeakerResolution,
     client_id_from_peername,
 )
 
@@ -133,3 +135,43 @@ async def test_transcribe_uses_the_configured_system_language(monkeypatch):
     assert await handler._transcribe() == "turn on the light"
     opening = [e for e in sent if Transcribe.is_type(e.type)]
     assert Transcribe.from_event(opening[0]).language == "en"
+
+
+async def _converse_kwargs_for(speaker: SpeakerResolution) -> dict:
+    """Run one satellite turn and return the kwargs the handler sent to the
+    engine client. The stub replies with "" so the turn ends before TTS."""
+    solaris = AsyncMock()
+    solaris.converse = AsyncMock(return_value="")
+    handler = GatekeeperHandler(None, None, _StubInfo(), solaris)
+    handler._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    handler._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00")
+    ]
+    handler._transcribe = AsyncMock(return_value="wie spät ist es")
+    handler._resolve_speaker = AsyncMock(return_value=speaker)
+    handler._resolve_location = AsyncMock(return_value=None)
+    handler._stash_speaker = AsyncMock()
+    await handler._process_pipeline()
+    return solaris.converse.await_args.kwargs
+
+
+async def test_unmatched_speaker_turn_is_not_remembered():
+    # The guest sentinel is shared by every unmatched voice, so its turns must
+    # not be written to any conversation history (#1289).
+    kwargs = await _converse_kwargs_for(SpeakerResolution(GUEST_UID, attributed=True))
+    assert kwargs["uid"] == GUEST_UID
+    assert kwargs["remember"] is False
+
+
+async def test_resident_turn_is_remembered():
+    kwargs = await _converse_kwargs_for(
+        SpeakerResolution("michael", attributed=True, matched=True)
+    )
+    assert kwargs["remember"] is True
+
+
+async def test_unattributed_fallback_turn_is_still_remembered():
+    # Speaker-ID off / no extractor falls back to the configured resident uid —
+    # a real person, so their rolling history is unaffected by the guest fix.
+    kwargs = await _converse_kwargs_for(SpeakerResolution("michael"))
+    assert kwargs["remember"] is True

@@ -12,8 +12,14 @@ Also pinned (#1280): a fired timer or reminder rides the **same** event kind,
 the shipped v0.46.0 shape (no `category`) is still accepted, and Web Push keeps
 running unchanged next to the new event.
 
-The two tables (migrations 0020/0021) are replayed with raw SQL — a chat test
-must NOT import alembic (CI runs solaris-chat in a clean env without it).
+And pinned (#1284): the bus keeps no backlog, so a notice published while
+nobody was listening used to be lost rather than delayed. It is now also
+written to a short, self-pruning backlog that `GET /napi/notifications?since=`
+replays — bounded by age and by row count, scoped to the same two streams the
+SSE serves, and still promising nothing about delivery.
+
+The three tables (migrations 0020/0021/0034) are replayed with raw SQL — a chat
+test must NOT import alembic (CI runs solaris-chat in a clean env without it).
 """
 
 from __future__ import annotations
@@ -24,7 +30,13 @@ import sqlite3
 
 import pytest
 
-from solaris_chat import device_token_store, ha_notify, push_store, server
+from solaris_chat import (
+    device_token_store,
+    ha_notify,
+    notice_backlog,
+    push_store,
+    server,
+)
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.server import build_app
@@ -48,6 +60,12 @@ CREATE TABLE device_tokens (
   created    TEXT NOT NULL DEFAULT (datetime('now')),
   last_used  TEXT,
   revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE ha_notice_backlog (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_uid TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  payload    TEXT NOT NULL
 );
 """
 
@@ -610,3 +628,168 @@ async def test_a_scheduler_without_an_event_bus_still_fires(tmp_path):
     notifier = _RecordingNotifier()
     await TimerScheduler(db, "", "", notifier=notifier)._fire_due()
     assert len(notifier.pushes) == 1
+
+
+# ---- catch-up after a gap (#1284) ------------------------------------------
+
+
+async def _catch_up(client, token: str, since: str | None = None):
+    url = "/napi/notifications" + (f"?since={since}" if since else "")
+    return await client.get(url, headers={"Authorization": f"Bearer {token}"})
+
+
+async def test_a_notice_emitted_while_nobody_listens_is_fetched_afterwards(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The screen-off case the channel exists for: nothing is subscribed to the
+    # bus when the notice goes out, and it must still be there on the next wake.
+    app, db, bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/ha/notify",
+        json={"target": "anna", "title": "Waschmaschine", "body": "ist fertig"},
+    )
+    assert r.status == 202
+    assert not bus.has_subscriber("anna")
+
+    body = await (await _catch_up(client, token)).json()
+    assert body["ok"] is True
+    assert body["retention_hours"] == notice_backlog.RETENTION_HOURS
+    assert body["delivery"] == ha_notify.NOT_AN_ALARM
+    (notice,) = body["notifications"]
+    # The payload replayed is the event AS EMITTED — same object the stream
+    # carried, plus only the two catch-up fields.
+    assert {k: v for k, v in notice.items() if k not in ("id", "ts")} == (
+        bus.published[0][2]
+    )
+    assert notice["ts"].endswith("Z")
+
+
+async def test_the_catch_up_returns_only_what_is_newer_than_the_cursor(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    app, db, _bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    client = await aiohttp_client(app)
+    await client.post("/api/ha/notify", json={"target": "anna", "title": "Post da"})
+    first = (await (await _catch_up(client, token)).json())["notifications"]
+    assert [n["title"] for n in first] == ["Post da"]
+
+    await client.post("/api/ha/notify", json={"target": "anna", "title": "Fenster"})
+    later = await (await _catch_up(client, token, since=first[0]["ts"])).json()
+    assert [n["title"] for n in later["notifications"]] == ["Fenster"]
+    # Nothing new since the newest one it just read.
+    empty = await (await _catch_up(client, token, since=later["now"])).json()
+    assert empty["notifications"] == []
+
+
+async def test_the_catch_up_serves_the_same_two_streams_as_the_live_one(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # `/napi/portal/events` subscribes to own + household; the replay must show
+    # exactly those, never another resident's.
+    app, db, _bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    device_token_store.create(db, "bernd")
+    client = await aiohttp_client(app)
+    await client.post("/api/ha/notify", json={"target": "anna", "title": "Für Anna"})
+    await client.post("/api/ha/notify", json={"target": "bernd", "title": "Für Bernd"})
+    await client.post(
+        "/api/ha/notify", json={"target": "household", "title": "Für uns"}
+    )
+
+    body = await (await _catch_up(client, token)).json()
+    assert [n["title"] for n in body["notifications"]] == ["Für Anna", "Für uns"]
+
+
+async def test_a_fired_timer_is_catchable_after_the_fact(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The second producer: a timer that fired into an empty bus is not lost
+    # either — same kind, same replay.
+    app, db, _bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    conn = sqlite3.connect(db)
+    conn.execute(_TIMERS_SCHEMA)
+    conn.execute(
+        "INSERT INTO engine_timers (id, owner_uid, kind, label, fire_at, status)"
+        " VALUES ('t1', 'anna', 'timer', 'Tee', '2000-01-01T00:00:00+00:00',"
+        " 'pending')"
+    )
+    conn.commit()
+    conn.close()
+    await TimerScheduler(db, "", "")._fire_due()
+
+    client = await aiohttp_client(app)
+    (notice,) = (await (await _catch_up(client, token)).json())["notifications"]
+    assert (notice["title"], notice["body"], notice["category"]) == (
+        "Timer abgelaufen",
+        "Tee",
+        "timer",
+    )
+
+
+async def test_the_catch_up_is_device_token_only(aiohttp_client, tmp_path, monkeypatch):
+    app, _db, _bus, _sent = _app(tmp_path, monkeypatch)
+    client = await aiohttp_client(app)
+    assert (await client.get("/napi/notifications")).status == 401
+
+
+async def test_an_unreadable_cursor_is_refused_rather_than_guessed(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    app, db, _bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    client = await aiohttp_client(app)
+    r = await _catch_up(client, token, since="gestern")
+    assert r.status == 400
+    assert (await r.json())["reason"] == "invalid_since"
+
+
+# ---- the backlog is short and bounded --------------------------------------
+
+
+def test_the_retention_window_is_short():
+    # These rows name residents and describe their home. A convenience channel
+    # earns hours, not days.
+    assert notice_backlog.RETENTION_HOURS <= 12
+
+
+def test_a_notice_older_than_the_window_is_neither_served_nor_kept(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO ha_notice_backlog (target_uid, created_at, payload)"
+        " VALUES ('anna', strftime('%Y-%m-%d %H:%M:%f', 'now', '-2 days'),"
+        ' \'{"title": "alt"}\')'
+    )
+    conn.commit()
+    conn.close()
+    # Not served, even before anything has pruned it.
+    assert notice_backlog.fetch(db, ["anna"]) == []
+    # And the next write reaps it — no cron to forget to run.
+    notice_backlog.record(db, "anna", ha_notify.event_data("anna", "neu"))
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT payload FROM ha_notice_backlog").fetchall()
+    conn.close()
+    assert len(rows) == 1 and "neu" in rows[0][0]
+
+
+def test_the_backlog_cannot_grow_without_bound_inside_the_window(tmp_path, monkeypatch):
+    # A misfiring automation must not be able to fill the disk between prunes.
+    db = _db(tmp_path)
+    monkeypatch.setattr(notice_backlog, "MAX_ROWS_PER_TARGET", 3)
+    for i in range(10):
+        notice_backlog.record(db, "anna", ha_notify.event_data("anna", f"n{i}"))
+    kept = [n["title"] for n in notice_backlog.fetch(db, ["anna"])]
+    assert kept == ["n7", "n8", "n9"]
+
+
+def test_a_box_without_the_migration_degrades_to_no_backlog(tmp_path):
+    # The engine ships before the schema-init sidecar has run: no table, no
+    # backlog, no exception into the producer.
+    db = str(tmp_path / "empty.db")
+    sqlite3.connect(db).close()
+    notice_backlog.record(db, "anna", ha_notify.event_data("anna", "Post da"))
+    assert notice_backlog.fetch(db, ["anna"]) == []

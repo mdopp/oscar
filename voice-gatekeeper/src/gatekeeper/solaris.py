@@ -6,6 +6,12 @@ per conversation (keyed by the uid or the originating satellite) so a
 follow-up like "und im Schlafzimmer?" still has its context, without any
 server-side session bookkeeping.
 
+A history key must name *one person*. Speaker-ID routes every voice it cannot
+match to the single `guest` sentinel, which is not a person — so a turn whose
+speaker was not identified is run stateless (`remember=False`) and leaves no
+history behind. Before #1289 those turns all shared one bucket, and the next
+unmatched speaker was prompted with the previous one's exchange.
+
 Every turn runs on `solaris`, the engine's household profile — the facade's
 only conversational model since `solaris-deep` was retired (#1121). The engine
 does its own tool dispatch server-side — the reply is plain text, ready for
@@ -54,16 +60,20 @@ class SolarisClient:
         uid: str,
         endpoint: str,
         trace_id: str,
+        remember: bool,
         location: str | None = None,
     ) -> str:
-        conv_key = uid or endpoint
         # Inject the satellite's resolved room as an out-of-band context hint
         # (#313): the hint rides as a bracketed prefix the model reads but
         # doesn't speak.
         if location:
             text = f"[room: {location}]\n{text}"
-        history = self._history.setdefault(conv_key, deque(maxlen=_MAX_HISTORY))
-        messages = [*history, {"role": "user", "content": text}]
+        history: deque[dict[str, str]] | None = None
+        if remember:
+            history = self._history.setdefault(
+                uid or endpoint, deque(maxlen=_MAX_HISTORY)
+            )
+        messages = [*(history or ()), {"role": "user", "content": text}]
         body: dict[str, Any] = {
             "model": MODEL,
             "messages": messages,
@@ -89,7 +99,7 @@ class SolarisClient:
             )
             return ""
         reply = _extract_reply(response.json())
-        if reply:
+        if reply and history is not None:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": reply})
         return reply

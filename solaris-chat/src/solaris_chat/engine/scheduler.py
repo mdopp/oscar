@@ -25,7 +25,7 @@ from typing import Any
 
 import aiohttp
 
-from solaris_chat import ha_notify
+from solaris_chat import ha_notify, notice_backlog
 from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.logging import log
 
@@ -274,24 +274,25 @@ class TimerScheduler:
         resident can mute the house's notices without losing their timers. This
         is a third best-effort copy: the speaker announce above stays primary
         and `_push` (Web Push) is untouched.
+
+        The event also lands in the short backlog (#1284) so a phone whose
+        screen was off when the timer fired can still catch it up — the bus
+        itself keeps nothing.
         """
-        if self._event_bus is None:
-            return
         uid = timer.get("owner_uid") or ""
         if not uid:
             return
         kind = timer.get("kind") or "timer"
         title = _TITLES.get(kind, kind.capitalize())
-        self._event_bus.publish(
+        data = ha_notify.event_data(
             uid,
-            ha_notify.EVENT_KIND,
-            ha_notify.event_data(
-                uid,
-                title,
-                timer.get("label") or title,
-                category=ha_notify.TIMER_CATEGORIES.get(kind, "reminder"),
-            ),
+            title,
+            timer.get("label") or title,
+            category=ha_notify.TIMER_CATEGORIES.get(kind, "reminder"),
         )
+        if self._event_bus is not None:
+            self._event_bus.publish(uid, ha_notify.EVENT_KIND, data)
+        notice_backlog.record(self._db_path, uid, data)
 
     def _alarm_sound_can_play(self) -> bool:
         return bool(

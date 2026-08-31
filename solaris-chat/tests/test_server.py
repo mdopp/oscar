@@ -3041,9 +3041,12 @@ async def test_test_mcp_empty_tool_rejected(aiohttp_client):
     assert resp.status == 400
 
 
-async def test_cancel_unknown_session_is_noop(aiohttp_client):
+async def test_cancel_unknown_session_is_noop(aiohttp_client, tmp_path):
     app = build_app(
-        engine=_FakeEngine(), remote_user_header="Remote-User", default_uid="household"
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
     resp = await client.post("/api/chat/cancel", json={"session_id": "nope"})
@@ -3052,7 +3055,7 @@ async def test_cancel_unknown_session_is_noop(aiohttp_client):
     assert body == {"ok": True, "cancelled": False}
 
 
-async def test_cancel_interrupts_active_stream(aiohttp_client):
+async def test_cancel_interrupts_active_stream(aiohttp_client, tmp_path):
     # A stream that yields forever until cancelled; the cancel endpoint must
     # break the loop and emit a `cancelled` frame (#192).
     import asyncio
@@ -3076,6 +3079,7 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
         engine=_SlowEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
+        solaris_db_path=_sessions_db(tmp_path),
     )
     client = await aiohttp_client(app)
 
