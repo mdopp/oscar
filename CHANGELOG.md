@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.52.0](https://github.com/mdopp/solarisbay/compare/v0.51.0...v0.52.0) (2026-09-05)
+
+
+### Features
+
+* **chat:** offer the Android app in the menu and announce a new version ([6926185](https://github.com/mdopp/solarisbay/commit/69261852ac27cf917255a1c7de92a794c1b9294f)), closes [#1326](https://github.com/mdopp/solarisbay/issues/1326)
+* **template:** run foundry's 12b instead of the household model, voice stays ([711b5d9](https://github.com/mdopp/solarisbay/commit/711b5d97f3ef6fdc401acd37c9ff0f8e01e32762)), closes [#1325](https://github.com/mdopp/solarisbay/issues/1325)
+
+
+### Bug Fixes
+
+* **template:** stop posting the conversation subentry into a dead flow ([11e6681](https://github.com/mdopp/solarisbay/commit/11e66812f8e07873addaefd8b0f751a1056272c4)), closes [#1324](https://github.com/mdopp/solarisbay/issues/1324)
+
 ## [0.51.0](https://github.com/mdopp/solarisbay/compare/v0.50.0...v0.51.0) (2026-09-05)
 
 
