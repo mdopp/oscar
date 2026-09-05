@@ -12,7 +12,8 @@ flowchart LR
     PE["🔊 Voice PE"] -- ESPHome --> HA["HA Assist pipeline<br/>whisper GPU · Martin TTS GPU"]
     Browser["💻 Browser"] -- SSO --> Chat
     HA -- "conversation.solaris" --> Chat["Solaris Engine<br/>(solaris-chat)"]
-    Chat -- "per-turn model+think" --> Ollama["ollama (GPU)<br/>e4b"]
+    Chat -- "per-turn model, thinking off" --> Llama["llama.cpp (GPU)<br/>e4b + MTP drafter"]
+    Chat -- "embeddings · vision ingest" --> Ollama["ollama (GPU)<br/>nomic-embed-text"]
     Chat -- "tools · registry · announce" --> HA
     Chat --- DB[("solaris.db")]
     Chat --- Notes[("notes vault")]
@@ -96,8 +97,10 @@ is headed — zones, ADRs and the V1 backlog — is
   bodies `daily-chronicle`, `problem-summarizer`) and `admin-soul/` (the
   operator persona: `admin-diagnose`, `admin-logs`, `admin-act` + its
   `SOUL.md`).
-- **ServiceBay templates** (`templates/{ollama,solaris}/`) — two services:
-  `ollama` (the local LLM engine) and `solaris` — one Pod with four
+- **ServiceBay templates** (`templates/{ollama,llama,solaris}/`) — three
+  services: `llama` (llama.cpp serving the household model with Google's MTP
+  drafter — half the wait per answer, #1318), `ollama` (embeddings + the
+  vision ingest) and `solaris` — one Pod with four
   containers (`chat`, `gatekeeper`, `openwakeword`, `tts-bridge`) plus two
   init containers (`notes-perms`, `schema-init`). `post-deploy.py` seeds the soul,
   adopts the HA token, wires the **voice pipeline** (wyoming whisper/piper,
@@ -127,7 +130,8 @@ is headed — zones, ADRs and the V1 backlog — is
 
 1. ServiceBay → Settings → Registries → Add `mdopp/solarisbay`
    (`https://github.com/mdopp/solarisbay.git`).
-2. After save, the `ollama` + `solaris` templates and the `solarisbay` stack
+2. After save, the `ollama`, `llama` and `solaris` templates and the
+   `solarisbay` stack
    appear in the wizard.
 3. Install the stack. The `solaris` template's `post-deploy.py` does the
    rest (soul, HA token adoption, jellyfin integration, voice pipeline,
@@ -140,7 +144,8 @@ solarisbay/
 ├── README.md                       # this file
 ├── solaris-architecture.md         # the architecture record
 ├── templates/                       # ServiceBay templates
-│   ├── ollama/                       # the local LLM engine — its own service
+│   ├── ollama/                       # embeddings + vision ingest — its own service
+│   ├── llama/                        # llama.cpp: the household chat model + MTP drafter
 │   └── solaris/                      # the assistant service
 │       ├── template.yml             # one Pod: chat, gatekeeper, openwakeword, tts-bridge
 │       ├── post-deploy.py           # soul + HA wiring + admin MCP token
@@ -154,7 +159,7 @@ solarisbay/
 ├── wakeword-trainer/               # Docker image source (microWakeWord GPU)
 ├── stacks/
 │   └── solarisbay/
-│       └── stack.yml               # templates: [ollama, solaris]
+│       └── stack.yml               # templates: [ollama, llama, solaris]
 └── .github/workflows/
     └── build-images.yml            # publishes the GHCR images
 ```

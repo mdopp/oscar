@@ -1,0 +1,47 @@
+{
+  "LLAMA_PORT": {
+    "type": "text",
+    "description": "Host port llama-server binds on, loopback only. Default `11435` — next to Ollama's 11434 and clear of llama.cpp's stock 8080, which is heavily contended on a household box. Keep it equal to the solaris template's LLAMA_SERVER_URL port. There is deliberately no proxy route: llama-server ships no authentication and its only consumer is the Solaris Engine on the same host.",
+    "default": "11435"
+  },
+  "LLAMA_MODEL_REPO": {
+    "type": "text",
+    "description": "Hugging Face repo the GGUFs are downloaded from at install. Default `ggml-org/gemma-4-E4B-it-GGUF` — ggml's own conversion of `google/gemma-4-E4B-it`, and the only source that also ships the matching MTP drafter. Ollama's own e4b blob cannot be used: llama.cpp rejects it (`expected 2131 tensors, got 720`), which is why this template downloads its own weights instead of pointing at the ollama model store.",
+    "default": "ggml-org/gemma-4-E4B-it-GGUF"
+  },
+  "LLAMA_MODEL_FILE": {
+    "type": "text",
+    "description": "The chat weights, downloaded into ${DATA_DIR}/llama/models. Default `gemma-4-E4B-it-Q4_0.gguf` (4.59 GB) — the household model, box-measured at 133.5 tok/s and 0.30 s per finished answer with the drafter below, against 53.0 tok/s / 0.62 s for the same model on Ollama (solarisbay#1318). Gemma 4 12B was measured too and rejected: 1.35 s per answer, more than twice the wait for the resident.",
+    "default": "gemma-4-E4B-it-Q4_0.gguf"
+  },
+  "LLAMA_DRAFT_FILE": {
+    "type": "text",
+    "description": "Google's official Multi-Token-Prediction drafter for the same model (98.7 MB), the whole reason this template exists — speculative decoding roughly doubles the household answer rate and Ollama has no draft-model knob at all. Set to an empty string only to measure without it; the server then runs at about half the speed.",
+    "default": "mtp-gemma-4-E4B-it-Q8_0.gguf"
+  },
+  "LLAMA_MMPROJ_FILE": {
+    "type": "text",
+    "description": "The multimodal projector (560 MB) that keeps Gemma 4's vision working, so photo attachments in the chat are still understood after the move off Ollama. Blank disables it: the server starts text-only and an attached photo reaches the model as text alone. Costs about 0.5 GB of VRAM.",
+    "default": "mmproj-gemma-4-E4B-it-Q8_0.gguf"
+  },
+  "LLAMA_CONTEXT_LENGTH": {
+    "type": "text",
+    "description": "Context window the model is loaded at (tokens). Default `32768` — the same window the household prompt was measured against (7.7k of system prompt, tools and entity registry, leaving ~25k of conversation), and what the chat's auto-compaction assumes. Unlike Ollama this is a per-server setting, not a per-request hint: raising it costs KV-cache VRAM on every turn.",
+    "default": "32768"
+  },
+  "LLAMA_DRAFT_N_MAX": {
+    "type": "text",
+    "description": "How many tokens the MTP drafter proposes per step (`--spec-draft-n-max`). Default `4`: box-measured 43.4% of drafted tokens accepted at 4, against 25% at 8 — a longer draft wastes more GPU work than it saves. Only change this with a measurement in hand.",
+    "default": "4"
+  },
+  "LLAMA_GPU_PASSTHROUGH": {
+    "type": "text",
+    "description": "Blank = auto-detect: post-deploy engages NVIDIA GPU passthrough when the host has a CDI-registered GPU (`/etc/cdi/nvidia.yaml`, from `nvidia-ctk cdi generate`), otherwise CPU-only. `yes` forces GPU, `no` forces CPU. Actual passthrough is delivered by post-deploy's Quadlet fixup, which swaps the .kube unit for a `.container` with `AddDevice=nvidia.com/gpu=all` AND `SecurityLabelDisable=true`. Both lines are load-bearing: with the device but without the SELinux relaxation, llama-server logs a single passing warning and quietly answers from the CPU.",
+    "default": ""
+  },
+  "LLAMA_DOWNLOAD_STALL_SECONDS": {
+    "type": "text",
+    "description": "Stall window for the GGUF downloads, in seconds: a download is abandoned only after this long with NO bytes arriving — not on total elapsed time, so a slow link taking half an hour for the 4.6 GB weights is fine as long as it keeps moving. Also caps the wait for llama-server to answer /health (at most 900 s, since the first start loads ~5 GB from disk).",
+    "default": "600"
+  }
+}

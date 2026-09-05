@@ -10,7 +10,7 @@ guest     — fast model, restricted toolbox (HA control/state only, no
             notes/timers/admin), and ephemeral: a guest turn writes nothing to
             the store, so nothing about a guest survives the conversation (#353).
 
-They share one store, one Ollama client, one trace recorder — a turn's
+They share one store, one chat backend, one trace recorder — a turn's
 profile decides prompt + model + tools, nothing else.
 """
 
@@ -24,6 +24,7 @@ from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ingest.jellyfin import RestJellyfinMusicClient
+from solaris_chat.engine.llama_server import LlamaServerChat
 from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
@@ -89,6 +90,7 @@ def build_engine_clients(
     *,
     db_path: str,
     ollama_url: str,
+    llama_server_url: str = "",
     fast_model: str,
     thorough_model: str,
     soul_path: str,
@@ -122,6 +124,10 @@ def build_engine_clients(
 ]:
     """Returns (household, admin, guest, librarian, enrollment) + recorder + bus."""
     ollama = OllamaChat(ollama_url)
+    # The chat backend (#1318): llama.cpp's llama-server with the Gemma-4 MTP
+    # drafter, half the wait per answer. Ollama keeps the calls that are its
+    # own — embeddings, the vision ingest, /api/ps, the model lease.
+    chat = LlamaServerChat(llama_server_url) if llama_server_url else ollama
     recorder = TraceRecorder()
     bus = SessionBus()
     registry = EntityRegistry(hass_url, hass_token)
@@ -273,7 +279,7 @@ def build_engine_clients(
         return EngineClient(
             profile,
             db_path=db_path,
-            ollama=ollama,
+            ollama=chat,
             recorder=recorder,
             context_window=context_window,
             bus=bus,

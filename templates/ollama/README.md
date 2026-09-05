@@ -173,10 +173,14 @@ The `32768` default context plus the small embed model fit the chat
 model + embeddings + headroom on a 16 GB GPU (gemma4:12b ~8.95 GB,
 `nomic-embed-text` a few hundred MB, leaving ~6.6 GB).
 
-> **Speculative decoding is not available via Ollama CUDA serving as of
-> 0.30.6** — there is no API/Modelfile/env knob for a draft model on
-> CUDA, and gemma4's native MTP is MLX/Mac-only. No draft-model config
-> is shipped here on purpose.
+> **Speculative decoding is not available via Ollama** — there is still no
+> API/Modelfile/env knob for a draft model. gemma4's native MTP drafter is
+> NOT Mac-only, though (this README used to claim it was): ggml-org ships
+> `mtp-gemma-4-E4B-it-Q8_0.gguf` and llama.cpp uses it on CUDA. Box-measured
+> it doubles the household answer rate, which is why the hot path moved to
+> the `llama` template (#1318). Ollama keeps the embeddings, the vision
+> ingest and the neighbour-service model lease; no draft-model config is
+> shipped here because there is none to ship.
 
 ## Storage
 

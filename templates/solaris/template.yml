@@ -178,10 +178,15 @@ spec:
     # (#235). A positive integer OVERRIDES the derivation (ops control).
     - name: CONTEXT_WINDOW
       value: "{{CONTEXT_WINDOW}}"
-    # Where Ollama's API lives (host loopback; hostNetwork pod) — the
-    # engine's LLM backend.
+    # Where Ollama's API lives (host loopback; hostNetwork pod) — embeddings,
+    # the vision ingest, /api/ps and the neighbour-service model lease.
     - name: OLLAMA_URL
       value: "{{OLLAMA_URL}}"
+    # Where llama.cpp's llama-server lives — the CHAT backend since #1318.
+    # The same weights with Google's MTP drafter answer in 0.30 s where
+    # Ollama takes 0.62 s; empty falls back to Ollama's /api/chat.
+    - name: LLAMA_SERVER_URL
+      value: "{{LLAMA_SERVER_URL}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the
     # link (no dead link when unset).
     - name: LOGOUT_URL
