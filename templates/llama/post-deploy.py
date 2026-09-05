@@ -250,6 +250,7 @@ def env_profile() -> dict[str, str]:
         "draft_n_max": env("LLAMA_DRAFT_N_MAX", "4"),
         "cache_type": "",
         "parallel": "",
+        "reasoning": "",
         "label": "Gemma 4 E4B",
     }
 
@@ -303,6 +304,8 @@ def server_args(
         ]
     if mmproj_file:
         args += ["--mmproj", f"{models_dir_in_container}/{mmproj_file}"]
+    if profile["reasoning"]:
+        args += ["--reasoning", profile["reasoning"]]
     return args
 
 
@@ -494,16 +497,31 @@ VOICE_DEVICE_ENV = {
 # cell H1): 15 004 of 16 380 MiB, 32.6 tok/s, tool calls 12/12, no thinking
 # leak, drafter acceptance 71.4%. `--parallel 1` and q8 KV are not tuning —
 # with llama-server's stock 4 slots or f16 KV the drafter never loads at all.
+#
+# 80k is the top of the ladder, re-measured 2026-09-06 (#1321): 15 700 MiB,
+# 33.6 tok/s, 12/12, and a 76 530-token prompt prefilled at 286 tok/s without
+# an OOM. 96k does not exist — with q8 KV the cache allocation fails and the
+# drafter never loads, and the `-ctv q4_0` that would make it fit drops prompt
+# processing to 47-96 tok/s, so a full window would take half an hour to read.
+# `--fit-target` is not the lever #1321 guessed it was: `--fit` gives up as
+# soon as `-ngl` is set by hand, which this profile does.
 CODING_PROFILE = {
     "model_repo": "unsloth/Qwen3.8-27B-GGUF",
     "model_file": "Qwen3.8-27B-UD-IQ3_XXS.gguf",
     "draft_repo": "ggml-org/Qwen3.8-27B-GGUF",
     "draft_file": "mtp-Qwen3.8-27B-Q4_0.gguf",
     "mmproj_file": "",
-    "context_length": "65536",
+    "context_length": "81920",
     "draft_n_max": "4",
     "cache_type": "q8_0",
     "parallel": "1",
+    # Box-measured 2026-09-06 (#1321): with tools in the request and no flag,
+    # Qwen puts 200 of 222 generated tokens into a `reasoning_content` trace
+    # the caller never sees, and goose aborts the whole run when one reply
+    # runs into its output-token limit. The household never noticed because
+    # solaris-chat sends this per request (#1318); a leased server is driven
+    # by aider/goose/Continue, which do not.
+    "reasoning": "off",
     "label": "Qwen 3.8 27B",
 }
 
@@ -526,6 +544,7 @@ FOUNDRY_PROFILE = {
     "draft_n_max": "4",
     "cache_type": "",
     "parallel": "",
+    "reasoning": "",
     "label": "Gemma 4 12B",
 }
 

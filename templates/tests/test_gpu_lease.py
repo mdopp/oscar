@@ -186,10 +186,21 @@ def test_the_coding_profile_is_the_only_cell_that_measured(pd):
     args = pd.server_args("11435", "/models", pd.CODING_PROFILE)
     assert "-m /models/Qwen3.8-27B-UD-IQ3_XXS.gguf" in " ".join(args)
     assert "--spec-draft-model /models/mtp-Qwen3.8-27B-Q4_0.gguf" in " ".join(args)
-    assert args[args.index("-c") + 1] == "65536"
+    assert args[args.index("-c") + 1] == "81920"
     assert args[args.index("-ctk") + 1] == "q8_0"
     assert args[args.index("-ctv") + 1] == "q8_0"
     assert args[args.index("--parallel") + 1] == "1"
+
+
+def test_the_coding_profile_switches_thinking_off_at_the_server(pd):
+    """Box-measured 2026-09-06 (#1321): with tools in the request and the flag
+    missing, Qwen answers a one-line request with 222 generated tokens, 200 of
+    them an invisible `reasoning_content` trace; with it, 35. goose aborts the
+    run when a reply hits its output-token limit, so the trace does not just
+    cost time. `solaris-chat` sends the same switch per request — the leased
+    server is driven by tools that do not, so it has to default to it."""
+    args = pd.server_args("11435", "/models", pd.CODING_PROFILE)
+    assert args[args.index("--reasoning") + 1] == "off"
 
 
 def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
@@ -197,6 +208,7 @@ def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
     on every deploy for nothing."""
     args = pd.server_args("11435", "/models")
     assert "-ctk" not in args and "-ctv" not in args and "--parallel" not in args
+    assert "--reasoning" not in args
 
 
 def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
