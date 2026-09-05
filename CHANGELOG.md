@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.53.0](https://github.com/mdopp/solarisbay/compare/v0.52.0...v0.53.0) (2026-09-05)
+
+
+### Features
+
+* **chat:** name the version in the app-update notice ([a15cdf6](https://github.com/mdopp/solarisbay/commit/a15cdf67654bb8bdd044deda5fe71d61c730ef25)), closes [#1329](https://github.com/mdopp/solarisbay/issues/1329)
+
 ## [0.52.0](https://github.com/mdopp/solarisbay/compare/v0.51.0...v0.52.0) (2026-09-05)
 
 
