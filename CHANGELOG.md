@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.50.0](https://github.com/mdopp/solarisbay/compare/v0.49.0...v0.50.0) (2026-08-31)
+
+
+### Features
+
+* **template:** give Home Assistant a notify.solaris service ([00c0d7f](https://github.com/mdopp/solarisbay/commit/00c0d7fb301998b7996b1fae1cc2ca3f0958a002)), closes [#1314](https://github.com/mdopp/solarisbay/issues/1314)
+
 ## [0.49.0](https://github.com/mdopp/solarisbay/compare/v0.48.0...v0.49.0) (2026-08-31)
 
 
