@@ -33,7 +33,9 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat import gpu_lease
 from solaris_chat.engine.ollama import ChatResult, OllamaError
+from solaris_chat.logging import log
 
 # Base64 magic prefixes, so an attachment carried as bare base64 (the Ollama
 # `images` shape the store persists) gets an honest data-URL media type.
@@ -142,9 +144,12 @@ def to_openai_options(options: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class LlamaServerChat:
-    def __init__(self, base_url: str, timeout: float = 300.0):
+    def __init__(self, base_url: str, timeout: float = 300.0, lease_path: str = ""):
         self._base_url = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout, sock_read=timeout)
+        # Where the box writes the whole-card GPU lease (#1320). Empty = no
+        # lease is possible, which is what a dev install has.
+        self._lease_path = lease_path
 
     async def stream(
         self,
@@ -157,6 +162,16 @@ class LlamaServerChat:
         """Yield `("delta", str)` / `("thinking", str)` per chunk, then one
         final `("done", ChatResult)`. Closing the generator aborts the HTTP
         request — that is what actually interrupts the model's generation."""
+        if gpu_lease.is_leased(self._lease_path):
+            # foundry or the coding run holds the card, so llama.service is
+            # stopped and no model can answer this turn (#1320). Say so at
+            # once: the alternative is a connection error the resident reads
+            # as Solaris being broken.
+            log.info("engine.gpu_lease.busy", holder=gpu_lease.holder(self._lease_path))
+            leased = ChatResult(content=gpu_lease.BUSY_REPLY)
+            yield "delta", gpu_lease.BUSY_REPLY
+            yield "done", leased
+            return
         body: dict[str, Any] = {
             "model": model,
             "messages": to_openai_messages(messages),

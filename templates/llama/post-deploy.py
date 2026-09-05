@@ -2,7 +2,7 @@
 """
 post-deploy hook for the `llama` template.
 
-Three responsibilities:
+Four responsibilities:
 
   1. **Download the GGUFs.** llama-server serves a file, not a registry —
      nothing pulls on first start. The weights, Google's MTP drafter and the
@@ -18,9 +18,15 @@ Three responsibilities:
   3. **Register an HTTP health check** against `/health`, which returns 200
      only once both the model and the drafter are loaded.
 
+  4. **Install the GPU lease** (#1320). A copy of this script lands at
+     `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire <holder>` it
+     hands the whole card to foundry or the coding run, with `release` it
+     gives it back. Self-copy, like ollama-warm (#1236), so the unit list
+     cannot drift from a second copy of itself.
+
 Idempotent: a second run finds the files on disk and skips the download; the
 Quadlet is re-activated only when it isn't the live unit source; the
-health-check API does upsert-by-id.
+health-check API does upsert-by-id; the lease script is rewritten in place.
 
 See lib/registry.ts:getTemplatePostDeployScript for the script protocol and
 docs/TEMPLATE_AUTHORING.md § Health checks for the check-registration
@@ -406,6 +412,170 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     return True
 
 
+# --- The whole-card GPU lease (#1320) -------------------------------------
+#
+# Box-measured over the night of 04./05.09. (#1318): foundry's 26B-A4B peaks at
+# 14 090 MiB and the coding run's Qwen 27B at 15 004 MiB of 16 380 — neither
+# fits beside Solaris' own e4b server (3 866 MiB), let alone the voice stack.
+# The operator's decision is that they take the card on request, with no time
+# window and no presence check, and that Solaris answers honestly meanwhile.
+#
+# So a lease is: write the file, stop everything that holds VRAM. And a
+# release is the same in reverse, with the file removed last — while it is
+# there `solaris_chat.gpu_lease` makes the Engine say it is busy instead of
+# talking into a dead socket.
+LEASE_SCRIPT = "gpu-lease.py"
+LEASE_FILE = "gpu_lease.json"
+
+# `ollama.service` also pulls `ollama-warm.service` back in on start (#1236),
+# which is what re-warms Ollama's own fast model; llama-server warms by
+# loading at startup, which is what `release` waits for.
+LEASED_UNITS = (
+    "ollama.service",
+    "solaris-whisper.service",
+    "solaris-whisper-batch.service",
+    "solaris-tts.service",
+    "solaris-wakeword-trainer.service",
+    "llama.service",
+)
+
+# How long `release` waits for the household model to answer /health again.
+# Cold e4b was ~38 s in the night measurements; this is the give-up point,
+# after which the lease file is dropped anyway rather than muting Solaris.
+LEASE_WARM_DEADLINE_SEC = 300
+
+
+def lease_file(data_dir: str) -> str:
+    """The lease file, on the volume the chat pod mounts at /var/lib/solaris."""
+    return os.path.join(data_dir, "solarisbay", LEASE_FILE)
+
+
+def read_lease(data_dir: str) -> dict[str, object]:
+    try:
+        with open(lease_file(data_dir), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def systemctl(verb: str, units: tuple[str, ...]) -> bool:
+    out = subprocess.run(
+        ["systemctl", "--user", verb, *units],
+        capture_output=True,
+        text=True,
+    )
+    if out.returncode != 0:
+        jlog(
+            "warn",
+            "llama:lease",
+            f"systemctl {verb} reported a failure",
+            units=list(units),
+            stderr=out.stderr[:400],
+        )
+    return out.returncode == 0
+
+
+def lease_acquire(data_dir: str, holder: str) -> int:
+    """Hand the whole card to `holder`: claim, then stop."""
+    current = read_lease(data_dir)
+    if current and current.get("holder") != holder:
+        jlog(
+            "error",
+            "llama:lease",
+            "the card is already leased; release it first",
+            holder=current.get("holder"),
+            requested_by=holder,
+        )
+        return 1
+    path = lease_file(data_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"holder": holder, "since": time.time()}, f)
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error", "llama:lease", "could not write the lease", path=path, error=str(e)
+        )
+        return 1
+    # Claim before stopping: in the gap Solaris already says it is busy. The
+    # other order leaves a window where the server is gone and nothing knows.
+    systemctl("stop", LEASED_UNITS)
+    jlog(
+        "info",
+        "llama:lease",
+        "GPU leased — voice stack, Ollama and llama-server stopped",
+        holder=holder,
+        units=list(LEASED_UNITS),
+    )
+    return 0
+
+
+def lease_release(data_dir: str, port: str) -> int:
+    """Give the card back: start everything, wait for the household model, drop
+    the lease last so nobody is told "ready" while e4b is still loading."""
+    systemctl("start", LEASED_UNITS)
+    llama_url = f"http://127.0.0.1:{port}"
+    warm = wait_for_ready(llama_url, deadline_sec=LEASE_WARM_DEADLINE_SEC)
+    try:
+        os.unlink(lease_file(data_dir))
+    except OSError:
+        pass
+    if not warm:
+        jlog(
+            "warn",
+            "llama:lease",
+            "units restarted but llama-server did not answer /health; the lease is cleared anyway so Solaris stops saying it is busy. Check `journalctl --user -u llama.service`.",
+            url=llama_url,
+        )
+        return 1
+    if not speculative_active(llama_url):
+        jlog(
+            "warn",
+            "llama:lease",
+            "household model is back but /slots reports no speculative decoding — answers will take about twice as long",
+        )
+    jlog("info", "llama:lease", "GPU released — household model warm again")
+    return 0
+
+
+def lease_cli(argv: list[str]) -> int:
+    data_dir = env("DATA_DIR", "/mnt/data/stacks")
+    if argv[0] == "acquire":
+        holder = argv[1].strip() if len(argv) > 1 else ""
+        if not holder:
+            jlog("error", "llama:lease", "usage: gpu-lease.py acquire <holder>")
+            return 2
+        return lease_acquire(data_dir, holder)
+    return lease_release(data_dir, env("LLAMA_PORT", "11435"))
+
+
+def install_lease_script(data_dir: str) -> str:
+    """Copy this script to a durable path so foundry and the coding run can
+    call it. Same self-copy as ollama-warm (#1236): one source of truth for
+    the unit list, and no second file to fall out of step with it."""
+    dst = os.path.join(data_dir, "solarisbay", LEASE_SCRIPT)
+    try:
+        with open(os.path.realpath(__file__), encoding="utf-8") as f:
+            self_src = f.read()
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(self_src)
+        os.chmod(dst, 0o755)
+    except OSError as e:
+        jlog(
+            "warn",
+            "llama:lease",
+            "could not install the gpu-lease script",
+            path=dst,
+            error=str(e),
+        )
+        return ""
+    jlog("info", "llama:lease", "gpu-lease installed", path=dst)
+    return dst
+
+
 def register_http_check(sb_api: str, sb_token: str, llama_url: str) -> None:
     """Best-effort: a non-200 here doesn't block the install."""
     headers = {}
@@ -439,6 +609,12 @@ def register_http_check(sb_api: str, sb_token: str, llama_url: str) -> None:
 
 
 def main() -> int:
+    # The lease entrypoint (#1320). Gated on the exact verb rather than on
+    # "any argv", so a future ServiceBay that passes the script an argument
+    # still installs instead of trying to move the GPU.
+    if len(sys.argv) > 1 and sys.argv[1] in ("acquire", "release"):
+        return lease_cli(sys.argv[1:])
+
     port = env("LLAMA_PORT", "11435")
     repo = env("LLAMA_MODEL_REPO", "ggml-org/gemma-4-E4B-it-GGUF")
     stall_sec = int(env("LLAMA_DOWNLOAD_STALL_SECONDS", "600"))
@@ -495,6 +671,10 @@ def main() -> int:
             "GPU passthrough not requested; llama-server runs on the CPU and will be slow",
         )
 
+    # Before the wait, not after: a first install that is still loading weights
+    # must not be the reason the lease script is missing when foundry asks.
+    lease_script = install_lease_script(data_dir)
+
     jlog(
         "info",
         "llama:bootstrap",
@@ -525,6 +705,8 @@ def main() -> int:
     print(f"✅ llama-server is running on 127.0.0.1:{port}.")
     print(f"   Models in {models_dir} (from https://huggingface.co/{repo}).")
     print("   The Solaris Engine reaches it via LLAMA_SERVER_URL.")
+    if lease_script:
+        print(f"   GPU lease: python3 {lease_script} acquire <name> | release")
     return 0
 
 

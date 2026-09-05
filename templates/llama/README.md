@@ -69,6 +69,44 @@ to Ollama's `/api/chat`.
    same 28 answers cost 4226 generated tokens instead of 674 and take 4.3x
    longer.
 
+## The GPU lease — handing the whole card to another job
+
+Three models want the one 16 GB card: Solaris' E4B (3.9 GB, always on),
+foundry's Gemma 4 26B-A4B (14.1 GB, on request) and the coding run's Qwen 3.8
+27B (15.0 GB, on request). The last two don't fit beside the first, so they
+take the card outright — on request, at any hour, with no presence check
+(solarisbay#1320).
+
+post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
+
+```
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
+```
+
+`acquire` writes `${DATA_DIR}/solarisbay/gpu_lease.json`, then stops
+`ollama`, `solaris-whisper`, `solaris-whisper-batch`, `solaris-tts`,
+`solaris-wakeword-trainer` and `llama` — the five units the night
+measurements stopped by hand, plus Solaris' own model server. It refuses when
+someone else already holds the lease. `release` starts them again, waits for
+`/health` (cold E4B is about 38 s), and removes the lease file **last**.
+
+**What the resident gets meanwhile.** The lease file lands on the volume the
+chat pod mounts, so the Engine sees it as `/var/lib/solaris/gpu_lease.json`
+and answers every turn with one fixed German sentence — "Ich rechne gerade an
+einer großen Aufgabe…" — instead of waiting out a timeout against a stopped
+server. That is `solaris_chat/gpu_lease.py`; no request leaves the pod while
+the lease is held. Voice is off for the duration: `solaris-whisper` and
+`solaris-tts` are two of the stopped units.
+
+The lease file's *presence* is the whole signal, deliberately: it is written
+before anything stops and removed after the model answers again, so there is
+no window where the card is gone and nothing knows it.
+
+The `llama-api` health check goes red for the duration — expected, and the
+one thing to watch on the box: nothing may restart `llama.service` behind the
+lease's back, or the 26B run meets a second model on the card.
+
 ## Storage
 
 `${DATA_DIR}/llama/models` — about 5.2 GB with the defaults. post-deploy

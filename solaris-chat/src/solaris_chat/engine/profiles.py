@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from solaris_chat import model_lease, settings_store
+from solaris_chat import gpu_lease, model_lease, settings_store
 from solaris_chat.config import settings
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
@@ -127,7 +127,11 @@ def build_engine_clients(
     # The chat backend (#1318): llama.cpp's llama-server with the Gemma-4 MTP
     # drafter, half the wait per answer. Ollama keeps the calls that are its
     # own — embeddings, the vision ingest, /api/ps, the model lease.
-    chat = LlamaServerChat(llama_server_url) if llama_server_url else ollama
+    chat = (
+        LlamaServerChat(llama_server_url, lease_path=str(gpu_lease.lease_path(db_path)))
+        if llama_server_url
+        else ollama
+    )
     recorder = TraceRecorder()
     bus = SessionBus()
     registry = EntityRegistry(hass_url, hass_token)
