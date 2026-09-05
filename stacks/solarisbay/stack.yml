@@ -6,13 +6,14 @@ metadata:
     servicebay.label: "Solaris (Household AI Assistant)"
     servicebay.tier: "feature"
 spec:
-  # Full Solaris deployment: local LLM (ollama) + the assistant service
+  # Full Solaris deployment: the two model servers (llama for the household
+  # chat, ollama for embeddings + the vision ingest) + the assistant service
   # (solaris) — the Solaris Engine (agent core + chat UI + skills + crons) and
-  # the voice bridge, one ServiceBay service / one tile. ollama stays its
-  # own service (GPU/LLM engine = a real boundary, like a DB).
+  # the voice bridge, one ServiceBay service / one tile. Both model servers
+  # stay their own service (GPU/LLM engine = a real boundary, like a DB).
   #
   # NOT included: home-assistant and voice — those live in ServiceBay's
   # default registry. The household-stack composition (smart home +
   # Solaris) is up to the operator: enable both registries and tick what
   # they want.
-  templates: [ollama, solaris]
+  templates: [ollama, llama, solaris]

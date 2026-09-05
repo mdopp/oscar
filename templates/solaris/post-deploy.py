@@ -156,6 +156,21 @@ OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 WHISPER_UNIT = "solaris-whisper"
 TTS_UNIT = "solaris-tts"
 TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
+
+# Which execution provider the two voice units run on (#1319). Both read it
+# from this one file, so a coding lease can move them to the CPU — and keep the
+# house speakable — by writing two lines and restarting them, instead of a
+# second set of units with their own model, prompt, ports and health probe.
+# The other half of the contract is `templates/llama/post-deploy.py`'s
+# VOICE_DEVICE_*, which flips the file; templates/tests/test_gpu_lease.py pins
+# the two halves together. The file must exist before the units start: podman
+# refuses an `--env-file` that is not there.
+VOICE_DEVICE_FILE = "voice-device.env"
+VOICE_DEVICE_ENV = {
+    "gpu": "WHISPER_DEVICE=cuda\nKOKORO_ONNX_PROVIDER=cuda\n",
+    "cpu": "WHISPER_DEVICE=cpu\nKOKORO_ONNX_PROVIDER=cpu\n",
+}
+GPU_LEASE_FILE = "gpu_lease.json"
 # The wakeword trainer (#1066) is a GPU companion for the same reason: the chat
 # container has no TensorFlow, no GPU and no route to the host's podman, so it
 # only enqueues `wakeword_training_runs` rows and this unit claims them.
@@ -264,6 +279,16 @@ if [ -n "${WHISPER_PROMPT:-}" ]; then
     prompt_args=(--initial-prompt "${WHISPER_PROMPT}")
 fi
 
+# The GPU lease (#1319) hands the whole card to a coding run for hours, and the
+# operator's ruling is that the house can still be spoken to meanwhile. So the
+# device comes from the lease's env file, and on the CPU the model comes down
+# with it: medium-int8 on this i5-9500 is a wait nobody would use.
+whisper_device="${WHISPER_DEVICE:-cuda}"
+whisper_model="${WHISPER_MODEL:-auto}"
+if [ "${whisper_device}" = "cpu" ]; then
+    whisper_model="${WHISPER_CPU_MODEL:-small-int8}"
+fi
+
 """
     + WHISPER_CUDA_LIB_PREAMBLE
     + """
@@ -271,8 +296,8 @@ exec \\
     s6-notifyoncheck -d -n 300 -w 1000 -c "nc -z localhost 10300" \\
         s6-setuidgid abc python3 /solaris_whisper_hints.py \\
         --uri 'tcp://127.0.0.1:10300' \\
-        --model "${WHISPER_MODEL:-auto}" \\
-        --device cuda \\
+        --model "${whisper_model}" \\
+        --device "${whisper_device}" \\
         --beam-size "${WHISPER_BEAM:-1}" \\
         --language "${WHISPER_LANG:-auto}" \\
         --vad-filter \\
@@ -1388,6 +1413,10 @@ def render_whisper_unit(
             "Network=host\n"
             f"Environment=WHISPER_MODEL={model}\n"
             f"Environment=WHISPER_LANG={language}\n"
+            # cuda or cpu, flipped by the GPU lease (#1319). An env file, not
+            # `Environment=`: podman lets a later --env win over --env-file,
+            # so a value here would pin the unit to the card.
+            f"EnvironmentFile={data_dir}/solarisbay/{VOICE_DEVICE_FILE}\n"
             "# Beam 1: greedy decode — GPU headroom goes into the bigger model.\n"
             "Environment=WHISPER_BEAM=1\n"
             # Device/room/scene names primed into the decoder (#1142). Read by
@@ -1525,7 +1554,7 @@ def render_whisper_batch_unit(data_dir: str, recordings_root: str, cpus: int) ->
     )
 
 
-def render_tts_unit() -> str:
+def render_tts_unit(data_dir: str) -> str:
     """Render the Kokoro-Martin TTS `.container` Quadlet (pure, GPU via CDI).
     The bundled solaris-tts image serves the OpenAI-compatible API on :8881."""
     # The image's CMD binds 0.0.0.0, which under `Network=host` is the LAN
@@ -1545,7 +1574,9 @@ def render_tts_unit() -> str:
         "Exec=uvicorn main:app --host 127.0.0.1 --port 8881\n"
         "# The 82M ONNX model on the CUDA provider: box-measured 0.29-0.36s\n"
         "# for a 7.4s sentence, 0.03s warm for a short one, ~1.2 GiB VRAM.\n"
-        "Environment=KOKORO_ONNX_PROVIDER=cuda\n"
+        "# KOKORO_ONNX_PROVIDER lives in the shared voice env file so the GPU\n"
+        "# lease (#1319) can move this voice to the CPU for a coding window.\n"
+        f"EnvironmentFile={data_dir}/solarisbay/{VOICE_DEVICE_FILE}\n"
         "Environment=KOKORO_ONNX_VOICE=martin\n"
         "Environment=KOKORO_ONNX_LANG=de\n"
         "AddDevice=nvidia.com/gpu=all\n"
@@ -1855,12 +1886,35 @@ def install_wakeword_trainer_unit(data_dir: str) -> bool:
     return install_unit(WAKEWORD_TRAINER_UNIT, render_wakeword_trainer_unit(data_dir))
 
 
+def converge_voice_device_env(data_dir: str) -> str:
+    """Make sure the voice units' env file exists, and points at the card.
+
+    Not while a GPU lease is held: a deploy in the middle of a coding window
+    would put whisper and the TTS back on a card the coding model has filled to
+    15.0 of 16.4 GB, and the resident would lose the voice they were told they
+    could keep (#1319)."""
+    path = os.path.join(data_dir, "solarisbay", VOICE_DEVICE_FILE)
+    if os.path.exists(os.path.join(data_dir, "solarisbay", GPU_LEASE_FILE)):
+        jlog("info", "voice-unit", "GPU lease held; leaving the voice device as it is")
+        return path
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(VOICE_DEVICE_ENV["gpu"])
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog("warn", "voice-unit", "could not write the voice env file", error=str(e))
+    return path
+
+
 def install_whisper_unit(data_dir: str) -> bool:
     """Write + activate the companion whisper Quadlet (GPU when CDI is
     registered, CPU otherwise). Creates the model-cache host dir first —
     Quadlet Volume= does NOT create it (unlike kube DirectoryOrCreate), so
     without this the unit fails `statfs …: no such file or directory`."""
     gpu = cdi_available()
+    if gpu:
+        converge_voice_device_env(data_dir)
     model = env("WHISPER_MODEL", WHISPER_CPU_DEFAULT_MODEL)
     if gpu and model == WHISPER_CPU_DEFAULT_MODEL:
         model = WHISPER_GPU_DEFAULT_MODEL
@@ -1986,7 +2040,7 @@ def install_whisper_batch_unit(data_dir: str) -> bool:
     )
 
 
-def install_tts_units() -> bool:
+def install_tts_units(data_dir: str) -> bool:
     """GPU boxes get Solaris's Martin voice: the Kokoro OpenAI TTS on :8881, a
     GPU companion Quadlet. The wyoming bridge that fronts it as an HA TTS entity
     (:10203) is a CPU container in the solaris pod (template.yml), not here.
@@ -1995,7 +2049,8 @@ def install_tts_units() -> bool:
     if not cdi_available():
         jlog("info", "voice-unit", "tts: no CDI GPU — skipping Kokoro-Martin unit")
         return False
-    return install_unit(TTS_UNIT, render_tts_unit())
+    converge_voice_device_env(data_dir)
+    return install_unit(TTS_UNIT, render_tts_unit(data_dir))
 
 
 def setup_custom_models_dir(custom_dir: str) -> None:
@@ -2042,7 +2097,7 @@ def install_voice_pipeline(data_dir: str) -> None:
     )
     install_whisper_unit(data_dir)
     install_whisper_batch_unit(data_dir)
-    install_tts_units()
+    install_tts_units(data_dir)
     install_wakeword_trainer_unit(data_dir)
 
 

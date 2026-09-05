@@ -137,6 +137,7 @@ class Settings:
     logout_url: str
     context_window_override: int | None
     ollama_url: str
+    llama_server_url: str
     compaction_threshold: float
     attachments_dir: str
     frame_ancestors: str
@@ -278,8 +279,14 @@ class Settings:
                 os.environ.get("CONTEXT_WINDOW")
             ),
             # Where Ollama's API lives (host loopback — the chat pod is
-            # hostNetwork). The engine's only LLM backend.
+            # hostNetwork). Embeddings, vision ingest and the model lease.
             ollama_url=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
+            # Where llama.cpp's llama-server lives — the chat backend (#1318).
+            # Empty falls back to Ollama's /api/chat, which is what an install
+            # without the `llama` template has.
+            llama_server_url=os.environ.get(
+                "LLAMA_SERVER_URL", "http://127.0.0.1:11435"
+            ),
             # Fraction of the context window at which a chat is auto-compacted
             # (#210): extract durable learnings to memory, then continue in a
             # fresh small-context session. ~0.90 leaves headroom so a turn never

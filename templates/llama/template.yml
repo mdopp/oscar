@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llama
+  labels:
+    app: llama
+  annotations:
+    servicebay.label: "AI Engine (llama.cpp)"
+    servicebay.schema-version: "1"
+    servicebay.ports: "{{LLAMA_PORT}}/tcp"
+    # No `servicebay.tier` — like ollama this is opt-in AI infrastructure,
+    # not a platform foundation. llama-server ships no auth, so it binds to
+    # 127.0.0.1 and gets no proxy route at all: its only consumer is the
+    # Solaris Engine on the same host netns.
+    # `/health` returns 200 only once the model AND the draft model are
+    # loaded, so it doubles as the readiness signal.
+    servicebay.healthcheck: |
+      url: http://127.0.0.1:{{LLAMA_PORT}}/health
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 10m
+spec:
+  # hostNetwork so the solaris pod reaches llama-server at
+  # 127.0.0.1:{{LLAMA_PORT}} — same reason the ollama template uses it.
+  hostNetwork: true
+  containers:
+  - name: llama
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # post-deploy downloads the GGUFs into {{DATA_DIR}}/llama/models before
+    # this container can serve; until they land llama-server exits and the
+    # unit restarts, which is why nothing here waits on them.
+    args:
+    - "--host"
+    - "127.0.0.1"
+    - "--port"
+    - "{{LLAMA_PORT}}"
+    - "-m"
+    - "/models/{{LLAMA_MODEL_FILE}}"
+    - "-ngl"
+    - "99"
+    - "-c"
+    - "{{LLAMA_CONTEXT_LENGTH}}"
+    # --jinja activates the chat template embedded in the GGUF — the
+    # canonical Google Gemma-4 template. Without it llama-server falls back
+    # to a generic template and Gemma's tool-call channel never renders.
+    - "--jinja"
+    # Speculative decoding with Google's own MTP drafter: box-measured
+    # 133.5 tok/s against Ollama's 53.0 on the same weights (#1318).
+    # `--spec-type` is mandatory and `--draft-max` no longer exists — the
+    # server refuses to start on the old flag.
+    - "--spec-type"
+    - "draft-mtp"
+    - "--spec-draft-model"
+    - "/models/{{LLAMA_DRAFT_FILE}}"
+    - "--spec-draft-ngl"
+    - "99"
+    - "--spec-draft-n-max"
+    - "{{LLAMA_DRAFT_N_MAX}}"
+    {{#LLAMA_MMPROJ_FILE}}
+    # Vision/audio projector — what keeps photo attachments and voice notes
+    # working on the household path. Blank LLAMA_MMPROJ_FILE drops it.
+    - "--mmproj"
+    - "/models/{{LLAMA_MMPROJ_FILE}}"
+    {{/LLAMA_MMPROJ_FILE}}
+    ports:
+    - containerPort: {{LLAMA_PORT}}
+    # GPU passthrough (CDI). As with ollama (#1026) `podman kube play` drops
+    # `resources.limits.nvidia.com/gpu`, so the real passthrough is done by
+    # post-deploy.py's install_gpu_quadlet_fallback(): a `.container` Quadlet
+    # with `AddDevice=nvidia.com/gpu=all` + `SecurityLabelDisable=true`.
+    # BOTH are required here. Box-measured 2026-09-04: without the SELinux
+    # relaxation llama-server logs one passing "no usable GPU found" warning,
+    # loads the model into RAM and answers from the CPU — a perfectly
+    # disguised false negative, not a failure.
+    {{#LLAMA_GPU_PASSTHROUGH}}
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+    {{/LLAMA_GPU_PASSTHROUGH}}
+    volumeMounts:
+    - mountPath: /models
+      name: llama-models
+  volumes:
+  - name: llama-models
+    hostPath:
+      path: {{DATA_DIR}}/llama/models
+      type: DirectoryOrCreate

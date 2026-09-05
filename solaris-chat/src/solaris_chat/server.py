@@ -37,6 +37,7 @@ from solaris_chat import (
     device_token_store,
     documents_portal_db,
     favorites_store,
+    gpu_lease,
     ha_notify,
     mentions_store,
     model_lease,
@@ -2523,6 +2524,12 @@ def build_app(
                 # "ok" | "unavailable" — the client banner's state token, same
                 # shape as the `ha` field the start page carries (#729/#1274).
                 "db": "unavailable" if db_reason else "ok",
+                # #1319: null, or {mode, model, until, answers} while another
+                # job holds the GPU. The browser renders it as the same
+                # in-page notice the outage above uses, so the resident is
+                # told the assistant is slower and until when — instead of
+                # finding out one long answer at a time.
+                "gpu_lease": gpu_lease.state(gpu_lease.lease_path(solaris_db_path)),
                 "version": VERSION,
                 "logout_url": logout_url,
                 "context_window": context_window.value,

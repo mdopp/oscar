@@ -40,8 +40,13 @@
   },
   "OLLAMA_URL": {
     "type": "text",
-    "description": "URL of Ollama's API (host loopback — this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). The Solaris Engine's only LLM backend.",
+    "description": "URL of Ollama's API (host loopback — this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). Since #1318 this is no longer the chat backend: it serves the embeddings (`nomic-embed-text`), the document/vision ingest, the `/api/ps` context derivation and the neighbour-service model lease. Chat goes to LLAMA_SERVER_URL.",
     "default": "http://127.0.0.1:11434"
+  },
+  "LLAMA_SERVER_URL": {
+    "type": "text",
+    "description": "URL of llama.cpp's llama-server (host loopback — default `http://127.0.0.1:11435` matches the llama template). This is the CHAT backend: the same Gemma 4 E4B weights, but with Google's MTP drafter for speculative decoding, which Ollama cannot do at all. Box-measured over 28 production-shaped turns: 0.30 s per finished answer against Ollama's 0.62 s, tool calls 12/12 on both (#1318). The engine sends `chat_template_kwargs: {enable_thinking: false}` on every household turn — llama.cpp otherwise turns Gemma's reasoning ON by default and the resident pays for an invisible English thinking trace. Set to an empty string to fall back to Ollama's `/api/chat` (an install without the `llama` template).",
+    "default": "http://127.0.0.1:11435"
   },
   "FAST_MODEL": {
     "type": "text",

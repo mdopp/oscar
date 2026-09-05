@@ -34,6 +34,7 @@ from solaris_chat.engine import confirm, grounding, remember, store
 from solaris_chat.engine import tasks as tasks_svc
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.llama_server import LlamaServerChat
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
@@ -420,7 +421,9 @@ class EngineClient:
         profile: EngineProfile,
         *,
         db_path: str,
-        ollama: OllamaChat,
+        # The chat backend: LlamaServerChat on the box (#1318), OllamaChat
+        # where no llama-server is configured. Same `stream()` contract.
+        ollama: OllamaChat | LlamaServerChat,
         recorder: TraceRecorder,
         context_window: int | None = None,
         bus: SessionBus | None = None,

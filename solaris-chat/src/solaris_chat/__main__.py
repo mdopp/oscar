@@ -31,6 +31,7 @@ async def _run() -> None:
         build_engine_clients(
             db_path=settings.solaris_db_path,
             ollama_url=settings.ollama_url,
+            llama_server_url=settings.llama_server_url,
             fast_model=settings.fast_model,
             thorough_model=settings.thorough_model,
             soul_path=settings.soul_path,
@@ -238,6 +239,7 @@ def main() -> None:
         host=settings.host,
         port=settings.port,
         ollama=settings.ollama_url,
+        llama_server=settings.llama_server_url,
         engine="solaris",
     )
     asyncio.run(_run())

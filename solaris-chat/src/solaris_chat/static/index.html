@@ -1790,6 +1790,11 @@
          un-hidden by applyDbHealth() from /api/whoami's `db` token; sits above
          the views so the chat and every portal page carry the same one notice. -->
     <div id="db-notice" class="ha-notice db-notice" role="status" hidden></div>
+    <!-- #1319: the GPU-lease notice. Same box, same poll, one storey down:
+         while another job holds the graphics card Solaris either answers from
+         a different, slower model or cannot answer at all, and the resident is
+         told which — and until when — instead of guessing. -->
+    <div id="gpu-notice" class="ha-notice db-notice" role="status" hidden></div>
 
     <!-- Mobile-only burger lives in the chat-header now (#411: one merged bar),
          so the standalone .topbar is retired. -->
@@ -6921,12 +6926,54 @@
         box.appendChild(hint);
         box.hidden = false;
       }
+      // #1319: while foundry or a coding run holds the graphics card, Solaris
+      // is either slower (it answers from the big coding model) or cannot
+      // answer at all. Same notice box and same 30 s poll as the outage above —
+      // the resident should never have to work that out from long answers.
+      function applyGpuLease(lease) {
+        var box = document.getElementById("gpu-notice");
+        if (!box) return;
+        if (!lease) { box.hidden = true; box.textContent = ""; return; }
+        var bis = "";
+        if (lease.until) {
+          var end = new Date(lease.until * 1000);
+          bis = end.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+        }
+        var title = document.createElement("div");
+        title.className = "ha-notice-title";
+        var hint = document.createElement("div");
+        hint.className = "ha-notice-hint";
+        if (lease.answers) {
+          title.textContent =
+            "🖥️ Programmierfenster" + (bis ? " bis " + bis + " Uhr" : "") + ".";
+          hint.textContent =
+            "Die Grafikkarte im Haus arbeitet gerade an einer Programmieraufgabe. " +
+            "Solaris antwortet solange mit " +
+            (lease.model || "einem anderen Modell") +
+            " — das kann ein paar Sekunden länger dauern, auch beim Sprechen. " +
+            "Alles andere funktioniert wie immer, und danach ist Solaris wieder " +
+            "so schnell wie gewohnt.";
+        } else {
+          title.textContent =
+            "🖥️ Solaris rechnet gerade an einer großen Aufgabe" +
+            (bis ? " — bis " + bis + " Uhr" : "") + ".";
+          hint.textContent =
+            "Dafür braucht Solaris die ganze Grafikkarte und kann in dieser Zeit " +
+            "keine Fragen beantworten. Notizen, Dokumente und die Geräteseiten " +
+            "funktionieren weiter. Der Hinweis verschwindet von selbst, sobald " +
+            "Solaris wieder antworten kann.";
+        }
+        box.textContent = "";
+        box.appendChild(title);
+        box.appendChild(hint);
+        box.hidden = false;
+      }
       // Re-ask periodically so the banner appears when the store dies mid-session
       // and lifts on recovery without the resident reloading the page.
       function refreshDbHealth() {
         fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
-          .then(function (j) { applyDbHealth(j && j.db); })
+          .then(function (j) { applyDbHealth(j && j.db); applyGpuLease(j && j.gpu_lease); })
           .catch(function () {});
       }
       setInterval(refreshDbHealth, 30000);
@@ -6936,6 +6983,7 @@
           .then(function (r) { return r.ok ? r.json() : {}; })
           .then(function (j) {
             applyDbHealth(j && j.db);
+            applyGpuLease(j && j.gpu_lease);
             var uid = (j && j.uid) || "guest";
             document.getElementById("whoami-user").textContent = uid;
             document.getElementById("avatar").textContent = uid.charAt(0) || "·";
