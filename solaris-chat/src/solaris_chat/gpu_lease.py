@@ -13,9 +13,18 @@ removes it. Its presence is therefore exactly "the household model is not
 loaded", and reading it costs a stat instead of a request to a server that is
 not running.
 
-Unlike the neighbour model lease (#1260) this carries no TTL: the operator
-ruled out a time window, and a holder that dies without releasing leaves the
-units stopped, so the file still describes the truth.
+Since #1319 a lease also has a **mode** and a **deadline**:
+
+* `exclusive` — foundry's shape, the one above: nothing answers, so a turn gets
+  one honest German sentence instead of a timeout against a dead socket.
+* `coding` — the card goes to the coding model, but llama-server keeps serving
+  it, so Solaris answers the household from that model for the window and the
+  chat carries a banner naming it. Only the swap itself mutes (`ready: false`).
+
+The deadline is enforced on the box by a transient systemd timer that runs
+`release`, not here — an end signal alone was not enough in #1260. What this
+module does with `until` is show the resident when their assistant is back to
+normal.
 """
 
 from __future__ import annotations
@@ -51,13 +60,45 @@ def is_leased(path: str | Path) -> bool:
     return bool(path) and Path(path).exists()
 
 
-def holder(path: str | Path) -> str:
-    """Who holds it, for the log line; `""` when the file says nothing."""
+def _read(path: str | Path) -> dict:
     try:
         data = json.loads(Path(path).read_text("utf-8"))
     except (OSError, ValueError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    name = data.get("holder")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def holder(path: str | Path) -> str:
+    """Who holds it, for the log line; `""` when the file says nothing."""
+    name = _read(path).get("holder")
     return name.strip() if isinstance(name, str) else ""
+
+
+def mutes_chat(path: str | Path) -> bool:
+    """True when no model can answer this turn.
+
+    A `coding` lease does not mute: llama-server is serving the coding model
+    and the household turn goes to it (#1319, mode B). The exception is the
+    swap itself — `ready` is false while the coding model is still loading,
+    and those ~2 minutes are exactly the dead socket the fixed sentence exists
+    for. Anything unreadable counts as muting, as it did in #1320.
+    """
+    if not is_leased(path):
+        return False
+    lease = _read(path)
+    return lease.get("mode") != "coding" or not lease.get("ready")
+
+
+def state(path: str | Path) -> dict | None:
+    """What the chat surface shows about the lease, or `None` when there is
+    none. `until` is epoch seconds — the browser formats it in local time."""
+    if not is_leased(path):
+        return None
+    lease = _read(path)
+    until = lease.get("until")
+    return {
+        "mode": "coding" if lease.get("mode") == "coding" else "exclusive",
+        "model": str(lease.get("model") or ""),
+        "until": float(until) if isinstance(until, (int, float)) else 0.0,
+        "answers": not mutes_chat(path),
+    }

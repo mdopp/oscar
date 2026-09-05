@@ -63,6 +63,39 @@ def test_whisper_gpu_unit_has_cdi_device_and_selinux_relax(pd):
     assert "HealthRetries=3" in unit
 
 
+def test_whisper_gpu_unit_reads_its_device_from_the_lease_env_file(pd):
+    """#1319: a coding lease moves whisper to the CPU for hours. The device
+    comes from a file both voice units share, not from `Environment=` — podman
+    lets a later --env win over --env-file, which would pin it to the card."""
+    unit = pd.render_whisper_unit("/mnt/data", "medium-int8", "de", gpu=True)
+    assert "EnvironmentFile=/mnt/data/solarisbay/voice-device.env" in unit
+    assert "Environment=WHISPER_DEVICE" not in unit
+
+
+def test_whisper_run_script_falls_back_to_a_smaller_model_on_the_cpu(pd):
+    """medium-int8 on this i5-9500 is a wait nobody would use, so the CPU
+    profile takes small-int8 with the device."""
+    assert 'whisper_model="${WHISPER_CPU_MODEL:-small-int8}"' in pd.WHISPER_RUN_SCRIPT
+    assert '--model "${whisper_model}"' in pd.WHISPER_RUN_SCRIPT
+
+
+def test_voice_device_env_is_written_pointing_at_the_card(pd, tmp_path):
+    path = pd.converge_voice_device_env(str(tmp_path))
+    assert pathlib.Path(path).read_text() == pd.VOICE_DEVICE_ENV["gpu"]
+
+
+def test_a_deploy_during_a_lease_leaves_the_voice_on_the_cpu(pd, tmp_path):
+    """Otherwise a deploy mid-window puts whisper and the TTS back on a card
+    the coding model has filled to 15.0 of 16.4 GB (#1319)."""
+    (tmp_path / "solarisbay").mkdir()
+    (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).write_text(
+        pd.VOICE_DEVICE_ENV["cpu"]
+    )
+    (tmp_path / "solarisbay" / pd.GPU_LEASE_FILE).write_text('{"holder": "coder"}')
+    path = pd.converge_voice_device_env(str(tmp_path))
+    assert pathlib.Path(path).read_text() == pd.VOICE_DEVICE_ENV["cpu"]
+
+
 def test_whisper_cpu_unit_uses_cpu_image_and_wyoming_port(pd):
     unit = pd.render_whisper_unit("/mnt/data", "base-int8", "de", gpu=False)
     assert "AddDevice" not in unit
@@ -226,7 +259,10 @@ def _run_script_preamble(pd) -> str:
 
 
 def test_whisper_run_script_asks_for_the_gpu(pd):
-    assert "--device cuda" in pd.WHISPER_RUN_SCRIPT
+    # cuda unless the GPU lease says otherwise (#1319) — the default is what a
+    # box without the lease env file runs on.
+    assert 'whisper_device="${WHISPER_DEVICE:-cuda}"' in pd.WHISPER_RUN_SCRIPT
+    assert '--device "${whisper_device}"' in pd.WHISPER_RUN_SCRIPT
 
 
 def test_whisper_cpu_unit_never_asks_for_a_device(pd):
@@ -486,12 +522,15 @@ def test_the_probe_asks_for_the_language_whisper_actually_runs(
 
 
 def test_tts_unit_is_solaris_image_martin_voice_with_cdi(pd):
-    unit = pd.render_tts_unit()
+    unit = pd.render_tts_unit("/mnt/data")
     # The RENAMED bundled image, not solilos-tts.
     assert "Image=ghcr.io/mdopp/solaris-tts:latest" in unit
     assert "Environment=KOKORO_ONNX_VOICE=martin" in unit
     assert "Environment=KOKORO_ONNX_LANG=de" in unit
-    assert "Environment=KOKORO_ONNX_PROVIDER=cuda" in unit
+    # The provider is not pinned in the unit: it comes from the shared voice
+    # env file, which the GPU lease flips to cpu for a coding window (#1319).
+    assert "Environment=KOKORO_ONNX_PROVIDER" not in unit
+    assert "EnvironmentFile=/mnt/data/solarisbay/voice-device.env" in unit
     assert "AddDevice=nvidia.com/gpu=all" in unit
     assert "SecurityLabelDisable=true" in unit
 
@@ -515,7 +554,7 @@ def test_whisper_binds_loopback_only(pd, gpu):
 
 
 def test_tts_binds_loopback_only(pd):
-    unit = pd.render_tts_unit()
+    unit = pd.render_tts_unit("/mnt/data")
     # The image's CMD is --host 0.0.0.0; the unit has to override it.
     assert "Exec=uvicorn main:app --host 127.0.0.1 --port 8881" in unit
     assert "0.0.0.0" not in unit
@@ -533,16 +572,16 @@ def test_install_tts_units_skips_without_cdi(pd, monkeypatch):
         "install_unit",
         lambda *a: pytest.fail("must not write TTS units on CPU box"),
     )
-    assert pd.install_tts_units() is False
+    assert pd.install_tts_units("/mnt/data") is False
 
 
-def test_install_tts_units_writes_only_kokoro_on_gpu(pd, monkeypatch):
+def test_install_tts_units_writes_only_kokoro_on_gpu(pd, monkeypatch, tmp_path):
     written = []
     monkeypatch.setattr(pd, "cdi_available", lambda: True)
     monkeypatch.setattr(
         pd, "install_unit", lambda unit, content: written.append(unit) or True
     )
-    assert pd.install_tts_units() is True
+    assert pd.install_tts_units(str(tmp_path)) is True
     # The bridge moved into the pod — only the GPU Kokoro TTS Quadlet is written.
     assert written == [pd.TTS_UNIT]
 

@@ -162,11 +162,13 @@ class LlamaServerChat:
         """Yield `("delta", str)` / `("thinking", str)` per chunk, then one
         final `("done", ChatResult)`. Closing the generator aborts the HTTP
         request — that is what actually interrupts the model's generation."""
-        if gpu_lease.is_leased(self._lease_path):
-            # foundry or the coding run holds the card, so llama.service is
-            # stopped and no model can answer this turn (#1320). Say so at
-            # once: the alternative is a connection error the resident reads
-            # as Solaris being broken.
+        if gpu_lease.mutes_chat(self._lease_path):
+            # foundry holds the card, so llama.service is stopped and no model
+            # can answer this turn (#1320) — or a coding lease is still loading
+            # its model (#1319). Say so at once: the alternative is a
+            # connection error the resident reads as Solaris being broken. A
+            # coding lease that is up does not land here: llama-server answers
+            # the turn from the coding model.
             log.info("engine.gpu_lease.busy", holder=gpu_lease.holder(self._lease_path))
             leased = ChatResult(content=gpu_lease.BUSY_REPLY)
             yield "delta", gpu_lease.BUSY_REPLY

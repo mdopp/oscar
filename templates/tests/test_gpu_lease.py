@@ -1,11 +1,15 @@
-"""The whole-card GPU lease (#1320): what `acquire` stops and what `release`
-gives back.
+"""The GPU lease (#1320) and its coding profile (#1319): what `acquire` stops,
+what it swaps, and what `release` gives back.
 
 The unit list is the load-bearing part — a missing `llama.service` leaves
 Solaris' own 3.9 GB server loaded and the 26B/Qwen run then OOMs on a card
 measured full at 15.0 of 16.4 GB. The ordering matters just as much: the lease
 file is written before the stop and removed after the model answers again, so
 there is no moment when the card is gone and nothing knows it.
+
+The coding lease is the softer shape: llama-server is reloaded on the coding
+model instead of stopped and the voice units move to the CPU, so the house
+keeps an assistant it can talk to for the window.
 """
 
 from __future__ import annotations
@@ -32,6 +36,23 @@ def _load(name: str, path: pathlib.Path):
 @pytest.fixture(scope="module")
 def pd():
     return _load("llama_pd_lease", TEMPLATES / "llama" / "post-deploy.py")
+
+
+@pytest.fixture(autouse=True)
+def no_box(pd, monkeypatch):
+    """Nothing here may reach the box: `systemd-run`, `daemon-reload` and the
+    timer stop all go through subprocess. Returns the recorded argv list."""
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        pd.subprocess, "run", lambda argv, **kw: calls.append(list(argv)) or _Done()
+    )
+    return calls
 
 
 @pytest.fixture
@@ -134,3 +155,212 @@ def test_lease_file_sits_where_the_chat_pod_mounts_it(pd):
         pd.lease_file("/mnt/data/stacks")
         == "/mnt/data/stacks/solarisbay/gpu_lease.json"
     )
+
+
+# ── #1319: the coding lease ────────────────────────────────────────────────
+
+
+@pytest.fixture
+def coding_box(pd, tmp_path, monkeypatch):
+    """A box where the coding weights are already there and llama-server comes
+    back up: what is left to observe is which units moved and what was written."""
+    systemd_dir = tmp_path / ".config" / "containers" / "systemd"
+    systemd_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        pd.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path))
+    )
+    monkeypatch.setattr(
+        pd, "download_model", lambda repo, filename, models_dir, stall: True
+    )
+    monkeypatch.setattr(pd, "gpu_container_is_live_source", lambda: True)
+    monkeypatch.setattr(pd, "wait_for_ready", lambda url, deadline_sec: True)
+    monkeypatch.setattr(pd, "speculative_active", lambda url: True)
+    return systemd_dir / "llama.container"
+
+
+def test_the_coding_profile_is_the_only_cell_that_measured(pd):
+    """`--parallel 1` and q8 KV are not tuning: with llama-server's stock four
+    slots, or f16 KV, the drafter OOMs before it loads (#1318 cell H1)."""
+    args = pd.server_args("11435", "/models", pd.CODING_PROFILE)
+    assert "-m /models/Qwen3.8-27B-UD-IQ3_XXS.gguf" in " ".join(args)
+    assert "--spec-draft-model /models/mtp-Qwen3.8-27B-Q4_0.gguf" in " ".join(args)
+    assert args[args.index("-c") + 1] == "65536"
+    assert args[args.index("-ctk") + 1] == "q8_0"
+    assert args[args.index("-ctv") + 1] == "q8_0"
+    assert args[args.index("--parallel") + 1] == "1"
+
+
+def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
+    """A household unit that re-renders differently would restart llama-server
+    on every deploy for nothing."""
+    args = pd.server_args("11435", "/models")
+    assert "-ctk" not in args and "-ctv" not in args and "--parallel" not in args
+
+
+def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
+    pd, tmp_path, coding_box, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    stopped = [units for verb, units in systemctl_calls if verb == "stop"]
+    assert stopped == [pd.LEASE_GPU_UNITS]
+    assert "solaris-whisper.service" not in sum((list(u) for u in stopped), [])
+    assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
+    env_file = tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE
+    assert env_file.read_text() == "WHISPER_DEVICE=cpu\nKOKORO_ONNX_PROVIDER=cpu\n"
+
+
+def test_coding_acquire_swaps_the_server_instead_of_stopping_it(
+    pd, tmp_path, coding_box, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    unit = coding_box.read_text()
+    assert "Qwen3.8-27B-UD-IQ3_XXS.gguf" in unit
+    assert "--parallel 1" in unit
+    assert ("restart", ("llama.service",)) in systemctl_calls
+    assert ("stop", ("llama.service",)) not in systemctl_calls
+
+
+def test_the_lease_says_it_is_still_loading_until_the_model_answers(
+    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+):
+    """Mode B only holds once the coding model serves: during the swap there is
+    no model at all, and the Engine has to keep saying so."""
+    ready_when_restarting: list[object] = []
+    monkeypatch.setattr(
+        pd,
+        "wait_for_ready",
+        lambda url, deadline_sec: (
+            ready_when_restarting.append(pd.read_lease(str(tmp_path)).get("ready"))
+            or True
+        ),
+    )
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert ready_when_restarting == [False]
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["ready"] is True
+    assert lease["mode"] == "coding"
+    assert lease["model"] == "Qwen 3.8 27B"
+
+
+def test_every_lease_carries_a_deadline_and_arms_the_expiry(
+    pd, tmp_path, coding_box, systemctl_calls, no_box
+):
+    """#1260's lesson: an end signal alone is not enough. A run that dies
+    without releasing must not leave the household on the coding model."""
+    before = pd.time.time()
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    lease = pd.read_lease(str(tmp_path))
+    assert before + 3600 <= lease["until"] <= pd.time.time() + 3600
+    armed = [c for c in no_box if c and c[0] == "systemd-run"]
+    assert armed, "no expiry timer was armed"
+    assert f"--unit={pd.LEASE_EXPIRY_UNIT}" in armed[0]
+    assert "--on-active=3600" in armed[0]
+    assert armed[0][-1] == "release"
+
+
+def test_coding_release_puts_the_household_model_and_the_gpu_voice_back(
+    pd, tmp_path, coding_box, systemctl_calls
+):
+    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
+    systemctl_calls.clear()
+    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert ("start", pd.LEASE_GPU_UNITS) in systemctl_calls
+    assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
+    env_file = tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE
+    assert env_file.read_text() == "WHISPER_DEVICE=cuda\nKOKORO_ONNX_PROVIDER=cuda\n"
+    assert "gemma-4-E4B-it-Q4_0.gguf" in coding_box.read_text()
+    assert not _lease(tmp_path, pd).exists()
+
+
+def test_release_reloads_the_profile_that_was_installed_not_the_default(
+    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+):
+    """An operator who deployed other weights gets those back, not this
+    script's defaults."""
+    monkeypatch.setenv("LLAMA_MODEL_FILE", "gemma-4-12B-it-Q4_0.gguf")
+    pd.save_household_profile(str(tmp_path))
+    monkeypatch.delenv("LLAMA_MODEL_FILE")
+    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
+    pd.lease_release(str(tmp_path), "11435")
+    assert "gemma-4-12B-it-Q4_0.gguf" in coding_box.read_text()
+
+
+def test_missing_coding_weights_stop_nothing(pd, tmp_path, monkeypatch, coding_box):
+    """A 12.6 GB download is not something to do with the house muted — the
+    weights are fetched before anything is stopped, and a failure is a no-op."""
+    monkeypatch.setattr(pd, "download_model", lambda *a: False)
+    monkeypatch.setattr(
+        pd, "systemctl", lambda verb, units: pytest.fail("stopped a unit anyway")
+    )
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 1
+    assert not _lease(tmp_path, pd).exists()
+
+
+def test_an_unknown_model_is_refused_rather_than_run_exclusively(
+    pd, tmp_path, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "qwen", 3600) == 2
+    assert systemctl_calls == []
+
+
+def test_the_cli_reads_the_holder_the_model_and_the_duration(pd, monkeypatch):
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        pd,
+        "lease_acquire",
+        lambda d, h, p, m, s: seen.update(holder=h, model=m, seconds=s) or 0,
+    )
+    assert (
+        pd.lease_cli(["acquire", "coder", "--model", "coding", "--duration", "4h"]) == 0
+    )
+    assert seen == {"holder": "coder", "model": "coding", "seconds": 14400}
+
+
+def test_a_lease_without_a_duration_still_gets_one(pd, monkeypatch):
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        pd, "lease_acquire", lambda d, h, p, m, s: seen.update(seconds=s) or 0
+    )
+    assert pd.lease_cli(["acquire", "foundry"]) == 0
+    assert seen == {"seconds": pd.LEASE_DEFAULT_DURATION_SEC}
+
+
+def test_a_deploy_during_a_lease_leaves_the_leased_server_alone(
+    pd, tmp_path, monkeypatch
+):
+    """The unit belongs to the lease for its duration: rewriting it would
+    restart llama-server into a card the coding run has filled."""
+    monkeypatch.setattr(
+        pd,
+        "install_gpu_quadlet_fallback",
+        lambda *a: pytest.fail("took the card back mid-lease"),
+    )
+    monkeypatch.setattr(
+        pd, "wait_for_ready", lambda *a, **k: pytest.fail("waited on a leased server")
+    )
+    monkeypatch.setattr(pd, "download_model", lambda *a: True)
+    monkeypatch.setattr(pd, "install_lease_script", lambda d: "/x/gpu-lease.py")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    pd.write_lease(str(tmp_path), {"holder": "coder", "mode": "coding"})
+    assert pd.main() == 0
+
+
+def test_both_templates_agree_on_the_voice_env_contract(pd):
+    """The lease writes this file; templates/solaris/post-deploy.py's Quadlets
+    read it. Two files, one contract — so it is pinned here."""
+    solaris_pd = _load("solaris_pd_voice", TEMPLATES / "solaris" / "post-deploy.py")
+    assert solaris_pd.VOICE_DEVICE_FILE == pd.VOICE_DEVICE_FILE
+    assert solaris_pd.VOICE_DEVICE_ENV == pd.VOICE_DEVICE_ENV
+    assert solaris_pd.GPU_LEASE_FILE == pd.LEASE_FILE
+
+
+def test_a_cpu_box_is_refused_rather_than_silently_left_on_the_household_model(
+    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+):
+    """The swap rewrites llama.container; where llama.service still comes from
+    the deployed .kube unit that file is inert, and the restart would bring the
+    household model back up as if nothing had happened."""
+    monkeypatch.setattr(pd, "gpu_container_is_live_source", lambda: False)
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 1
+    assert systemctl_calls == []
+    assert not _lease(tmp_path, pd).exists()

@@ -81,6 +81,7 @@ post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 
 ```
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire coder --model coding --duration 4h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
 ```
 
@@ -91,6 +92,12 @@ measurements stopped by hand, plus Solaris' own model server. It refuses when
 someone else already holds the lease. `release` starts them again, waits for
 `/health` (cold E4B is about 38 s), and removes the lease file **last**.
 
+**Every lease expires.** `--duration` defaults to 4 h and arms a transient
+systemd timer (`solaris-gpu-lease-expiry`) that runs `release` at the
+deadline. An end signal alone was not enough in solarisbay#1260: a run that
+dies without releasing would otherwise leave the household muted, or on the
+coding model, until somebody noticed.
+
 **What the resident gets meanwhile.** The lease file lands on the volume the
 chat pod mounts, so the Engine sees it as `/var/lib/solaris/gpu_lease.json`
 and answers every turn with one fixed German sentence — "Ich rechne gerade an
@@ -99,17 +106,47 @@ server. That is `solaris_chat/gpu_lease.py`; no request leaves the pod while
 the lease is held. Voice is off for the duration: `solaris-whisper` and
 `solaris-tts` are two of the stopped units.
 
+### `--model coding` — the coding window (solarisbay#1319)
+
+The coding run is the exception: instead of emptying the card it **swaps**
+what is on it, so the household keeps an assistant.
+
+* llama-server is reloaded on Qwen 3.8 27B `UD-IQ3_XXS` + its MTP drafter,
+  `-c 65536 -ctk q8_0 -ctv q8_0 --parallel 1`. Those last two are not tuning:
+  with llama-server's stock four slots, or f16 KV, the drafter OOMs before it
+  loads. Box-measured 15 004 of 16 380 MiB, 32.6 tok/s, tool calls 12/12
+  (solarisbay#1318, cell H1). The 12.6 GB of weights are fetched **before**
+  anything stops.
+* Solaris answers household turns from that model for the window (mode B) and
+  the chat carries a banner naming the model and the end time. Only the swap
+  itself is mute — the lease says `ready: false` until `/health` answers.
+* `solaris-whisper` and `solaris-tts` keep running, on the **CPU**: operator
+  decision of 2026-09-05, spoken commands stay possible and get slower rather
+  than disappearing. Both units read their provider from
+  `${DATA_DIR}/solarisbay/voice-device.env`, which the lease flips to
+  `cpu`/`cuda` and restarts them on; whisper drops to `small-int8` with it.
+  `ollama`, `solaris-whisper-batch` and `solaris-wakeword-trainer` still stop —
+  they hold VRAM and nobody is waiting on them.
+
+A deploy in the middle of a lease leaves `llama.service` and the voice device
+exactly as the lease set them; post-deploy says so in its log and does nothing
+else.
+
 The lease file's *presence* is the whole signal, deliberately: it is written
 before anything stops and removed after the model answers again, so there is
 no window where the card is gone and nothing knows it.
 
-The `llama-api` health check goes red for the duration — expected, and the
-one thing to watch on the box: nothing may restart `llama.service` behind the
-lease's back, or the 26B run meets a second model on the card.
+The `llama-api` health check goes red for the duration of an exclusive lease —
+expected, and the one thing to watch on the box: nothing may restart
+`llama.service` behind the lease's back, or the 26B run meets a second model
+on the card. A coding lease keeps the check green; it is the same server with
+other weights.
 
 ## Storage
 
-`${DATA_DIR}/llama/models` — about 5.2 GB with the defaults. post-deploy
+`${DATA_DIR}/llama/models` — about 5.2 GB with the defaults, plus 12.6 GB the
+first time a coding lease is taken (the Qwen weights and their drafter, kept
+afterwards). post-deploy
 downloads to `<name>.part` and renames on completion, so an interrupted
 download never leaves a truncated GGUF that llama-server would crash-loop on.
 
