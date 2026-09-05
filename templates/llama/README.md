@@ -71,22 +71,23 @@ to Ollama's `/api/chat`.
 
 ## The GPU lease — handing the whole card to another job
 
-Three models want the one 16 GB card: Solaris' E4B (3.9 GB, always on),
-foundry's Gemma 4 26B-A4B (14.1 GB, on request) and the coding run's Qwen 3.8
-27B (15.0 GB, on request). The last two don't fit beside the first, so they
-take the card outright — on request, at any hour, with no presence check
-(solarisbay#1320).
+Several models want the one 16 GB card, and only Solaris' E4B (3.9 GB) is
+always on. A job that needs more asks for it — at any hour, with no presence
+check (solarisbay#1320) — and gets one of three shapes: the card emptied
+outright, or llama-server swapped onto the coding model (`--model coding`,
+solarisbay#1319) or onto foundry's 12B (`--model foundry`, solarisbay#1325).
 
 post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 
 ```
-python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire someone
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire coder --model coding --duration 4h
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry --model foundry --duration 5h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
 ```
 
-`acquire` writes `${DATA_DIR}/solarisbay/gpu_lease.json`, then stops
-`ollama`, `solaris-whisper`, `solaris-whisper-batch`, `solaris-tts`,
+`acquire` writes `${DATA_DIR}/solarisbay/gpu_lease.json`; without `--model` it
+then stops `ollama`, `solaris-whisper`, `solaris-whisper-batch`, `solaris-tts`,
 `solaris-wakeword-trainer` and `llama` — the five units the night
 measurements stopped by hand, plus Solaris' own model server. It refuses when
 someone else already holds the lease. `release` starts them again, waits for
@@ -128,6 +129,34 @@ what is on it, so the household keeps an assistant.
   `ollama`, `solaris-whisper-batch` and `solaris-wakeword-trainer` still stop —
   they hold VRAM and nobody is waiting on them.
 
+### `--model foundry` — the foundry evening (solarisbay#1325)
+
+foundry writes up a session as it runs and transcribes through
+`solaris-whisper-batch` every five minutes, so the one thing it must not do is
+take the voice stack away. This profile therefore stops **nothing**:
+
+* llama-server is reloaded on Gemma 4 12B `Q4_0` + its MTP drafter, `-c 32768`,
+  f16 KV, llama-server's stock four slots — box-measured 9 626 MiB, 36.6 tok/s,
+  1.53 s per finished answer, tool calls 6/6, no thinking leak (solarisbay#1318,
+  cell K2). The 12B runs **instead of** the household E4B, not beside it:
+  9 636 + 3 872 + the voice stack's 4 508 MiB under load is 18 016 of a
+  16 380 MiB card. Without the E4B it is 14 144, with 2 236 MiB to spare.
+* All five units — `ollama`, `solaris-whisper`, `solaris-whisper-batch`,
+  `solaris-tts`, `solaris-wakeword-trainer` — keep running, on the **GPU**;
+  `voice-device.env` is not touched. Ollama is asked to drop the chat model it
+  holds resident (its warm E4B is 4 798 MiB, which the 12B needs); it keeps
+  serving embeddings and the vision ingest, and `ollama-warm.service` puts the
+  model back at release.
+* Solaris answers the household from the 12B and **shows no banner**: operator
+  decision of 2026-09-05. Nothing the resident does changes — voice included —
+  except that an answer takes about a second longer. `/api/whoami` still names
+  the window under `gpu_lease` for the log. Only the swap itself is mute
+  (`ready: false` until `/health` answers).
+* No vision projector: the 12B repo's `mmproj` has never been fetched or
+  measured on this box, and a file that turned out not to exist would refuse
+  the lease outright. A photo attachment reaches the 12B as text for the
+  window.
+
 A deploy in the middle of a lease leaves `llama.service` and the voice device
 exactly as the lease set them; post-deploy says so in its log and does nothing
 else.
@@ -138,15 +167,15 @@ no window where the card is gone and nothing knows it.
 
 The `llama-api` health check goes red for the duration of an exclusive lease —
 expected, and the one thing to watch on the box: nothing may restart
-`llama.service` behind the lease's back, or the 26B run meets a second model
-on the card. A coding lease keeps the check green; it is the same server with
-other weights.
+`llama.service` behind the lease's back, or the leased run meets a second model
+on the card. A coding or foundry lease keeps the check green; it is the same
+server with other weights.
 
 ## Storage
 
 `${DATA_DIR}/llama/models` — about 5.2 GB with the defaults, plus 12.6 GB the
 first time a coding lease is taken (the Qwen weights and their drafter, kept
-afterwards). post-deploy
+afterwards) and 7.7 GB the first time a foundry lease is. post-deploy
 downloads to `<name>.part` and renames on completion, so an interrupted
 download never leaves a truncated GGUF that llama-server would crash-loop on.
 

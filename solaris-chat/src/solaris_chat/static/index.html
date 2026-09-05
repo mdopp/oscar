@@ -6930,10 +6930,13 @@
       // is either slower (it answers from the big coding model) or cannot
       // answer at all. Same notice box and same 30 s poll as the outage above —
       // the resident should never have to work that out from long answers.
+      // #1325 is the exception: during a foundry evening the same assistant
+      // answers from a bigger model, voice included, about a second slower —
+      // nothing the resident has to know or do, so no notice at all.
       function applyGpuLease(lease) {
         var box = document.getElementById("gpu-notice");
         if (!box) return;
-        if (!lease) { box.hidden = true; box.textContent = ""; return; }
+        if (!lease || lease.mode === "foundry") { box.hidden = true; box.textContent = ""; return; }
         var bis = "";
         if (lease.until) {
           var end = new Date(lease.until * 1000);
