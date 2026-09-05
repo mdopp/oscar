@@ -383,6 +383,41 @@ Both are Authelia-gated **and** admin-gated. The GET deliberately omits SB's
   `ANDROID_PACKAGE` (default `cloud.dopp.solaris`) using `ANDROID_CERT_FINGERPRINTS`
   (set at signing). This removes the URL bar in a Trusted Web Activity and binds app↔domain.
 
+## 6. Getting the app itself — `/download` and `/download/version` (#1326)
+
+Both are **public**: no Authelia session, no device token. `/download` is a prefix in the
+route's `authSkipPaths` (alongside `/.well-known/`, `/static/`, `/napi/`) and covers
+`/download/version` — a phone before its first login has to be able to install and to ask
+what it would be installing. The route is `exposure: internal` (LAN allow-list), so from
+mobile data the host does not answer at all; that is expected, and a client treats it as
+"nothing to report", never as an error to show.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/download` | **302** to `https://github.com/mdopp/solaris-android/releases/latest/download/app-release.apk` |
+| GET | `/download/version` | **200** `{versionName, publishedAt, downloadUrl, sizeBytes}`, `Cache-Control: max-age=300` · **503** `{ok:false,reason:"unavailable"}` + `Retry-After: 300` when nothing is cached and GitHub was unreachable |
+
+- The redirect resolves for an anonymous phone **only because `mdopp/solaris-android` is a
+  public repository.** While it was private, `releases/latest/download/<asset>` answered
+  404 to everyone without a GitHub login — the whole of #1326.
+- **`versionName` is the release tag without its leading `v`** (`v2.39.0` → `2.39.0`), which
+  is what the app compares against its own `BuildConfig.VERSION_NAME`. There is no
+  `versionCode`: the releases API does not carry one.
+- **`downloadUrl` is the release asset's `browser_download_url`** (https, or the release is
+  ignored). The app follows the URL the server names rather than assuming a host.
+- The engine reads the **public** releases API anonymously (60 calls/hour/IP), so the answer
+  — and a failed attempt — is cached for 300 s beside `solaris.db`, and a daily cron
+  (`app-release-check`, 09:20 local) refreshes the same cache for everyone.
+- **A new version announces itself once**, as one household notice on the ordinary `ha`
+  stream (§3), so every client that already renders notices renders this one. Its payload
+  carries `kind:"app-update"` instead of `"ha"` — that is the discriminator, while the
+  bus/SSE event name stays `ha`. The body names the **menu entry** and deliberately carries
+  **no address**: notice text is not linked on the phone, so a URL there would be for
+  typing out and would be a phishing surface for nothing. Exactly one notice per
+  `versionName` (the marker is on disk, so a restart does not repeat it), only between
+  08:00 and 21:00 local — a check at night defers its notice to the next daytime check —
+  and never on a box's first-ever check, which only records what is already current.
+
 ## What the companion does **not** touch
 
 - **ServiceBay / Home Assistant directly** — always via `/napi`.

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 
 from solaris_chat import notes_index
+from solaris_chat.app_release import ReleaseWatch
 from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
@@ -134,6 +136,17 @@ async def _run() -> None:
         notifier=notifier,
     )
     sb_event_bridge.start()
+    # Which Android companion release the household is offered (#1326). One
+    # cached answer serves both the public /download/version read and the daily
+    # cron, and the "already announced" marker lives beside solaris.db on the
+    # data volume so a restart cannot re-announce the same version.
+    release_watch = ReleaseWatch(
+        str(Path(settings.solaris_db_path).with_name("app-release.json")),
+        db_path=settings.solaris_db_path,
+        event_bus=event_bus,
+        notifier=notifier,
+        household_uid=settings.default_uid,
+    )
     crons = CronRunner(
         db_path=settings.solaris_db_path,
         household=household,
@@ -141,6 +154,7 @@ async def _run() -> None:
         context_window=context_window.value,
         ingest_settings=settings,
         librarian=librarian,
+        release_watch=release_watch,
     )
     crons.start()
 
@@ -213,6 +227,7 @@ async def _run() -> None:
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
         crons=crons,
+        release_watch=release_watch,
         vapid_public_key=settings.vapid_public_key,
         android_package=settings.android_package,
         android_cert_fingerprints=settings.android_cert_fingerprints,

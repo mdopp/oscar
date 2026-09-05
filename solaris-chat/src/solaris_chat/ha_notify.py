@@ -273,6 +273,7 @@ def event_data(
     actions: list[dict[str, Any]] | None = None,
     category: str = DEFAULT_CATEGORY,
     device_classes: Mapping[str, str] | None = None,
+    kind: str = EVENT_KIND,
 ) -> dict[str, Any]:
     """The `ha` event body, one shape for every producer.
 
@@ -280,13 +281,19 @@ def event_data(
     here so a receiver never has to tell them apart by shape, only by
     `category`.
 
+    `kind` is the payload's discriminator and defaults to `EVENT_KIND`. A
+    producer whose notice is not a household event at all overrides it — the
+    companion-release notice sends `app-update` (#1326) — while the bus/SSE
+    event name stays `EVENT_KIND`, so a client that already renders notices
+    renders this one too instead of needing a second stream.
+
     Actions are re-validated here, not just at the HTTP edge: this is the one
     place every producer passes through, so a lock or alarm action cannot reach
     a phone, and no cover can lose its `confirm`, even from a caller that never
     saw `parse_payload` (#1283). Without `device_classes` every cover confirms.
     """
     return {
-        "kind": EVENT_KIND,
+        "kind": kind,
         "target": target,
         "title": title,
         "body": body,

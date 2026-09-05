@@ -126,6 +126,7 @@ def test_load_jobs_from_shipped_pack_builds_the_three_jobs():
     assert set(by_name) == {
         "chat-compactor",
         "knowledge-night-run",
+        "app-release-check",
         "daily-chronicle",
         "problem-summarizer",
     }
@@ -262,6 +263,29 @@ async def test_jobs_include_knowledge_night_run():
         by_name["knowledge-night-run"].minute,
     ) == (2, 30)
     assert by_name["knowledge-night-run"].prompt == ""  # code job
+
+
+async def test_app_release_check_runs_the_release_watch(db):
+    """The daily companion-release pass (#1326) is dispatched by name — it is a
+    code job, so it must never be handed to the compactor branch."""
+    calls: list[int] = []
+
+    class _Watch:
+        async def daily_check(self):
+            calls.append(1)
+
+    job = crons.CronJob(name="app-release-check", minute=20, hour=9)
+    _baseline(db, job.name)
+    runner = crons.CronRunner(
+        db_path=db,
+        household=_FakeEngine(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(job,),
+        release_watch=_Watch(),
+    )
+    await runner.tick(datetime(2026, 9, 5, 9, 21, tzinfo=_TZ))
+    assert calls == [1]
 
 
 async def test_knowledge_night_run_calls_all_steps(db, monkeypatch, tmp_path):
