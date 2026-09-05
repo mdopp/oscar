@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.51.0](https://github.com/mdopp/solarisbay/compare/v0.50.0...v0.51.0) (2026-09-05)
+
+
+### Features
+
+* **template:** give the coding run the card without taking Solaris away ([8698789](https://github.com/mdopp/solarisbay/commit/8698789bcdca63cd1a9748af4d66c8b1dad740c4)), closes [#1319](https://github.com/mdopp/solarisbay/issues/1319)
+* **template:** let foundry and the coding run take the whole GPU on request ([fbadc94](https://github.com/mdopp/solarisbay/commit/fbadc943cc122091a9b51fc803f1acdbe99fa698)), closes [#1320](https://github.com/mdopp/solarisbay/issues/1320)
+* **template:** serve the household model from llama.cpp with the MTP drafter ([8cdc615](https://github.com/mdopp/solarisbay/commit/8cdc615f900a1a089315c291d34c54d5dec956e5)), closes [#1318](https://github.com/mdopp/solarisbay/issues/1318)
+
 ## [0.50.0](https://github.com/mdopp/solarisbay/compare/v0.49.0...v0.50.0) (2026-08-31)
 
 
