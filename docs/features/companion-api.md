@@ -411,9 +411,12 @@ mobile data the host does not answer at all; that is expected, and a client trea
 - **A new version announces itself once**, as one household notice on the ordinary `ha`
   stream (§3), so every client that already renders notices renders this one. Its payload
   carries `kind:"app-update"` instead of `"ha"` — that is the discriminator, while the
-  bus/SSE event name stays `ha`. The body names the **menu entry** and deliberately carries
-  **no address**: notice text is not linked on the phone, so a URL there would be for
-  typing out and would be a phishing surface for nothing. Exactly one notice per
+  bus/SSE event name stays `ha`. The payload also carries `versionName` (the same bare
+  number `/download/version` returns), so the app can suppress a notice that is not newer
+  than what is already installed without a network call from inside the SSE callback. The
+  body names the **menu entry** and deliberately carries **no address** anywhere in the
+  payload: notice text is not linked on the phone, so a URL there would be for typing out
+  and would be a phishing surface for nothing. Exactly one notice per
   `versionName` (the marker is on disk, so a restart does not repeat it), only between
   08:00 and 21:00 local — a check at night defers its notice to the next daytime check —
   and never on a box's first-ever check, which only records what is already current.

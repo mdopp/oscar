@@ -17,6 +17,7 @@ alembic (CI runs solaris-chat in a clean env without it).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -320,9 +321,13 @@ async def test_the_notice_names_the_menu_and_carries_no_address(tmp_path, monkey
     assert (uid, kind) == ("household", "ha")
     # …and told apart by the payload's own discriminator.
     assert data["kind"] == "app-update"
+    # The app needs the number to suppress a stale notice (#1329) — but still
+    # no address anywhere in the payload.
+    assert data["versionName"] == "2.40.0"
     assert "2.40.0" in data["body"]
     assert "Solaris-App für Android" in data["body"]
     assert "http" not in data["body"]
+    assert "http" not in json.dumps(data)
     assert data["actions"] == []
     # It is catchable after a screen-off gap, like every other notice.
     conn = sqlite3.connect(ctx["db"])

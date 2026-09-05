@@ -234,6 +234,11 @@ class ReleaseWatch:
         data = ha_notify.event_data(
             bus_uid, NOTICE_TITLE, body, urgency="low", kind=NOTICE_KIND
         )
+        # Only the app knows what it has installed; carrying the number lets it
+        # suppress a notice that is not newer than what is already running
+        # (`UpdateCheck.isNewer`) without a network call from inside the SSE
+        # callback (#1329). Still no URL — see `notice_body`.
+        data["versionName"] = version
         if self._event_bus is not None:
             self._event_bus.publish(bus_uid, ha_notify.EVENT_KIND, data)
         notice_backlog.record(self._db_path, bus_uid, data)
