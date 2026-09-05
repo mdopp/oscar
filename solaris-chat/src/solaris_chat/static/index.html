@@ -1776,6 +1776,10 @@
         <!-- Version badge moved down here (#777): it belongs with the
              identity/meta footer, not up by the logo. JS still fills #brand-ver. -->
         <span class="brand-ver" id="brand-ver"></span>
+        <!-- The companion app, where a resident can find it (#1326): the link
+             carries the version the server currently serves, and when no
+             release is reachable it says so instead of leading nowhere. -->
+        <a id="android-link" href="/download">Solaris-App für Android</a>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
@@ -6930,10 +6934,13 @@
       // is either slower (it answers from the big coding model) or cannot
       // answer at all. Same notice box and same 30 s poll as the outage above —
       // the resident should never have to work that out from long answers.
+      // #1325 is the exception: during a foundry evening the same assistant
+      // answers from a bigger model, voice included, about a second slower —
+      // nothing the resident has to know or do, so no notice at all.
       function applyGpuLease(lease) {
         var box = document.getElementById("gpu-notice");
         if (!box) return;
-        if (!lease) { box.hidden = true; box.textContent = ""; return; }
+        if (!lease || lease.mode === "foundry") { box.hidden = true; box.textContent = ""; return; }
         var bis = "";
         if (lease.until) {
           var end = new Date(lease.until * 1000);
@@ -7005,6 +7012,27 @@
             initPush(j && j.vapid_public_key);
           })
           .catch(function () {});
+      }
+
+      // The companion-app entry in the rail footer (#1326). `/download/version`
+      // is public and answers 503 while no release is cached, so an unreachable
+      // GitHub turns the entry into plain text with a reason — never a link to
+      // a download that isn't there.
+      function loadAppVersion() {
+        var link = document.getElementById("android-link");
+        if (!link) return Promise.resolve();
+        return fetch("/download/version")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.versionName) throw new Error("unavailable");
+            link.textContent = "Solaris-App für Android " + j.versionName;
+            link.title = "Version " + j.versionName + " für Android herunterladen";
+          })
+          .catch(function () {
+            link.removeAttribute("href");
+            link.textContent = "Solaris-App für Android — derzeit nicht verfügbar";
+            link.title = "Der Download ist gerade nicht erreichbar. Später noch einmal versuchen.";
+          });
       }
 
       // ---- Web Push (#713) ----
@@ -11734,7 +11762,7 @@
         return true;
       }
 
-      Promise.all([loadPersonalities(), loadWhoami(), loadTopics()])
+      Promise.all([loadPersonalities(), loadWhoami(), loadTopics(), loadAppVersion()])
         .then(loadSessions).then(function () {
           // ?ask / ?tool deep links win over normal hash routing when present
           // (#766, #1213).

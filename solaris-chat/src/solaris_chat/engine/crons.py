@@ -20,7 +20,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction, notes_search
@@ -208,6 +208,7 @@ JOBS = (
     ),
     CronJob(name="chat-compactor", minute=15, hour=4),
     CronJob(name="knowledge-night-run", minute=30, hour=2),
+    CronJob(name="app-release-check", minute=20, hour=9),
 )
 
 # Code jobs (empty prompt → dispatched by name, not fed to an agent) can't live
@@ -216,6 +217,11 @@ JOBS = (
 _CODE_JOBS = (
     CronJob(name="chat-compactor", minute=15, hour=4),
     CronJob(name="knowledge-night-run", minute=30, hour=2),
+    # Mid-morning on purpose (#1326): the companion-release check may run at any
+    # hour, but its notice only goes out between 08:00 and 21:00, so a slot
+    # inside that window announces a new app version the day it appears instead
+    # of the morning after.
+    CronJob(name="app-release-check", minute=20, hour=9),
 )
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -375,6 +381,7 @@ class CronRunner:
         ingest_settings: Settings | None = None,
         librarian: EngineClient | None = None,
         extractor_model: str = "gemma4:12b",
+        release_watch: Any = None,
     ):
         self._db_path = db_path
         self._household = household
@@ -383,6 +390,7 @@ class CronRunner:
         self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
         self._ingest_settings = ingest_settings
         self._librarian = librarian
+        self._release_watch = release_watch
         # Document extraction runs on a stronger model than the bibliothekar's
         # default (the 8B librarian couldn't fill fields) — a per-turn override on
         # the same restricted librarian client (#doc).
@@ -424,6 +432,8 @@ class CronRunner:
                 await self._run_agent_job(job)
             elif job.name == "knowledge-night-run":
                 await self._knowledge_night_run()
+            elif job.name == "app-release-check":
+                await self._app_release_check()
             else:
                 await self._compact_stale()
 
@@ -440,6 +450,13 @@ class CronRunner:
             log.info("engine.cron.done", job=job.name, reply_len=len(reply))
         finally:
             await self._household.delete_session(session_id, _CRON_UID)
+
+    async def _app_release_check(self) -> None:
+        """Refresh the companion-release cache and announce a new version once
+        (#1326). Dormant when no watch was wired in."""
+        if self._release_watch is None:
+            return
+        await self._release_watch.daily_check()
 
     async def _knowledge_night_run(self) -> None:
         """The nightly knowledge pipeline (#652): re-ingest every source, run

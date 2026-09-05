@@ -18,13 +18,14 @@ Four responsibilities:
   3. **Register an HTTP health check** against `/health`, which returns 200
      only once both the model and the drafter are loaded.
 
-  4. **Install the GPU lease** (#1320, #1319). A copy of this script lands at
-     `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire <holder>` it
-     hands the whole card to foundry or the coding run, with `release` it
-     gives it back. Self-copy, like ollama-warm (#1236), so the unit list
-     cannot drift from a second copy of itself. `acquire <holder> --model
-     coding` takes the softer path: llama-server is reloaded with the coding
-     model instead of stopped, and Solaris answers the household from it.
+  4. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
+     lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
+     <holder>` it hands the whole card to another job, with `release` it gives
+     it back. Self-copy, like ollama-warm (#1236), so the unit list cannot
+     drift from a second copy of itself. `--model coding` and `--model
+     foundry` take the softer path: llama-server is reloaded with that
+     profile's model instead of stopped, and Solaris answers the household
+     from it.
 
 Idempotent: a second run finds the files on disk and skips the download; the
 Quadlet is re-activated only when it isn't the live unit source; the
@@ -445,11 +446,11 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
 
 # --- The whole-card GPU lease (#1320) -------------------------------------
 #
-# Box-measured over the night of 04./05.09. (#1318): foundry's 26B-A4B peaks at
-# 14 090 MiB and the coding run's Qwen 27B at 15 004 MiB of 16 380 — neither
-# fits beside Solaris' own e4b server (3 866 MiB), let alone the voice stack.
-# The operator's decision is that they take the card on request, with no time
-# window and no presence check, and that Solaris answers honestly meanwhile.
+# Box-measured over the night of 04./05.09. (#1318): the coding run's Qwen 27B
+# peaks at 15 004 MiB of 16 380 — it does not fit beside Solaris' own e4b
+# server (3 866 MiB), let alone the voice stack. The operator's decision is
+# that such a job takes the card on request, with no time window and no
+# presence check, and that Solaris answers honestly meanwhile.
 #
 # So a lease is: write the file, stop everything that holds VRAM. And a
 # release is the same in reverse, with the file removed last — while it is
@@ -465,7 +466,8 @@ PROFILE_FILE = "llama-profile.json"
 #
 # The two voice units are listed apart because the coding lease (#1319) keeps
 # them RUNNING, on the CPU: the operator ruled on 2026-09-05 that the house can
-# still be spoken to during a coding window, slower rather than not at all.
+# still be spoken to during a coding window, slower rather than not at all. A
+# foundry lease (#1325) stops none of the five and leaves them all on the GPU.
 LEASE_GPU_UNITS = (
     "ollama.service",
     "solaris-whisper-batch.service",
@@ -504,6 +506,40 @@ CODING_PROFILE = {
     "parallel": "1",
     "label": "Qwen 3.8 27B",
 }
+
+# The foundry-lease server profile (#1325). Box-measured 2026-09-04 (#1318,
+# cell K2): 9 626 MiB steady / 9 636 peak with four slots and f16 KV at 32k,
+# 36.6 tok/s, 1.53 s per finished answer, tool calls 6/6, no thinking leak.
+# Beside the voice stack under load (4 508 MiB, #1260) that is 14 144 of
+# 16 380 — which only holds because llama-server runs the 12B *instead of* the
+# household e4b (3 872 MiB): all three together are 18 016 and do not fit.
+# No mmproj: the 12B repo's vision projector has never been fetched or
+# measured on this box, and a file that turns out not to exist would refuse
+# the lease outright. A photo reaches the 12B as text for the window.
+FOUNDRY_PROFILE = {
+    "model_repo": "ggml-org/gemma-4-12B-it-GGUF",
+    "model_file": "gemma-4-12B-it-Q4_0.gguf",
+    "draft_repo": "ggml-org/gemma-4-12B-it-GGUF",
+    "draft_file": "mtp-gemma-4-12B-it-Q8_0.gguf",
+    "mmproj_file": "",
+    "context_length": "32768",
+    "draft_n_max": "4",
+    "cache_type": "",
+    "parallel": "",
+    "label": "Gemma 4 12B",
+}
+
+# The profiles that swap llama-server instead of emptying the card. Without
+# `--model` the lease is exclusive: everything stops and nothing answers.
+LEASE_PROFILES = {"coding": CODING_PROFILE, "foundry": FOUNDRY_PROFILE}
+
+# Ollama stays up through a foundry lease — the household still needs its
+# embeddings and the vision ingest — but it must not go on holding a chat
+# model: its warm e4b costs 4 798 MiB (box idle 6 532 minus the voice stack's
+# 1 734), which is more than the 12B has to spare. `ollama-warm.service`
+# (#1236) puts it back at release.
+OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_WARM_UNIT = "ollama-warm.service"
 
 # How long `release` waits for the household model to answer /health again.
 # Cold e4b was ~38 s in the night measurements; this is the give-up point,
@@ -652,6 +688,39 @@ def set_voice_device(data_dir: str, device: str) -> None:
     )
 
 
+def unload_ollama_models() -> None:
+    """Ask Ollama to drop every model it holds resident, keeping the service.
+
+    `keep_alive: 0` on a bare generate call is Ollama's own unload path, so the
+    runner exits and gives the VRAM back without the unit going down with it.
+    """
+    status, body = http_request(f"{OLLAMA_URL}/api/ps", timeout=10)
+    if status != 200:
+        jlog("warn", "llama:lease", "could not ask Ollama what it holds", status=status)
+        return
+    try:
+        loaded = json.loads(body.decode("utf-8") or "{}").get("models") or []
+    except ValueError:
+        return
+    for entry in loaded:
+        name = (
+            entry.get("model") or entry.get("name") if isinstance(entry, dict) else ""
+        )
+        if not name:
+            continue
+        http_request(
+            f"{OLLAMA_URL}/api/generate",
+            payload={"model": name, "keep_alive": 0},
+            method="POST",
+            timeout=60,
+        )
+        jlog("info", "llama:lease", "asked Ollama to unload a model", model=name)
+
+
+def rewarm_ollama() -> None:
+    systemctl("restart", (OLLAMA_WARM_UNIT,))
+
+
 def apply_llama_profile(port: str, data_dir: str, profile: dict[str, str]) -> None:
     """Reload llama-server on `profile` — rewrite its Quadlet and restart it."""
     container_path = os.path.expanduser("~/.config/containers/systemd/llama.container")
@@ -728,10 +797,13 @@ def lease_acquire(
 ) -> int:
     """Hand the card to `holder`: claim, then stop.
 
-    `model=coding` is the softer variant (#1319): llama-server is reloaded on
-    the coding model instead of stopped, the voice stack moves to the CPU, and
-    Solaris answers the household from the coding model for the window. Without
-    it the card is emptied outright, which is what foundry needs.
+    `model=coding` (#1319) and `model=foundry` (#1325) are the softer variants:
+    llama-server is reloaded on that profile's model instead of stopped and
+    Solaris answers the household from it for the window. A coding lease also
+    stops Ollama, the batch transcriber and the trainer and moves the voice
+    stack to the CPU; a foundry lease leaves all five units alone on the GPU,
+    because foundry transcribes through `solaris-whisper-batch` while it runs.
+    Without `--model` the card is emptied outright.
     """
     current = read_lease(data_dir)
     if current and current.get("holder") != holder:
@@ -743,11 +815,15 @@ def lease_acquire(
             requested_by=holder,
         )
         return 1
-    coding = model == "coding"
-    if model and not coding:
-        jlog("error", "llama:lease", "unknown --model; known: coding", model=model)
+    if model and model not in LEASE_PROFILES:
+        jlog(
+            "error",
+            "llama:lease",
+            "unknown --model; known: " + ", ".join(sorted(LEASE_PROFILES)),
+            model=model,
+        )
         return 2
-    profile = CODING_PROFILE if coding else None
+    profile = LEASE_PROFILES.get(model)
     if profile:
         if not gpu_container_is_live_source():
             # The swap rewrites llama.container. If llama.service is still the
@@ -756,7 +832,7 @@ def lease_acquire(
             jlog(
                 "error",
                 "llama:lease",
-                "llama.service is not the GPU .container unit, so the coding profile cannot be swapped in; nothing was stopped",
+                f"llama.service is not the GPU .container unit, so the {model} profile cannot be swapped in; nothing was stopped",
             )
             return 1
         # Before anything stops: 12.6 GB over a household line is not something
@@ -773,7 +849,7 @@ def lease_acquire(
                 jlog(
                     "error",
                     "llama:lease",
-                    "the coding weights are not on the box; nothing was stopped",
+                    f"the {model} weights are not on the box; nothing was stopped",
                     file=profile[file_key],
                 )
                 return 1
@@ -784,9 +860,9 @@ def lease_acquire(
             "holder": holder,
             "since": now,
             "until": now + duration_sec,
-            "mode": "coding" if coding else "exclusive",
+            "mode": model or "exclusive",
             "model": profile["label"] if profile else "",
-            # Flipped once the coding model answers /health. Until then the
+            # Flipped once the leased model answers /health. Until then the
             # card is in the swap and the Engine still says it is busy.
             "ready": False,
         },
@@ -795,7 +871,7 @@ def lease_acquire(
     # Claim before stopping: in the gap Solaris already says it is busy. The
     # other order leaves a window where the server is gone and nothing knows.
     schedule_expiry(data_dir, port, duration_sec)
-    if not coding:
+    if not profile:
         systemctl("stop", LEASED_UNITS)
         jlog(
             "info",
@@ -806,15 +882,19 @@ def lease_acquire(
             until_sec=int(now + duration_sec),
         )
         return 0
-    systemctl("stop", LEASE_GPU_UNITS)
-    set_voice_device(data_dir, "cpu")
-    apply_llama_profile(port, data_dir, CODING_PROFILE)
+    if model == "coding":
+        systemctl("stop", LEASE_GPU_UNITS)
+        set_voice_device(data_dir, "cpu")
+    else:
+        unload_ollama_models()
+    apply_llama_profile(port, data_dir, profile)
     llama_url = f"http://127.0.0.1:{port}"
     if not wait_for_ready(llama_url, deadline_sec=LEASE_WARM_DEADLINE_SEC):
         jlog(
             "error",
             "llama:lease",
-            "the coding model did not answer /health; releasing the card again",
+            "the leased model did not answer /health; releasing the card again",
+            model=profile["label"],
             url=llama_url,
         )
         lease_release(data_dir, port)
@@ -823,7 +903,7 @@ def lease_acquire(
         jlog(
             "warn",
             "llama:lease",
-            "coding model is up but /slots reports no speculative decoding — check the drafter; answers will be about a third slower",
+            "the leased model is up but /slots reports no speculative decoding — check the drafter; answers will be about a third slower",
         )
     current = read_lease(data_dir)
     current["ready"] = True
@@ -831,9 +911,10 @@ def lease_acquire(
     jlog(
         "info",
         "llama:lease",
-        "GPU leased for coding — Solaris answers from the coding model, voice runs on the CPU",
+        f"GPU leased for {model} — Solaris keeps answering, from the leased model",
         holder=holder,
-        model=CODING_PROFILE["label"],
+        model=profile["label"],
+        voice="cpu" if model == "coding" else "gpu",
         until_sec=int(now + duration_sec),
     )
     return 0
@@ -842,12 +923,15 @@ def lease_acquire(
 def lease_release(data_dir: str, port: str) -> int:
     """Give the card back: start everything, wait for the household model, drop
     the lease last so nobody is told "ready" while e4b is still loading."""
-    coding = read_lease(data_dir).get("mode") == "coding"
+    mode = read_lease(data_dir).get("mode")
     cancel_expiry()
-    if coding:
+    if mode == "coding":
         systemctl("start", LEASE_GPU_UNITS)
         set_voice_device(data_dir, "gpu")
         apply_llama_profile(port, data_dir, household_profile(data_dir))
+    elif mode == "foundry":
+        apply_llama_profile(port, data_dir, household_profile(data_dir))
+        rewarm_ollama()
     else:
         systemctl("start", LEASED_UNITS)
     llama_url = f"http://127.0.0.1:{port}"
@@ -895,7 +979,7 @@ def lease_cli(argv: list[str]) -> int:
         jlog(
             "error",
             "llama:lease",
-            "usage: gpu-lease.py acquire <holder> [--model coding] [--duration 4h]",
+            "usage: gpu-lease.py acquire <holder> [--model coding|foundry] [--duration 4h]",
         )
         return 2
     return lease_acquire(data_dir, holder, port, model, duration)

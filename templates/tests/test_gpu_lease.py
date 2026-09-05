@@ -1,15 +1,16 @@
-"""The GPU lease (#1320) and its coding profile (#1319): what `acquire` stops,
-what it swaps, and what `release` gives back.
+"""The GPU lease (#1320) and its two profiles (#1319, #1325): what `acquire`
+stops, what it swaps, and what `release` gives back.
 
 The unit list is the load-bearing part — a missing `llama.service` leaves
-Solaris' own 3.9 GB server loaded and the 26B/Qwen run then OOMs on a card
-measured full at 15.0 of 16.4 GB. The ordering matters just as much: the lease
-file is written before the stop and removed after the model answers again, so
-there is no moment when the card is gone and nothing knows it.
+Solaris' own 3.9 GB server loaded and the Qwen run then OOMs on a card measured
+full at 15.0 of 16.4 GB. The ordering matters just as much: the lease file is
+written before the stop and removed after the model answers again, so there is
+no moment when the card is gone and nothing knows it.
 
-The coding lease is the softer shape: llama-server is reloaded on the coding
-model instead of stopped and the voice units move to the CPU, so the house
-keeps an assistant it can talk to for the window.
+The two named profiles are the softer shapes: llama-server is reloaded on the
+leased model instead of stopped, so the house keeps an assistant. A coding
+lease moves the voice units to the CPU; a foundry lease stops nothing at all,
+because foundry transcribes through `solaris-whisper-batch` while it runs.
 """
 
 from __future__ import annotations
@@ -161,14 +162,15 @@ def test_lease_file_sits_where_the_chat_pod_mounts_it(pd):
 
 
 @pytest.fixture
-def coding_box(pd, tmp_path, monkeypatch):
-    """A box where the coding weights are already there and llama-server comes
+def swap_box(pd, tmp_path, monkeypatch):
+    """A box where the leased weights are already there and llama-server comes
     back up: what is left to observe is which units moved and what was written."""
     systemd_dir = tmp_path / ".config" / "containers" / "systemd"
     systemd_dir.mkdir(parents=True)
     monkeypatch.setattr(
         pd.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path))
     )
+    monkeypatch.setattr(pd, "http_request", lambda *a, **k: (0, b""))
     monkeypatch.setattr(
         pd, "download_model", lambda repo, filename, models_dir, stall: True
     )
@@ -198,7 +200,7 @@ def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
 
 
 def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
-    pd, tmp_path, coding_box, systemctl_calls
+    pd, tmp_path, swap_box, systemctl_calls
 ):
     assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
     stopped = [units for verb, units in systemctl_calls if verb == "stop"]
@@ -210,10 +212,10 @@ def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
 
 
 def test_coding_acquire_swaps_the_server_instead_of_stopping_it(
-    pd, tmp_path, coding_box, systemctl_calls
+    pd, tmp_path, swap_box, systemctl_calls
 ):
     assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
-    unit = coding_box.read_text()
+    unit = swap_box.read_text()
     assert "Qwen3.8-27B-UD-IQ3_XXS.gguf" in unit
     assert "--parallel 1" in unit
     assert ("restart", ("llama.service",)) in systemctl_calls
@@ -221,7 +223,7 @@ def test_coding_acquire_swaps_the_server_instead_of_stopping_it(
 
 
 def test_the_lease_says_it_is_still_loading_until_the_model_answers(
-    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
 ):
     """Mode B only holds once the coding model serves: during the swap there is
     no model at all, and the Engine has to keep saying so."""
@@ -243,7 +245,7 @@ def test_the_lease_says_it_is_still_loading_until_the_model_answers(
 
 
 def test_every_lease_carries_a_deadline_and_arms_the_expiry(
-    pd, tmp_path, coding_box, systemctl_calls, no_box
+    pd, tmp_path, swap_box, systemctl_calls, no_box
 ):
     """#1260's lesson: an end signal alone is not enough. A run that dies
     without releasing must not leave the household on the coding model."""
@@ -259,7 +261,7 @@ def test_every_lease_carries_a_deadline_and_arms_the_expiry(
 
 
 def test_coding_release_puts_the_household_model_and_the_gpu_voice_back(
-    pd, tmp_path, coding_box, systemctl_calls
+    pd, tmp_path, swap_box, systemctl_calls
 ):
     pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
     systemctl_calls.clear()
@@ -268,12 +270,12 @@ def test_coding_release_puts_the_household_model_and_the_gpu_voice_back(
     assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
     env_file = tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE
     assert env_file.read_text() == "WHISPER_DEVICE=cuda\nKOKORO_ONNX_PROVIDER=cuda\n"
-    assert "gemma-4-E4B-it-Q4_0.gguf" in coding_box.read_text()
+    assert "gemma-4-E4B-it-Q4_0.gguf" in swap_box.read_text()
     assert not _lease(tmp_path, pd).exists()
 
 
 def test_release_reloads_the_profile_that_was_installed_not_the_default(
-    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
 ):
     """An operator who deployed other weights gets those back, not this
     script's defaults."""
@@ -282,10 +284,10 @@ def test_release_reloads_the_profile_that_was_installed_not_the_default(
     monkeypatch.delenv("LLAMA_MODEL_FILE")
     pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
     pd.lease_release(str(tmp_path), "11435")
-    assert "gemma-4-12B-it-Q4_0.gguf" in coding_box.read_text()
+    assert "gemma-4-12B-it-Q4_0.gguf" in swap_box.read_text()
 
 
-def test_missing_coding_weights_stop_nothing(pd, tmp_path, monkeypatch, coding_box):
+def test_missing_coding_weights_stop_nothing(pd, tmp_path, monkeypatch, swap_box):
     """A 12.6 GB download is not something to do with the house muted — the
     weights are fetched before anything is stopped, and a failure is a no-op."""
     monkeypatch.setattr(pd, "download_model", lambda *a: False)
@@ -355,7 +357,7 @@ def test_both_templates_agree_on_the_voice_env_contract(pd):
 
 
 def test_a_cpu_box_is_refused_rather_than_silently_left_on_the_household_model(
-    pd, tmp_path, monkeypatch, coding_box, systemctl_calls
+    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
 ):
     """The swap rewrites llama.container; where llama.service still comes from
     the deployed .kube unit that file is inert, and the restart would bring the
@@ -364,3 +366,97 @@ def test_a_cpu_box_is_refused_rather_than_silently_left_on_the_household_model(
     assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 1
     assert systemctl_calls == []
     assert not _lease(tmp_path, pd).exists()
+
+
+# ── #1325: the foundry lease ───────────────────────────────────────────────
+
+
+def test_the_foundry_profile_is_the_cell_that_measured(pd):
+    """#1318 cell K2: the 12B Q4_0 with its MTP drafter, four slots and f16 KV
+    at 32k measured 9 626 MiB — 14 144 of 16 380 beside the voice stack under
+    load (4 508). q8 KV would buy 872 MiB back and cost a fifth of the model's
+    throughput; it is not needed, so it is not set."""
+    args = pd.server_args("11435", "/models", pd.FOUNDRY_PROFILE)
+    assert "-m /models/gemma-4-12B-it-Q4_0.gguf" in " ".join(args)
+    assert "--spec-draft-model /models/mtp-gemma-4-12B-it-Q8_0.gguf" in " ".join(args)
+    assert args[args.index("-c") + 1] == "32768"
+    assert "-ctk" not in args and "--parallel" not in args and "--mmproj" not in args
+
+
+def test_foundry_acquire_stops_nothing_and_leaves_the_voice_on_the_gpu(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """The whole point of the profile: foundry transcribes through
+    `solaris-whisper-batch` all evening, so the five units it would otherwise
+    stop are exactly the ones it needs running."""
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert [verb for verb, _ in systemctl_calls] == ["restart"]
+    assert systemctl_calls == [("restart", ("llama.service",))]
+    assert not (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).exists()
+
+
+def test_foundry_acquire_swaps_only_llama_service(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    unit = swap_box.read_text()
+    assert "gemma-4-12B-it-Q4_0.gguf" in unit
+    assert "mtp-gemma-4-12B-it-Q8_0.gguf" in unit
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["mode"] == "foundry"
+    assert lease["model"] == "Gemma 4 12B"
+    assert lease["ready"] is True
+
+
+def test_foundry_acquire_frees_ollamas_resident_model(
+    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
+):
+    """Ollama keeps serving embeddings, but its warm e4b costs 4 798 MiB and
+    the 12B has no room for it: 9 636 + 4 508 + 4 798 is over the 16 380 card."""
+    seen: list[tuple[str, object]] = []
+
+    def fake(url, payload=None, method="GET", timeout=10.0, extra_headers=None):
+        seen.append((url, payload))
+        if url.endswith("/api/ps"):
+            return 200, b'{"models": [{"model": "gemma4:e4b"}]}'
+        return 200, b"{}"
+
+    monkeypatch.setattr(pd, "http_request", fake)
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert (
+        f"{pd.OLLAMA_URL}/api/generate",
+        {"model": "gemma4:e4b", "keep_alive": 0},
+    ) in seen
+
+
+def test_foundry_release_restores_e4b_and_rewarms_ollama(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    systemctl_calls.clear()
+    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert "gemma-4-E4B-it-Q4_0.gguf" in swap_box.read_text()
+    assert ("restart", (pd.OLLAMA_WARM_UNIT,)) in systemctl_calls
+    # Nothing was stopped, so nothing may be started behind the units' backs.
+    assert [verb for verb, _ in systemctl_calls] == ["restart", "restart"]
+    assert not (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).exists()
+    assert not _lease(tmp_path, pd).exists()
+
+
+def test_a_foundry_lease_expires_back_to_the_household_model(
+    pd, tmp_path, swap_box, systemctl_calls, no_box
+):
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    armed = [c for c in no_box if c and c[0] == "systemd-run"]
+    assert armed and "--on-active=3600" in armed[0] and armed[0][-1] == "release"
+
+
+def test_the_cli_knows_the_foundry_model(pd, monkeypatch):
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        pd,
+        "lease_acquire",
+        lambda d, h, p, m, s: seen.update(holder=h, model=m, seconds=s) or 0,
+    )
+    assert pd.lease_cli(["acquire", "foundry", "--model", "foundry"]) == 0
+    assert seen["model"] == "foundry"

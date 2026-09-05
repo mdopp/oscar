@@ -32,6 +32,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 
 from solaris_chat import (
+    app_release,
     compaction,
     db_health,
     device_token_store,
@@ -108,10 +109,13 @@ from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# Stable "always the latest signed build" link for the companion app (#…): the
-# Android CI publishes a GitHub release per tag with `app-release.apk`, and
+# Stable "always the latest signed build" link for the companion app (#1326):
+# the Android CI publishes a GitHub release per tag with `app-release.apk`, and
 # GitHub's `releases/latest/download/<asset>` redirect always points at the
-# newest one — so `www.dopp.cloud/download` never needs bumping on a new release.
+# newest one — so `chat.dopp.cloud/download` never needs bumping on a new
+# release. It resolves for an anonymous phone ONLY because
+# `mdopp/solaris-android` is a public repository: while it was private this
+# redirect 404'd for everyone without a GitHub login, which is what #1326 was.
 ANDROID_APK_URL = (
     "https://github.com/mdopp/solaris-android/releases/latest/download/app-release.apk"
 )
@@ -1423,6 +1427,7 @@ def build_app(
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    release_watch: Any = None,
     vapid_public_key: str = "",
     android_package: str = "cloud.dopp.solaris",
     android_cert_fingerprints: tuple[str, ...] = (),
@@ -2403,15 +2408,37 @@ def build_app(
         return web.json_response(statement)
 
     async def download(_request: web.Request) -> web.Response:
-        """Redirect `www.dopp.cloud/download` to the latest signed companion APK.
+        """Redirect `chat.dopp.cloud/download` to the latest signed companion APK.
 
         A stable, shareable install/update link: it 302s to GitHub's
         `releases/latest/download/app-release.apk`, so it always resolves to the
-        newest CI-published build without ever touching this route. For a truly
-        public (pre-login) install, ServiceBay must add a forwardAuth exception
-        for `/download` on the proxy — same as `/.well-known/*`; logged-in users
-        (the update case) reach it regardless."""
+        newest CI-published build without ever touching this route. Public
+        (pre-login): `/download` is a prefix in the route's `authSkipPaths`, so
+        a phone with no Authelia session reaches it — and the redirect target
+        resolves for it because `mdopp/solaris-android` is public."""
         raise web.HTTPFound(ANDROID_APK_URL)
+
+    async def download_version(_request: web.Request) -> web.Response:
+        """Which companion version `/download` currently serves (#1326).
+
+        Public, token-free and NOT under `/napi/` on purpose: a phone that has
+        never been paired must be able to ask. The body is the contract the app
+        is built against — `{versionName, publishedAt, downloadUrl, sizeBytes}`,
+        `versionName` being the release tag without its leading `v`. **503**
+        when nothing is cached and GitHub could not be reached: silence the app
+        can retry, never a made-up version.
+        """
+        release = await release_watch.latest() if release_watch is not None else None
+        if release is None:
+            return web.json_response(
+                {"ok": False, "reason": "unavailable"},
+                status=503,
+                headers={"Retry-After": str(app_release.REFRESH_AFTER_S)},
+            )
+        return web.json_response(
+            release,
+            headers={"Cache-Control": f"max-age={app_release.REFRESH_AFTER_S}"},
+        )
 
     async def health(_request: web.Request) -> web.Response:
         """Readiness — can this service do its job? (#1273)
@@ -6400,6 +6427,7 @@ def build_app(
     app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/.well-known/assetlinks.json", assetlinks)
     app.router.add_get("/download", download)
+    app.router.add_get("/download/version", download_version)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_post("/api/ha/call", ha_call)
@@ -6856,6 +6884,7 @@ async def serve(
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    release_watch: Any = None,
     vapid_public_key: str = "",
     android_package: str = "cloud.dopp.solaris",
     android_cert_fingerprints: tuple[str, ...] = (),
@@ -6919,6 +6948,7 @@ async def serve(
         hass_url=hass_url,
         hass_token=hass_token,
         crons=crons,
+        release_watch=release_watch,
         vapid_public_key=vapid_public_key,
         android_package=android_package,
         android_cert_fingerprints=android_cert_fingerprints,

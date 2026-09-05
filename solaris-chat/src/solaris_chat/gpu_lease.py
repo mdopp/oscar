@@ -1,10 +1,10 @@
 """The whole-card GPU lease (#1320).
 
-foundry (Gemma 4 26B-A4B, 14.1 GB) and the coding run (Qwen 3.8 27B, 15.0 GB)
-each need the entire 16.4 GB card — neither fits beside Solaris' own
-llama-server (3.9 GB), let alone the voice stack. The operator's decision of
-2026-09-05 is that they take it on request, with no time window and no
-presence check, and that Solaris says so instead of hanging.
+The coding run (Qwen 3.8 27B, 15.0 GB) needs the entire 16.4 GB card — it does
+not fit beside Solaris' own llama-server (3.9 GB), let alone the voice stack.
+The operator's decision of 2026-09-05 is that such a job takes it on request,
+with no time window and no presence check, and that Solaris says so instead of
+hanging.
 
 `gpu-lease.py acquire <holder>` on the box writes this file and then stops
 Ollama, the four voice units and `llama.service`; `release` starts them again,
@@ -15,11 +15,16 @@ not running.
 
 Since #1319 a lease also has a **mode** and a **deadline**:
 
-* `exclusive` — foundry's shape, the one above: nothing answers, so a turn gets
-  one honest German sentence instead of a timeout against a dead socket.
+* `exclusive` — the shape above: nothing answers, so a turn gets one honest
+  German sentence instead of a timeout against a dead socket.
 * `coding` — the card goes to the coding model, but llama-server keeps serving
   it, so Solaris answers the household from that model for the window and the
   chat carries a banner naming it. Only the swap itself mutes (`ready: false`).
+* `foundry` (#1325) — llama-server runs Gemma 4 12B instead of the household
+  e4b for a foundry evening. The voice stack keeps the GPU and nothing about
+  the house changes except that answers take about a second longer, so the
+  operator ruled there is no banner either: this one is named in `/api/whoami`
+  for the log and shows the resident nothing.
 
 The deadline is enforced on the box by a transient systemd timer that runs
 `release`, not here — an end signal alone was not enough in #1260. What this
@@ -33,6 +38,10 @@ import json
 from pathlib import Path
 
 LEASE_FILENAME = "gpu_lease.json"
+
+# The lease modes in which llama-server is still serving something, so the turn
+# goes to the model instead of to the fixed sentence.
+ANSWERING_MODES = ("coding", "foundry")
 
 # What the resident hears while another job holds the card. A fixed sentence,
 # because the model that would phrase something friendlier is the one that is
@@ -77,16 +86,16 @@ def holder(path: str | Path) -> str:
 def mutes_chat(path: str | Path) -> bool:
     """True when no model can answer this turn.
 
-    A `coding` lease does not mute: llama-server is serving the coding model
-    and the household turn goes to it (#1319, mode B). The exception is the
-    swap itself — `ready` is false while the coding model is still loading,
-    and those ~2 minutes are exactly the dead socket the fixed sentence exists
-    for. Anything unreadable counts as muting, as it did in #1320.
+    A `coding` (#1319) or `foundry` (#1325) lease does not mute: llama-server
+    is serving that model and the household turn goes to it. The exception is
+    the swap itself — `ready` is false while the leased model is still
+    loading, and those ~2 minutes are exactly the dead socket the fixed
+    sentence exists for. Anything unreadable counts as muting, as in #1320.
     """
     if not is_leased(path):
         return False
     lease = _read(path)
-    return lease.get("mode") != "coding" or not lease.get("ready")
+    return lease.get("mode") not in ANSWERING_MODES or not lease.get("ready")
 
 
 def state(path: str | Path) -> dict | None:
@@ -96,8 +105,9 @@ def state(path: str | Path) -> dict | None:
         return None
     lease = _read(path)
     until = lease.get("until")
+    mode = lease.get("mode")
     return {
-        "mode": "coding" if lease.get("mode") == "coding" else "exclusive",
+        "mode": mode if mode in ANSWERING_MODES else "exclusive",
         "model": str(lease.get("model") or ""),
         "until": float(until) if isinstance(until, (int, float)) else 0.0,
         "answers": not mutes_chat(path),

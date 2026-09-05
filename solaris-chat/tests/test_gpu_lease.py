@@ -1,12 +1,14 @@
-"""The GPU lease seen from the Engine (#1320) and its coding window (#1319).
+"""The GPU lease seen from the Engine (#1320), its coding window (#1319) and
+its foundry evening (#1325).
 
-While foundry holds the card, `llama.service` is stopped. The turn must end in
-one honest German sentence instead of a timeout against a dead socket — and it
-must not reach the network at all, because there is nothing there to answer.
+While an exclusive lease holds the card, `llama.service` is stopped. The turn
+must end in one honest German sentence instead of a timeout against a dead
+socket — and it must not reach the network at all, because there is nothing
+there to answer.
 
-A coding lease is the opposite case: llama-server is up on the coding model, so
-the turn must actually be sent, and the chat has to say whose answers these are
-and until when.
+The two named profiles are the opposite case: llama-server is up on another
+model, so the turn must actually be sent. A coding window says so in the chat;
+a foundry evening deliberately says nothing.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from solaris_chat.engine.llama_server import LlamaServerChat
 from solaris_chat.server import STATIC_DIR, build_app
 
 
-def _held(tmp_path, holder="foundry"):
+def _held(tmp_path, holder="coder"):
     path = tmp_path / gpu_lease.LEASE_FILENAME
     path.write_text(json.dumps({"holder": holder, "since": 1.0}), "utf-8")
     return path
@@ -209,3 +211,61 @@ def test_the_banner_is_wired_to_the_whoami_lease_token():
     assert "function applyGpuLease(lease)" in html
     assert "applyGpuLease(j && j.gpu_lease)" in html
     assert "🖥️ Programmierfenster" in html
+
+
+# ── #1325: the foundry evening — the same assistant, one model up ──────────
+
+
+def _foundry(tmp_path, ready=True, until=2_000_000_000.0):
+    path = tmp_path / gpu_lease.LEASE_FILENAME
+    path.write_text(
+        json.dumps(
+            {
+                "holder": "foundry",
+                "since": 1.0,
+                "until": until,
+                "mode": "foundry",
+                "model": "Gemma 4 12B",
+                "ready": ready,
+            }
+        ),
+        "utf-8",
+    )
+    return path
+
+
+def test_a_live_foundry_lease_does_not_mute_the_chat(tmp_path):
+    """The 12B runs instead of the e4b, on the same server: the household turn
+    goes to it, voice included."""
+    assert gpu_lease.mutes_chat(_foundry(tmp_path)) is False
+
+
+def test_a_foundry_lease_still_loading_mutes(tmp_path):
+    assert gpu_lease.mutes_chat(_foundry(tmp_path, ready=False)) is True
+
+
+def test_the_foundry_state_names_the_model_without_claiming_silence(tmp_path):
+    assert gpu_lease.state(_foundry(tmp_path)) == {
+        "mode": "foundry",
+        "model": "Gemma 4 12B",
+        "until": 2_000_000_000.0,
+        "answers": True,
+    }
+
+
+async def test_whoami_names_the_foundry_window(aiohttp_client, tmp_path):
+    _foundry(tmp_path)
+    client = await aiohttp_client(_app(str(tmp_path / "solaris.db")))
+
+    lease = (await (await client.get("/api/whoami")).json())["gpu_lease"]
+
+    assert lease["mode"] == "foundry"
+    assert lease["answers"] is True
+
+
+def test_a_foundry_lease_shows_the_resident_no_banner():
+    """Operator decision of 2026-09-05: nothing about the house changes except
+    that answers take about a second longer, so a notice would only worry
+    someone about something they cannot act on."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'if (!lease || lease.mode === "foundry") { box.hidden = true;' in html

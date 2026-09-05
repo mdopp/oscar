@@ -850,3 +850,67 @@ def test_assign_pe_pipeline_needs_the_options_list_not_the_name(pd, monkeypatch)
         ),
     )
     pd._assign_pe_pipeline("tok")
+
+
+def test_conversation_agent_retries_aborted_flow_start(pd, monkeypatch):
+    """HA answers an aborted subentry flow-start with 200 + a flow_id while
+    already having removed the flow (#1324) — retry instead of posting the
+    second step into a dead flow."""
+    starts = []
+
+    def fake_post(path, token, payload, timeout=30.0):
+        if path == "/api/config/config_entries/flow":
+            return 200, {"flow_id": "f1", "type": "form"}
+        if path == "/api/config/config_entries/flow/f1":
+            return 200, {"type": "abort", "reason": "already_configured"}
+        if path == "/api/config/config_entries/subentries/flow":
+            starts.append(payload)
+            if len(starts) < 3:
+                return 200, {
+                    "flow_id": f"s{len(starts)}",
+                    "type": "abort",
+                    "reason": "entry_not_loaded",
+                }
+            return 200, {"flow_id": "s3", "type": "form", "step_id": "set_options"}
+        if path == "/api/config/config_entries/subentries/flow/s3":
+            return 200, {"type": "create_entry"}
+        raise AssertionError(f"unexpected POST {path}")
+
+    entities = iter(["", "conversation.solaris"])
+    monkeypatch.setattr(pd, "_ha_post", fake_post)
+    monkeypatch.setattr(pd, "_ollama_entry_id", lambda token, url: "oll1")
+    monkeypatch.setattr(
+        pd, "_find_entity", lambda token, prefix, needle="": next(entities, "")
+    )
+    monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+    assert pd.ensure_conversation_agent("tok", "8787", "key") == "conversation.solaris"
+    assert len(starts) == 3
+
+
+def test_conversation_agent_reports_abort_reason(pd, monkeypatch):
+    """A non-retryable flow-start abort is logged with HA's own reason, not
+    the 404 the dead second POST used to produce."""
+    logged = []
+    posted = []
+
+    def fake_post(path, token, payload, timeout=30.0):
+        posted.append(path)
+        if path == "/api/config/config_entries/flow":
+            return 200, {"flow_id": "f1", "type": "form"}
+        if path == "/api/config/config_entries/flow/f1":
+            return 200, {"type": "abort", "reason": "already_configured"}
+        if path == "/api/config/config_entries/subentries/flow":
+            return 200, {"flow_id": "s1", "type": "abort", "reason": "cannot_connect"}
+        raise AssertionError(f"unexpected POST {path}")
+
+    monkeypatch.setattr(pd, "_ha_post", fake_post)
+    monkeypatch.setattr(pd, "_ollama_entry_id", lambda token, url: "oll1")
+    monkeypatch.setattr(pd, "_find_entity", lambda token, prefix, needle="": "")
+    monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        pd, "jlog", lambda level, tag, message, **kw: logged.append((message, kw))
+    )
+    assert pd.ensure_conversation_agent("tok", "8787", "key") == ""
+    assert "/api/config/config_entries/subentries/flow/s1" not in posted
+    assert logged[-1][0] == "conversation subentry not created"
+    assert logged[-1][1]["detail"]["reason"] == "cannot_connect"
