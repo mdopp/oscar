@@ -3922,6 +3922,7 @@ def ensure_conversation_agent(token: str, chat_port: str, api_key: str) -> str:
     # A freshly-created entry loads asynchronously and the subentry flow
     # aborts `entry_not_loaded` until it has — retry briefly.
     result: dict | None = None
+    step = ""
     for attempt in range(5):
         if attempt:
             time.sleep(3)
@@ -3935,6 +3936,15 @@ def ensure_conversation_agent(token: str, chat_port: str, api_key: str) -> str:
                 "warn", "voice", "conversation subentry flow not started", status=status
             )
             return ""
+        step = str(flow.get("step_id") or "")
+        # An aborted flow-start still answers 200 *with* a flow_id, but HA has
+        # already removed the flow — posting the second step against it 404s
+        # "Invalid flow specified" and buries the real reason (#1324).
+        if flow.get("type") == "abort":
+            result = flow
+            if flow.get("reason") == "entry_not_loaded":
+                continue
+            break
         status, result = _ha_post(
             f"/api/config/config_entries/subentries/flow/{flow['flow_id']}",
             token,
@@ -3954,7 +3964,13 @@ def ensure_conversation_agent(token: str, chat_port: str, api_key: str) -> str:
             continue
         break
     if not isinstance(result, dict) or result.get("type") != "create_entry":
-        jlog("warn", "voice", "conversation subentry not created", detail=result)
+        jlog(
+            "warn",
+            "voice",
+            "conversation subentry not created",
+            step=step,
+            detail=result,
+        )
         return ""
     jlog("info", "voice", "created Solaris conversation agent", entry_id=entry_id)
     # The conversation entity registers asynchronously — poll briefly.
