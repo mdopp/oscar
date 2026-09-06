@@ -106,6 +106,7 @@ from solaris_chat.engine.tools.ha import (
 from solaris_chat.engine.tools.mcp_tools import McpToolbox, exchange_sb_token
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.logging import log
+from solaris_chat.turn_hints import strip_internal_hints
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -1169,37 +1170,6 @@ def _now_hint() -> str:
     """
     now = datetime.now(_LOCAL_TZ)
     return f"[Aktuelle Zeit: {now.strftime('%A, %d.%m.%Y, %H:%M Uhr %Z')}]"
-
-
-# Leading internal-hint prefixes the proxy/gatekeeper inject into a user turn so
-# the agent reads context the resident never typed (#309). They must NOT appear
-# in the rendered history; this matches what's actually injected:
-#   server.topic_turn_text  -> "[Aktuelle Zeit: ...]", "[Active topic: ... #topic/<slug>]",
-#                              the "[Temporary/incognito ...]" ephemeral guard,
-#                              "[Extract this to a note #topic/<slug> (...)]"
-#   voice gatekeeper.engine -> "[room: <location>]" (#312/#313)
-# Each rides as a leading bracketed block; topic_turn_text joins them with "\n\n",
-# the voice room hint with "\n". `[uid:...]` lives on the title (marker.py), but a
-# leading one is stripped too for safety. Only LEADING hints are removed so a hint
-# the resident actually typed mid-message survives.
-_HINT_PREFIX_RE = re.compile(
-    r"^\[(?:Aktuelle Zeit:|Temporary/incognito|Active topic:|Extract this to a note|room:|uid:)[^\]]*\]\s*",
-    re.IGNORECASE,
-)
-
-
-def strip_internal_hints(content: str) -> str:
-    """Drop leading internal-hint prefixes from a user message for DISPLAY (#309).
-
-    Display-only: what was sent to the engine is unchanged — this runs on the way out
-    of the messages API. Strips each consecutive leading bracketed hint block,
-    then the whitespace it was joined with, leaving the resident's actual text.
-    """
-    prev = None
-    while content != prev:
-        prev = content
-        content = _HINT_PREFIX_RE.sub("", content, count=1)
-    return content
 
 
 def _version() -> str:
