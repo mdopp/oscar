@@ -13,7 +13,7 @@ for the design rationale (conversation invariants, prompt budget) see
 ## What it does
 
 - **Talk to it.** Ask questions, control the home, set timers, play music.
-  A spoken command answers in ≈1.3 s after you stop speaking.
+  A spoken command answers in ≈0.45 s after you stop speaking.
 - **Two chat modes.** Both run `gemma4:e4b`: *Zuhause* (household) is the fast
   hot path with the household soul; *Solaris Gründlich* runs the same model
   with reasoning on for deeper answers. A separate *ServiceBay maintenance*
@@ -51,7 +51,7 @@ knowledge layer.
 ## How it works (brief)
 
 - The Voice PE speaks only to Home Assistant. HA's **Assist pipeline "Solaris"**
-  does STT (whisper on the GPU, ≈0.38 s), calls the engine's
+  does STT (whisper on the GPU, ≈0.25 s), calls the engine's
   **Ollama-compatible facade** (`/ollama/api/chat`, conversation agent
   `conversation.solaris`), and speaks the answer back through the Kokoro-Martin
   TTS voice. The engine runs its tool loop server-side; HA never sees the tool
@@ -64,6 +64,24 @@ knowledge layer.
   in `engine/facade.py`.
 - The **voice-gatekeeper** (`voice-gatekeeper/`) is a Wyoming-protocol bridge
   that speaks the same facade for wyoming-satellite hardware.
+
+### Latency baseline — speech end to answer start
+
+`solaris-chat/scripts/bench_voice_latency.py` measures the wait a resident
+feels. It replaces the microphone with a file: the box's own Kokoro TTS renders
+each of ten commands to a WAV (never played), the WAV goes through the real
+Wyoming whisper entity HA's pipeline dials, and the transcript goes to the
+household chat backend. It times `audio-stop` to `transcript` (t_stt) and
+`transcript` to the first token or tool call (t_ttft); the tool decision is
+read, never dispatched, so nothing in the house moves. Its docstring carries the
+copy-in command for the `solaris-chat` container.
+
+Box run 2026-09-06, ten commands x ten runs, `gemma4:e4b` on llama-server with
+the MTP drafter: **total p50 0.43 s, p95 0.47 s** (t_stt 0.23-0.31 s, t_ttft
+0.09-0.23 s per command), turn-1 prefill **7,841 tokens**. Every command sits
+well under the 1.3 s mark. This is the reference G-2 measures a new hot-path
+tool against (#1128); the Ollama-era numbers in #1120 predate the llama-server
+backend (#1318) and are not comparable to it.
 
 ### Wake word
 
