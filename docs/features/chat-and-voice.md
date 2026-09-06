@@ -3,7 +3,7 @@
 Solaris is a German household assistant you reach two ways — by **voice**
 through a Home Assistant Voice PE speaker, and by **chat** in the browser.
 Both talk to the same in-process **Solaris Engine** (`solaris-chat`) running a
-native agent loop against a local Ollama on the GPU.
+native agent loop against a local llama.cpp `llama-server` on the GPU.
 
 For the full runtime picture (models, prompt assembly, the facade, latency
 numbers) see [`solaris-architecture.md`](../../solaris-architecture.md) §1–§2;
@@ -52,8 +52,9 @@ knowledge layer.
 
 - The Voice PE speaks only to Home Assistant. HA's **Assist pipeline "Solaris"**
   does STT (whisper on the GPU, ≈0.25 s), calls the engine's
-  **Ollama-compatible facade** (`/ollama/api/chat`, conversation agent
-  `conversation.solaris`), and speaks the answer back through the Kokoro-Martin
+  **Ollama-protocol facade** (`/ollama/api/chat`, conversation agent
+  `conversation.solaris` — a compatibility surface for HA, not a dependency
+  on Ollama itself), and speaks the answer back through the Kokoro-Martin
   TTS voice. The engine runs its tool loop server-side; HA never sees the tool
   calls.
 - **Model + thinking are chosen per turn** — there is no per-session model
@@ -96,11 +97,14 @@ Wired by `templates/solaris/post-deploy.py` at install; the engine reads:
 
 | env | purpose |
 |---|---|
-| `OLLAMA_URL` | local Ollama endpoint (GPU) |
+| `LLAMA_SERVER_URL` | local llama-server endpoint (GPU) — the chat backend (#1318) |
+| `OLLAMA_URL` | local Ollama endpoint (GPU) — embeddings + vision ingest only; leaving with #1332 |
 | `HASS_URL` / `HASS_TOKEN` | Home Assistant API + long-lived token |
 | `SOLARIS_API_KEY` | Bearer for the `/ollama` facade + `/api/chat` |
 
-Models are managed by the `ollama` template: `gemma4:e4b` and
-`nomic-embed-text` stay resident on the GPU (`OLLAMA_MAX_LOADED_MODELS=2`).
-`gemma4:12b` is pulled too and available as an alternate model from the
-panel's Model picker, but is not the default for either chat mode.
+The household model, `gemma4:e4b` with the MTP drafter, is managed by the
+`llama` template and stays resident on the GPU. The panel's Model picker
+still offers **"Pull a model into the local Ollama"** — that call still
+really pulls into Ollama (`OllamaChat.pull`, `/api/model/pull`) and is
+unrelated to the llama-server chat path; it retires along with Ollama once
+#1332 lands.

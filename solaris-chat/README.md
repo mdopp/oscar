@@ -2,7 +2,9 @@
 
 The household assistant's agent core and its chat surface, in one small
 offline-capable process. The Hermes gateway era is over: the engine speaks
-to Ollama's native `/api/chat` directly, owns its sessions in `solaris.db`,
+to llama.cpp's `llama-server` directly (`/v1/chat/completions`, #1318 —
+Ollama served this path before; it falls back to Ollama's `/api/chat` only
+on an install with no `llama` template), owns its sessions in `solaris.db`,
 and replaces what used to be three gateway containers, a config sidecar and
 a trace proxy.
 
@@ -18,9 +20,9 @@ a trace proxy.
   list-entities round trip. Stable + sorted → prefix-cache friendly.
 - **Sessions** in `solaris.db` (`engine_sessions`/`engine_messages`) with
   per-turn compaction (#210) and ownership as a plain column.
-- **Native tracing** — every Ollama call recorded at the call site (light
-  ring + detail ring, persisted per turn into `session_traces`); the trace
-  panel and waterfall work unchanged, without the `:11436` proxy hop.
+- **Native tracing** — every llama-server call recorded at the call site
+  (light ring + detail ring, persisted per turn into `session_traces`); the
+  trace panel and waterfall work unchanged, without the `:11436` proxy hop.
 - **Scheduler** — timers/alarms/reminders in `engine_timers`; firing rings
   the Voice PE speaker via HA `assist_satellite.announce`.
 - **Night crons** — daily-chronicle, problem-summarizer, chat-compactor as
@@ -30,11 +32,12 @@ a trace proxy.
   the `servicebay_admin` MCP toolbox (official `mcp` SDK; token scopes
   read+lifecycle+mutate, minted by the post-deploy).
 
-## The Ollama facade (`/ollama`)
+## The Ollama-protocol facade (`/ollama`)
 
 HA 2026.6's `openai_conversation` has no custom base_url, but its `ollama`
 integration takes a free URL + Bearer api_key — so the engine exposes a
-minimal Ollama-compatible surface and **is** the Assist conversation agent:
+minimal Ollama-**protocol** surface (a compatibility shim for HA, not a
+dependency on Ollama itself) and **is** the Assist conversation agent:
 
 - `GET /ollama/api/tags` — lists the profiles as models (`solaris`, plus
   `solaris-guest`/`solaris-enrollment` when wired).
@@ -59,8 +62,9 @@ it over the host loopback.
 |---|---|---|
 | `CHAT_HOST` / `CHAT_PORT` | `127.0.0.1` / `8787` | Loopback bind. |
 | `SOLARIS_API_KEY` | — | Bearer for the `/ollama` facade. |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | The LLM backend. |
-| `FAST_MODEL` / `THOROUGH_MODEL` | `gemma4:e2b` / `gemma4:12b` | The model map. |
+| `LLAMA_SERVER_URL` | `http://127.0.0.1:11435` | The chat LLM backend (#1318). Empty falls back to `OLLAMA_URL`'s `/api/chat`. |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | Embeddings, vision ingest, the model lease — leaving with #1332. |
+| `FAST_MODEL` / `THOROUGH_MODEL` | `gemma4:e4b` / `gemma4:e4b` | The model map — one model for everything since 12b retired 2026-07-13. |
 | `HASS_URL` / `HASS_TOKEN` | — | HA tools + registry + announce. |
 | `SOUL_PATH` | `/var/lib/solaris/SOUL.md` | Household soul (mtime-cached). |
 | `ADMIN_SOUL_PATH` / `ADMIN_SKILLS_DIR` | — | Operator persona prompt. |
@@ -73,5 +77,5 @@ it over the host loopback.
 
 ```
 pip install -e .
-OLLAMA_URL=http://127.0.0.1:11434 HASS_URL=… HASS_TOKEN=… python -m solaris_chat
+LLAMA_SERVER_URL=http://127.0.0.1:11435 HASS_URL=… HASS_TOKEN=… python -m solaris_chat
 ```

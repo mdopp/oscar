@@ -113,8 +113,11 @@ no "process fully dead + push + no third-party" option on Android; this is it.
     `data:{id,kind,summary}` → show an **approval notification**. (Verdict flow below.)
   - `ha` — a **notification** for this resident (#1276, #1280; app side
     mdopp/solaris-android#116):
-    `data:{kind:"ha", target, title, body, urgency, actions, category}`
-    → show a notification on the channel `category` names. `urgency ∈ {low,normal,high}`
+    `data:{id, kind:"ha", target, title, body, urgency, actions, category}`
+    → show a notification on the channel `category` names. **`id` (#1346)** is the
+    notice's identity: opaque, minted once when it is published, and the *same* value
+    the catch-up below returns for it — so a client dedupes live stream against
+    catch-up by `id`, never by comparing the wording. `urgency ∈ {low,normal,high}`
     is **presentation only**. `actions` is `[{entity_id,service,title,confirm}]` (≤3), meant
     to be mapped onto the app's existing `WidgetActionActivity` path — confirmation dialog +
     the server-side `sensitive_action` 403 gate — not a second action route.
@@ -226,9 +229,10 @@ approvals and updates.
 | GET | `/napi/notifications` | `since=<ts>` (optional) | `{ok, notifications:[…], now, retention_hours, delivery}` · **400** `{reason:"invalid_since"}` · **401** without a device token |
 
 - **Each item is the `ha` event exactly as it went out on the stream** — same
-  `{kind,target,title,body,urgency,actions,category}` — plus `id` (opaque, monotonic)
-  and `ts` (`2026-08-30T01:02:03.123Z`, UTC). Feed it to the same notification code the
-  SSE `ha` event feeds; nothing new to parse.
+  `{id,kind,target,title,body,urgency,actions,category}`, the **same `id` the live frame
+  carried** (#1346) — plus `ts` (`2026-08-30T01:02:03.123Z`, UTC). Feed it to the same
+  notification code the SSE `ha` event feeds; nothing new to parse. Order the list by
+  its own order / `ts`, not by `id`: the id is opaque and says nothing about age.
 - **`since`** is the `ts` of the last notice the client handled; strictly newer ones come
   back, **oldest first**. Omit it to get the whole window. An unparsable value is a
   **400** rather than a silent full replay.

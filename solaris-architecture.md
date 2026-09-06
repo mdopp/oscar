@@ -8,18 +8,59 @@ deployment layout (templates, images, install paths) see
 
 ## 1. Inference engine
 
-Ollama on the box (RTX 2000 Ada 16 GB). All three models stay resident
-(`OLLAMA_MAX_LOADED_MODELS=3`, ≈12 GB total at the 32k window) — the
-night-cron eviction of the fast model is structurally impossible.
+**llama.cpp `llama-server`** on the box (RTX 2000 Ada 16 GB), loopback +
+pod-reachable on `:11435`, OpenAI-compatible (`/v1/chat/completions`,
+`/props`, `/slots`). It replaced Ollama on the chat path in #1318 for one
+reason Ollama cannot do at all: speculative decoding against Google's
+Multi-Token-Prediction (MTP) drafter for Gemma 4, box-measured to halve the
+per-answer wait (0.62 s → 0.30 s, same weights/prompt/28 generations,
+#1317/#1318). See [`templates/llama/README.md`](templates/llama/README.md)
+for the server's config, the GPU-passthrough traps, and the on-box-only
+access rule.
 
-| Model | Role |
-|---|---|
-| `gemma4:e2b` | Fast: household/voice and fast everyday turns |
-| `gemma4:12b` | Thorough: deep mode, admin, background crons |
-| `nomic-embed-text` | Embeddings (own runner, never competes for the gen slot) |
+The engine runs **one household model**, `gemma4:e4b` + the MTP drafter +
+mmproj (vision), `think=false` by default. There is no resident e2b/12b pair
+any more — 12b was retired 2026-07-13 (it does not fit shared with e4b,
+whisper, Kokoro-TTS and the embedder on this 16 GB card) and e2b never beat
+e4b enough to justify a second resident model once MTP made e4b itself fast.
+"Model and thinking are per-turn parameters" (below) now means: which
+*profile* asks, not which of several resident models answers.
 
-`gemma4:e4b` is deliberately NOT in the map. Box bench 2026-06-12
-(`solaris-chat/scripts/bench_models.py`, think=false, 3 runs):
+**One server, switched between profiles by a GPU lease**
+(`${DATA_DIR}/solarisbay/gpu-lease.py`), not by loading several models at
+once:
+
+| Profile | Model | Who uses it |
+|---|---|---|
+| Household (default) | `gemma4:e4b` + MTP + mmproj | Solaris chat/voice — the default the box idles at |
+| `foundry` | `gemma4:12b` + MTP (`-c 32768`) | foundry-chronicle's evening runs; voice stack stays up, Solaris keeps answering from the 12b |
+| `coding` (exclusive) | Qwen 3.8 27B UD-IQ3_XXS + MTP (`-c 81920`, reasoning off) | the coding assistant; stops the voice stack and Ollama/12b while held |
+
+A neighbour asks for a profile over HTTP, never by running the lease script
+itself: `POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback,
+no token; contract mdopp/foundry-chronicle#321,
+`solaris_chat.model_lease`) — `{"model": "foundry", "ttl_s": 900}` →
+`200 ready` with an `alias`, or `202 preparing` with `retry_after` to poll;
+`409 held` if someone else holds it; no `DELETE` and the lease just expires
+back to household. An optional `holder` (#1347) names the *service* asking —
+one permanent name like `foundry-chronicle`, never a session or a group — so
+`GET` says whose window is open and `DELETE {"holder": ...}` closes only that
+one; a bodyless `DELETE` stays the operator's unconditional way out. **The `model` field of every `/v1` response carries the
+alias of what is actually loaded** — a consumer reads its model from the
+response, never from its own setting, because the lease can swap under it.
+
+**Who may reach `:11435`.** llama-server ships no auth, so the rule is
+on-box only, never the LAN: host-networked services (the Solaris Engine,
+post-deploy, the health check) use `http://127.0.0.1:11435`; isolated pods
+without host networking (e.g. claude-dev) use
+`http://host.containers.internal:11435`; nobody gets the LAN IP
+(mdopp/solarisbay#1344, an ADR-0007 carve-out — see
+[`templates/llama/README.md`](templates/llama/README.md) for the nftables
+enforcement).
+
+Box bench 2026-06-12 (`solaris-chat/scripts/bench_models.py`, think=false, 3
+runs) — **historical, Ollama-era, three resident models, superseded by the
+single-model llama-server design above:**
 
 | Model | wall p50 | wall p95 | TTFT p50 | tool accuracy |
 |---|---|---|---|---|
@@ -27,35 +68,39 @@ night-cron eviction of the fast model is structurally impossible.
 | e4b | 0.90 s | 1.39 s | 0.97 s | 18/18 |
 | 12b | 1.57 s | 2.51 s | 1.54 s | 18/18 |
 
-With the lean prompt all three pick entities perfectly, so e4b buys no
-measurable accuracy for +25% latency. Revisit only if e2b shows quality
-failures in trace data — e4b is the designated next candidate then.
-
 **Those latencies, and the 2026-08-03 baseline in #1120, were measured with the
 bench's old hand-written prompt: 1355 tokens, a household that does not exist.**
 The bench now derives its prompt from the production assembly instead — the real
 household toolbox, the shipped soul, the real registry renderer over a 51-entity
 house — which comes to ~7.5k estimated tokens, in the band of the ~7.8k measured
 below (#1149). Read new numbers against that; the older tables are optimistic
-and want re-measuring before they carry a decision.
+and want re-measuring before they carry a decision. The current reference
+measurement is the llama-server + MTP run in
+[`docs/features/chat-and-voice.md`](docs/features/chat-and-voice.md)
+("Latency baseline"), not the table above.
 
 **Model and thinking are per-turn parameters** of the Solaris Engine (the
-in-process agent core that replaced the Hermes gateways): household/voice
-turns run e2b with `think=false`; thorough turns run 12b with thinking.
+in-process agent core that replaced the Hermes gateways): every profile asks
+llama-server for its model by name and its own `think` flag on each request.
 No gateway indirection, no per-session model binding.
 
-Context window: 32 768 tokens (`OLLAMA_CONTEXT_LENGTH=32768`). The earlier
-131k window existed only because the Hermes-era base prompt had grown to
-~25k tokens; the engine's ≤3k prompt leaves ~29k conversation room and the
-saved KV budget is what fits all three models on the GPU.
+Context window: 32 768 tokens (`LLAMA_CONTEXT_LENGTH=32768`, fixed at load —
+unlike Ollama this is not a per-request hint). The earlier 131k window
+existed only because the Hermes-era base prompt had grown to ~25k tokens; the
+engine's ≤3k prompt leaves ~29k conversation room.
 
-Speculative decoding / MTP is not attainable on the current CUDA/GGUF stack;
-that decision is final (see repo history / #189).
+Speculative decoding / MTP was judged unattainable on the CUDA/GGUF stack in
+#189 — **that finding is superseded by #1317/#1318**: llama-server's
+`--spec-type draft-mtp` does it, box-measured above, and it is what runs
+today.
 
-Embeddings are wired: `nomic-embed-text` runs on its own Ollama runner (never
-competing for the generation slot) and drives the OKF semantic search — the
-drain worker fills `okf_vectors`, and `notes_search` does numpy cosine top-k
-over it. See [`docs/features/knowledge-system.md`](docs/features/knowledge-system.md).
+Embeddings and vision ingest are **not yet moved off Ollama** — that is
+tracked as its own unit (solarisbay#1332). Until it lands, `nomic-embed-text`
+still runs on Ollama's own runner (never competing for llama-server's
+generation slot) and drives the OKF semantic search — the drain worker fills
+`okf_vectors`, and `notes_search` does numpy cosine top-k over it. See
+[`docs/features/knowledge-system.md`](docs/features/knowledge-system.md). Once
+#1332 lands, Ollama is decommissioned on the box entirely.
 
 ---
 
@@ -72,11 +117,13 @@ was replaced **outright** — no strangler.
 The engine is a module inside `solaris-chat`
 (`src/solaris_chat/engine/`): one process owns turn, loop and capture.
 
-- **Agent loop** directly on Ollama `/api/chat` (streaming, tool dispatch,
-  ≤6 passes). Model + thinking are **per turn**; a "profile" is a
-  constructor call (`household` = e2b/no-think + registry, `solaris-deep` =
-  12b/think, `admin` = 12b + operator prompt + `servicebay_admin` MCP) —
-  what used to be a container-and-port.
+- **Agent loop** directly on llama-server `/v1/chat/completions` (streaming,
+  tool dispatch, ≤6 passes; falls back to Ollama's `/api/chat` only on an
+  install with no `llama` template). Model + thinking are **per turn**; a
+  "profile" is a constructor call (`household` = `gemma4:e4b`/no-think +
+  registry, `solaris-deep` = `gemma4:e4b`/think + registry, `admin` =
+  `gemma4:e4b` + operator prompt + `servicebay_admin` MCP) — what used to be
+  a container-and-port.
 - **Prompt assembly per profile**: soul (mtime-cached file) + skill
   markdown + the **HA entity registry** (controllable domains,
   `entity_id | name | area`, NO live state — HA Assist's own approach,
@@ -97,8 +144,8 @@ The engine is a module inside `solaris-chat`
   retrieval seam future Immich/CalDAV retrievers plug into (§3).
 - **Sessions** live in `solaris.db` (`engine_sessions`/`engine_messages`,
   ownership a plain column — the `[uid:]` title-marker era is over).
-- **Native tracing**: every Ollama call recorded at the call site, same
-  ring/detail/`session_traces` shapes as the retired proxy; calls carry
+- **Native tracing**: every llama-server call recorded at the call site,
+  same ring/detail/`session_traces` shapes as the retired proxy; calls carry
   the session id directly (no wall-clock correlation).
 - **Scheduler**: timers/alarms/reminders in `engine_timers`; firing rings
   the Voice PE via HA `assist_satellite.announce` (target required —
@@ -133,7 +180,8 @@ flowchart LR
             GK["gatekeeper :10700<br/>Wyoming bridge"]
         end
         NPM["NPM + Authelia"]
-        Ollama["ollama :11434 (GPU)<br/>gemma4:e2b · gemma4:12b · nomic"]
+        Llama["llama-server :11435 (GPU)<br/>gemma4:e4b + MTP drafter"]
+        Ollama["ollama :11434 (GPU)<br/>nomic-embed-text · vision — leaving, #1332"]
         DB[("solaris.db")]
         Notes[("notes vault<br/>Syncthing")]
         SBMCP["ServiceBay MCP :5888"]
@@ -144,17 +192,19 @@ flowchart LR
     Pipeline -- "text → conversation.solaris" --> Chat
     Pipeline -- "answer text" --> Martin
     Browser -- "chat.<domain>" --> NPM --> Chat
-    Sat -. "Wyoming" .-> GK -- "/ollama facade" --> Chat
-    Chat -- "/api/chat per turn<br/>model+think per request" --> Ollama
+    Sat -. "Wyoming" .-> GK -- "/ollama-protocol facade" --> Chat
+    Chat -- "/v1/chat/completions per turn<br/>model+think per request" --> Llama
+    Chat -- "embeddings · vision ingest" --> Ollama
     Chat -- "tools + entity registry<br/>+ announce" --> HA
     Chat --- DB
     Chat --- Notes
     Chat -- "admin profile only<br/>read+lifecycle+mutate" --> SBMCP
 ```
 
-GPU budget (16.4 GB): e2b + 12b + nomic resident ≈ 12.6 GB, whisper
-medium-int8 ≈ 1.1 GB, Kokoro-Martin TTS ≈ 1.2 GB — ≈ 14.9 GB total,
-everything stays loaded, no eviction churn (watch this headroom).
+GPU budget (16.4 GB): e4b + MTP drafter + mmproj + nomic resident, whisper
+medium-int8 ≈ 1.1 GB, Kokoro-Martin TTS ≈ 1.2 GB — everything stays loaded,
+no eviction churn (watch this headroom). The e2b+12b dual-resident budget in
+the earlier design is history; §1 has the current split.
 
 ### Voice (the PE speaker path)
 
@@ -162,7 +212,8 @@ The Voice PE is an ESPHome device that speaks only to HA, so the path is
 **Speaker → HA Assist pipeline → Solaris → HA → Speaker**. HA 2026.6's
 `openai_conversation` has no custom base_url; its **`ollama` integration**
 takes a free URL + Bearer api_key — so the engine exposes an
-**Ollama-compatible facade** (`/ollama/api/tags`, `/ollama/api/chat`) and
+**Ollama-protocol facade** (`/ollama/api/tags`, `/ollama/api/chat`) —
+a compatibility surface for HA, not a dependency on Ollama itself — and
 is wired as the Assist conversation agent (`conversation.solaris`, model
 `solaris`). The post-deploy registers wyoming whisper/piper, creates the
 entry + conversation subentry and the "Solaris" pipeline, sets it preferred
@@ -180,23 +231,27 @@ sequenceDiagram
     participant HA as HA pipeline
     participant W as whisper (GPU)
     participant E as Solaris Engine
-    participant O as ollama
+    participant L as llama-server
     participant P as Martin TTS (GPU)
 
     Note over PE: "Okay Nabu …" (wake on-device,<br/>no audio leaves before it)
     PE->>HA: audio stream (ESPHome API)
     HA->>W: Wyoming audio
     W-->>HA: transcript (0.38 s after speech end)
-    HA->>E: POST /ollama/api/chat (conversation.solaris, NDJSON)
-    E->>O: /api/chat — soul + entity registry + HA history
-    O-->>E: deltas (+ tool_calls)
+    HA->>E: POST /ollama/api/chat (conversation.solaris, NDJSON — Ollama-protocol facade)
+    E->>L: /v1/chat/completions — soul + entity registry + HA history
+    L-->>E: deltas (+ tool_calls)
     E->>HA: tool calls (ha_call_service / ha_get_state …)
     E-->>HA: answer deltas (HA never sees tool_calls)
     HA->>P: Wyoming bridge → Kokoro-Martin (streams)
     P-->>PE: audio
 ```
 
-Measured end-to-end (real spoken turns + live bench, 2026-06-12):
+Measured end-to-end (real spoken turns + live bench, 2026-06-12) —
+**historical, Ollama e2b-era; the current reference measurement is the
+llama-server + MTP run in
+[`docs/features/chat-and-voice.md`](docs/features/chat-and-voice.md)
+("Latency baseline"), box run 2026-09-06 at total p50 0.43 s:**
 
 | Segment | Measured |
 |---|---|
@@ -208,11 +263,12 @@ Measured end-to-end (real spoken turns + live bench, 2026-06-12):
 
 Whisper runs as the `voice-whisper.container` Quadlet on the GPU
 (servicebay#1809: kube play drops CDI devices, so the STT container left
-the pod — same `.container` fixup as ollama). gemma4 advertises an
-`audio` capability but no Ollama API path accepts audio (solarisbay#337), so
-the dedicated STT stage stays — it is also what makes mishearings
-visible in traces. The one-pass audio design (audio + "return a
-transcript field") is parked on the gatekeeper path until Ollama wires
+the pod — same `.container` fixup as ollama, which still needs it while it
+serves embeddings/vision). gemma4 advertises an `audio` capability but
+neither Ollama nor llama-server's chat API accepts audio today
+(solarisbay#337), so the dedicated STT stage stays — it is also what makes
+mishearings visible in traces. The one-pass audio design (audio + "return a
+transcript field") is parked on the gatekeeper path until a backend wires
 audio input.
 
 ### Other flows
@@ -223,14 +279,14 @@ sequenceDiagram
     participant U as Resident (chat)
     participant N as NPM+Authelia
     participant E as Solaris Engine
-    participant O as ollama
+    participant L as llama-server
 
     U->>N: chat.<domain> (SSO)
     N->>E: /api/chat/stream + Remote-User
     E->>E: route: Zuhause→solaris · Gründlich→solaris-deep · maint→admin
     E->>E: maybe_compact (#210), time hint, topic hint
-    E->>O: /api/chat (profile prompt + session history)
-    O-->>E: deltas / tool loop (≤6 passes)
+    E->>L: /v1/chat/completions (profile prompt + session history)
+    L-->>E: deltas / tool loop (≤6 passes)
     E-->>U: SSE deltas + per-turn trace panel
     E->>E: persist messages + trace (solaris.db)
 ```

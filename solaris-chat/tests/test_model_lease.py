@@ -4,7 +4,8 @@ mdopp/foundry-chronicle#321).
 The endpoint keeps the shape foundry built against in #1260 and now fronts the
 box's GPU lease. What is pinned here is the state machine they poll — 200
 `ready` / 202 `preparing` / 409 `held` / 400 / 503 — the request file the host
-broker acts on, and the alias every surface reports the loaded model by.
+broker acts on, the alias every surface reports the loaded model by, and the
+holder (#1347) that decides whose window a `DELETE` may close.
 """
 
 from __future__ import annotations
@@ -64,13 +65,18 @@ def _request(tmp_path) -> dict:
 # ---- the payload is closed -------------------------------------------------
 
 
-def test_payload_key_set_is_exactly_model_and_ttl_s():
-    assert model_lease.PAYLOAD_KEYS == ("model", "ttl_s")
+def test_payload_key_set_is_exactly_model_ttl_s_and_holder():
+    assert model_lease.PAYLOAD_KEYS == ("model", "ttl_s", "holder")
+    # Unnamed is the old shape: the profile name is the holder, as it always was.
     assert model_lease.parse_payload({"model": "foundry", "ttl_s": 900}) == (
         "foundry",
         900,
+        "foundry",
     )
     assert model_lease.parse_payload({"model": "coding", "ttl_s": 900})[0] == "coding"
+    assert model_lease.parse_payload(
+        {"model": "foundry", "ttl_s": 900, "holder": "foundry-chronicle"}
+    ) == ("foundry", 900, "foundry-chronicle")
     # The key is theirs: the pre-contract `ttl` spelling is an unknown field.
     with pytest.raises(ValueError, match="unexpected_field"):
         model_lease.parse_payload({"model": "foundry", "ttl": 600})
@@ -78,6 +84,40 @@ def test_payload_key_set_is_exactly_model_and_ttl_s():
     for extra in ("session", "session_id", "round", "guild", "guild_id"):
         with pytest.raises(ValueError, match="unexpected_field"):
             model_lease.parse_payload({"model": "foundry", "ttl_s": 900, extra: "x"})
+
+
+def test_a_holder_is_a_short_service_name_and_nothing_else():
+    """`holder` names the service, permanently — not a round, a group or a
+    player. Pinning the shape is what keeps it from becoming one of those."""
+    for good in ("foundry-chronicle", "a", "9-9", "z" * 64):
+        assert model_lease.parse_holder(good) == good
+    for bad in (
+        "Foundry",  # a display name
+        "foundry chronicle",
+        "runde-3:tisch-nord@haus",
+        "x" * 65,
+        "",
+        "   ",
+        12,
+        True,
+        {"name": "foundry"},
+    ):
+        with pytest.raises(ValueError, match="invalid_holder"):
+            model_lease.parse_holder(bad)
+    with pytest.raises(ValueError, match="invalid_holder"):
+        model_lease.parse_payload({"model": "foundry", "ttl_s": 900, "holder": "A B"})
+
+
+def test_a_delete_body_carries_at_most_the_holder():
+    assert model_lease.parse_release(None) == ""
+    assert model_lease.parse_release({}) == ""
+    assert model_lease.parse_release({"holder": "foundry-chronicle"}) == (
+        "foundry-chronicle"
+    )
+    with pytest.raises(ValueError, match="unexpected_field"):
+        model_lease.parse_release({"holder": "foundry-chronicle", "session": "s-1"})
+    with pytest.raises(ValueError, match="invalid_payload"):
+        model_lease.parse_release(["foundry-chronicle"])
 
 
 def test_the_model_is_one_of_the_two_the_box_knows():
@@ -114,6 +154,7 @@ def test_no_lease_reads_as_the_household_model(tmp_path):
         "model": "",
         "alias": "gemma-4-e4b",
         "expires_at": None,
+        "holder": "",
     }
 
 
@@ -138,16 +179,18 @@ def test_a_lease_still_loading_is_preparing_and_still_answers_as_the_household(
         "model": "foundry",
         "alias": "gemma-4-e4b",
         "expires_at": None,
+        "holder": "foundry",
     }
 
 
 def test_a_ready_lease_reports_its_alias_and_deadline(tmp_path):
-    _hold(tmp_path, "coding", until=1234.0)
+    _hold(tmp_path, "coding", until=1234.0, holder="foundry-chronicle")
     assert model_lease.state(_db(tmp_path)) == {
         "state": "ready",
         "model": "coding",
         "alias": "qwen3.8-27b",
         "expires_at": 1234.0,
+        "holder": "foundry-chronicle",
     }
 
 
@@ -155,8 +198,13 @@ def test_a_request_the_broker_has_not_picked_up_yet_is_preparing(tmp_path):
     """Between the POST and the broker's first write there is no lease file at
     all; reading that as "none" would tell the holder its request was lost."""
     db = _db(tmp_path)
-    model_lease.write_request(db, "acquire", "foundry", 900, now=7.0)
+    model_lease.write_request(
+        db, "acquire", "foundry", 900, holder="foundry-chronicle", now=7.0
+    )
     assert model_lease.state(db)["state"] == "preparing"
+    # Named before the broker has written a lease file at all — otherwise the
+    # service that just asked could be told a stranger holds the card.
+    assert model_lease.state(db)["holder"] == "foundry-chronicle"
     # Once the broker has answered that request, it is no longer pending.
     model_lease.status_path(db).write_text(
         json.dumps({"requested_at": 7.0, "state": "error"}), "utf-8"
@@ -228,6 +276,89 @@ async def test_post_for_the_other_model_is_refused_with_the_deadline(
     assert not model_lease.request_path(_db(tmp_path)).exists()
 
 
+async def test_post_files_the_window_under_the_service_that_named_itself(
+    aiohttp_client, tmp_path
+):
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease",
+        json={"model": "foundry", "ttl_s": 900, "holder": "foundry-chronicle"},
+    )
+    assert r.status == 202
+    assert _request(tmp_path)["holder"] == "foundry-chronicle"
+    # And the holder polling GET is told it is theirs, before the broker has
+    # written any lease file at all.
+    body = await (await client.get("/api/model-lease")).json()
+    assert body["state"] == "preparing"
+    assert body["holder"] == "foundry-chronicle"
+
+
+async def test_post_for_the_same_model_under_another_name_is_refused(
+    aiohttp_client, tmp_path
+):
+    """Two services on one profile used to renew each other's window silently;
+    now the second one is told who has it and until when."""
+    _hold(tmp_path, "foundry", until=777.0, holder="foundry-chronicle")
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease",
+        json={"model": "foundry", "ttl_s": 900, "holder": "some-other-service"},
+    )
+    assert r.status == 409
+    assert await r.json() == {
+        "ok": False,
+        "reason": "held",
+        "holder": "foundry-chronicle",
+        "expires_at": 777.0,
+    }
+    assert not model_lease.request_path(_db(tmp_path)).exists()
+    # Its own holder still renews.
+    r = await client.post(
+        "/api/model-lease",
+        json={"model": "foundry", "ttl_s": 900, "holder": "foundry-chronicle"},
+    )
+    assert r.status == 200
+    assert _request(tmp_path)["op"] == "acquire"
+
+
+async def test_delete_releases_only_the_callers_own_window(aiohttp_client, tmp_path):
+    """A restarting service closing "its" window must not close a stranger's —
+    that was the whole of #1347."""
+    _hold(tmp_path, "foundry", until=777.0, holder="foundry-chronicle")
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.delete("/api/model-lease", json={"holder": "some-other-service"})
+    assert r.status == 409
+    assert await r.json() == {
+        "ok": False,
+        "reason": "held",
+        "holder": "foundry-chronicle",
+        "expires_at": 777.0,
+    }
+    assert not model_lease.request_path(_db(tmp_path)).exists()
+    r = await client.delete("/api/model-lease", json={"holder": "foundry-chronicle"})
+    assert r.status == 200
+    assert await r.json() == {"ok": True, "state": "released"}
+    assert _request(tmp_path)["op"] == "release"
+
+
+async def test_a_holder_that_is_not_a_service_name_is_refused(aiohttp_client, tmp_path):
+    """A round, a table or a player's name is not a service — and the 400 says
+    so before anything about the group could reach the box."""
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease",
+        json={"model": "foundry", "ttl_s": 900, "holder": "runde-3 tisch-nord"},
+    )
+    assert r.status == 400
+    assert (await r.json())["reason"] == "invalid_holder"
+    r = await client.delete("/api/model-lease", json={"holder": "x" * 65})
+    assert r.status == 400
+    assert (await r.json())["reason"] == "invalid_holder"
+    r = await client.delete("/api/model-lease", data="not json")
+    assert r.status == 400
+    assert not model_lease.request_path(_db(tmp_path)).exists()
+
+
 async def test_post_refuses_an_identifier_or_malformed_body(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
@@ -246,19 +377,24 @@ async def test_get_answers_what_is_loaded_right_now(aiohttp_client, tmp_path):
     assert body["state"] == "none"
     assert body["alias"] == "gemma-4-e4b"
     assert body["retry_after"] == model_lease.RETRY_AFTER_SECONDS
-    _hold(tmp_path, "foundry", until=99.0)
+    assert body["holder"] == ""
+    _hold(tmp_path, "foundry", until=99.0, holder="foundry-chronicle")
     body = await (await client.get("/api/model-lease")).json()
     assert body == {
         "state": "ready",
         "model": "foundry",
         "alias": "gemma-4-12b",
         "expires_at": 99.0,
+        "holder": "foundry-chronicle",
         "retry_after": model_lease.RETRY_AFTER_SECONDS,
     }
 
 
-async def test_delete_ends_the_window_and_is_idempotent(aiohttp_client, tmp_path):
-    _hold(tmp_path, "foundry")
+async def test_delete_without_a_body_ends_the_window_and_is_idempotent(
+    aiohttp_client, tmp_path
+):
+    """The bodyless call is the operator's way out and stays unconditional."""
+    _hold(tmp_path, "foundry", holder="foundry-chronicle")
     client = await aiohttp_client(_app(tmp_path))
     r = await client.delete("/api/model-lease")
     assert r.status == 200

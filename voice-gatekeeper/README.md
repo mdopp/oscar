@@ -38,7 +38,7 @@ Long-term target: fold the Phase 0/1 pass-through path into the Solaris Engine c
 | `WHISPER_URI` | `tcp://127.0.0.1:10300` | Wyoming Whisper service (provided by ServiceBay's `voice` template) |
 | `PIPER_URI` | `tcp://127.0.0.1:10200` | Wyoming Piper service (same pod) |
 | `OPENWAKEWORD_URI` | `tcp://127.0.0.1:10400` | openWakeWord (advertised in Info; Phase 0 lets the satellite do wakeword on-device) |
-| `SOLARIS_ENGINE_URL` | `http://127.0.0.1:8787/ollama` | Base URL of the Solaris Engine's Ollama-compatible facade (the `solaris-chat` server's loopback port + `/ollama` prefix; both pods use hostNetwork) |
+| `SOLARIS_ENGINE_URL` | `http://127.0.0.1:8787/ollama` | Base URL of the Solaris Engine's `/ollama` facade — an Ollama-**protocol** compatibility surface for Home Assistant, not a dependency on Ollama itself (the `solaris-chat` server's loopback port + `/ollama` prefix; both pods use hostNetwork) |
 | `SOLARIS_API_KEY` | empty | Bearer token for the Solaris Engine facade |
 | `DEFAULT_UID` | `michael` | Fallback uid when speaker-ID is off or doesn't match |
 | `SOLARIS_DB_PATH` | `/var/lib/solaris/solaris.db` | SQLite file (Phase 2: `voice_embeddings` read/write) |

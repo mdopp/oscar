@@ -1,8 +1,9 @@
 {
   "LLAMA_PORT": {
     "type": "text",
-    "description": "Host port llama-server binds on, loopback only. Default `11435` — next to Ollama's 11434 and clear of llama.cpp's stock 8080, which is heavily contended on a household box. Keep it equal to the solaris template's LLAMA_SERVER_URL port. There is deliberately no proxy route: llama-server ships no authentication and its only consumer is the Solaris Engine on the same host.",
-    "default": "11435"
+    "description": "Host port llama-server binds on. Default `11435` — next to Ollama's 11434 and clear of llama.cpp's stock 8080, which is heavily contended on a household box. Keep it equal to the solaris template's LLAMA_SERVER_URL port. There is deliberately no proxy route: llama-server ships no authentication, so the endpoint is for on-box consumers only. It binds every host interface rather than loopback because isolated pods (claude-dev's `pi`) reach it via host.containers.internal, which rootless podman/pasta maps to the host's LAN address rather than loopback (ADR 0007, Decision 3). LAN devices are refused at the HOST firewall by the blockLanAccess flag below: ServiceBay installs an nftables rule that drops connections arriving on a physical interface while leaving loopback — and the pasta-proxied pod path, which lands on lo — untouched.",
+    "default": "11435",
+    "blockLanAccess": true
   },
   "LLAMA_MODEL_REPO": {
     "type": "text",

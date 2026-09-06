@@ -93,7 +93,7 @@ jobs:
           - image: solaris-chat
             context: solaris-chat
             inject_version: true
-            description: "Solaris chat — the Solaris Engine agent core (direct Ollama agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-compatible facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOLARIS_API_KEY server-side."
+            description: "Solaris chat — the Solaris Engine agent core (direct llama-server agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-protocol facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOLARIS_API_KEY server-side."
           - image: solaris-wakeword-trainer
             context: wakeword-trainer
             # TensorFlow-GPU base: ~10 GB unpacked, well past the 10 GB the GHA

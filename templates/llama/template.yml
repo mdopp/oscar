@@ -6,12 +6,16 @@ metadata:
     app: llama
   annotations:
     servicebay.label: "AI Engine (llama.cpp)"
-    servicebay.schema-version: "1"
+    # v2 (#1344): llama-server binds 0.0.0.0 instead of 127.0.0.1 so isolated
+    # sibling pods reach it through `host.containers.internal`; the LAN is
+    # refused at the host firewall via LLAMA_PORT's `blockLanAccess` flag.
+    # No data move; needs a re-deploy so the pod is recreated on the new bind.
+    servicebay.schema-version: "2"
     servicebay.ports: "{{LLAMA_PORT}}/tcp"
     # No `servicebay.tier` — like ollama this is opt-in AI infrastructure,
-    # not a platform foundation. llama-server ships no auth, so it binds to
-    # 127.0.0.1 and gets no proxy route at all: its only consumer is the
-    # Solaris Engine on the same host netns.
+    # not a platform foundation. llama-server ships no auth and gets no proxy
+    # route at all: its consumers are on-box only — the Solaris Engine on this
+    # host netns, and isolated pods via `host.containers.internal`.
     # `/health` returns 200 only once the model AND the draft model are
     # loaded, so it doubles as the readiness signal.
     servicebay.healthcheck: |
@@ -30,8 +34,18 @@ spec:
     # this container can serve; until they land llama-server exits and the
     # unit restarts, which is why nothing here waits on them.
     args:
+    # 0.0.0.0, not 127.0.0.1 (#1344). ADR-0007 Decision 3: an isolated pod
+    # addresses an on-box sibling as `host.containers.internal`, which rootless
+    # podman/pasta maps to the host's LAN address, not to loopback — so a
+    # loopback bind is unreachable from every pod that is not on host
+    # networking (claude-dev's `pi` saw an empty model list). The LAN half is
+    # closed outside the pod: LLAMA_PORT carries `blockLanAccess: true`, and
+    # ServiceBay renders a host nftables rule dropping this port on physical
+    # interfaces while accepting `lo` — where the pasta-proxied pod path lands.
+    # 127.0.0.1:{{LLAMA_PORT}} keeps answering, so the Solaris Engine and the
+    # health check below are unaffected.
     - "--host"
-    - "127.0.0.1"
+    - "0.0.0.0"
     - "--port"
     - "{{LLAMA_PORT}}"
     - "-m"

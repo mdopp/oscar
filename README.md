@@ -2,18 +2,21 @@
 
 **Solaris** is a household AI assistant that ServiceBay deploys as one
 click. Its core is the **Solaris Engine** — a native agent loop inside
-`solaris-chat` that talks directly to a local Ollama, controls the home via
-Home Assistant, and fronts the Voice PE speaker through HA's Assist
-pipeline. (The earlier Hermes-gateway architecture was fully replaced in
-v0.10 — see `solaris-architecture.md` for the full picture and flows.)
+`solaris-chat` that talks directly to a local llama.cpp `llama-server`,
+controls the home via Home Assistant, and fronts the Voice PE speaker
+through HA's Assist pipeline. (The earlier Hermes-gateway architecture was
+fully replaced in v0.10 — see `solaris-architecture.md` for the full picture
+and flows. Ollama served the chat path until #1318 moved it to llama-server
+for speculative decoding; Ollama still serves embeddings and vision ingest
+until #1332 finishes moving those too.)
 
 ```mermaid
 flowchart LR
     PE["🔊 Voice PE"] -- ESPHome --> HA["HA Assist pipeline<br/>whisper GPU · Martin TTS GPU"]
     Browser["💻 Browser"] -- SSO --> Chat
     HA -- "conversation.solaris" --> Chat["Solaris Engine<br/>(solaris-chat)"]
-    Chat -- "per-turn model, thinking off" --> Llama["llama.cpp (GPU)<br/>e4b + MTP drafter"]
-    Chat -- "embeddings · vision ingest" --> Ollama["ollama (GPU)<br/>nomic-embed-text"]
+    Chat -- "per-turn model, thinking off" --> Llama["llama-server (GPU)<br/>e4b + MTP drafter · :11435"]
+    Chat -- "embeddings · vision ingest" --> Ollama["ollama (GPU)<br/>nomic-embed-text — leaving, #1332"]
     Chat -- "tools · registry · announce" --> HA
     Chat --- DB[("solaris.db")]
     Chat --- Notes[("notes vault")]
@@ -87,11 +90,12 @@ is headed — zones, ADRs and the V1 backlog — is
 ## What's in this repo
 
 - **Solaris Engine + chat surface** (`solaris-chat/`) — one process owning the
-  agent loop (direct Ollama `/api/chat`, per-turn model + reasoning), the
-  session store (`solaris.db`), native LLM tracing, the timer scheduler
-  (speaker delivery via `assist_satellite.announce`), the night crons, the
-  chat UI, and the Ollama-compatible facade HA's conversation agent calls.
-  Built into `ghcr.io/mdopp/solaris-chat:latest`.
+  agent loop (llama-server `/v1/chat/completions`, per-turn model +
+  reasoning), the session store (`solaris.db`), native LLM tracing, the timer
+  scheduler (speaker delivery via `assist_satellite.announce`), the night
+  crons, the chat UI, and the Ollama-**protocol** facade HA's conversation
+  agent calls (a compatibility surface for HA, not a dependency on Ollama
+  itself). Built into `ghcr.io/mdopp/solaris-chat:latest`.
 - **Skill packs** (`templates/solaris/skills/`) — markdown procedure packs
   the engine folds into its prompts: `household/` (incl. the cron-job
   bodies `daily-chronicle`, `problem-summarizer`) and `admin-soul/` (the

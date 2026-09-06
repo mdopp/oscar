@@ -22,11 +22,20 @@ the box owns:
 
 Everything here fails **open**: an unreadable or missing file reads as "no
 lease", i.e. the household model on a normal box.
+
+Since #1347 a window also names the **holder** that asked for it, so a service
+restarting can tell its own open window from a stranger's instead of closing
+whatever it finds: `POST` takes an optional `holder`, `GET` reports it, and
+`DELETE {"holder": ...}` releases only a matching window. A holder is the
+identity of the *service* — one permanent name, the same for every window it
+ever takes — never a session, round, group or person, which is why the shape is
+pinned to a short token rather than left as free text.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -57,7 +66,12 @@ ALIASES = {"foundry": "gemma-4-12b", "coding": "qwen3.8-27b"}
 HOUSEHOLD_ALIAS = "gemma-4-e4b"
 
 # The complete payload. Adding a key here is a contract change on both sides.
-PAYLOAD_KEYS = ("model", "ttl_s")
+PAYLOAD_KEYS = ("model", "ttl_s", "holder")
+
+# What a `holder` may look like: at most 64 characters of `a-z`, `0-9` and `-`.
+# The shape is the guarantee — a name this small cannot carry a session, round,
+# group or player, so the field stays what the contract says it is.
+HOLDER_PATTERN = re.compile(r"[a-z0-9-]{1,64}\Z")
 
 REQUEST_FILENAME = "gpu_lease_request.json"
 STATUS_FILENAME = "gpu_lease_status.json"
@@ -82,8 +96,19 @@ def renew_after(ttl: int) -> int:
     return max(ttl // 3, 60)
 
 
-def parse_payload(body: Any) -> tuple[str, int]:
-    """`(model, ttl)` from a `{model, ttl_s}` body, or `ValueError(<reason>)`.
+def parse_holder(value: Any, default: str = "") -> str:
+    """A service name from a payload field, or `ValueError("invalid_holder")`."""
+    if value is None:
+        return default
+    if not isinstance(value, str) or not HOLDER_PATTERN.match(value.strip()):
+        raise ValueError("invalid_holder")
+    return value.strip()
+
+
+def parse_payload(body: Any) -> tuple[str, int, str]:
+    """`(model, ttl, holder)` from a `{model, ttl_s, holder}` body, or
+    `ValueError(<reason>)`. `holder` defaults to the profile name, which is
+    what a caller that never names itself has always been filed under.
 
     The key set is closed: an unknown field is refused rather than ignored, so
     a session/round/guild identifier cannot quietly appear later.
@@ -98,7 +123,22 @@ def parse_payload(body: Any) -> tuple[str, int]:
     raw_ttl = body.get("ttl_s", TTL_MAX_SECONDS)
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl <= 0:
         raise ValueError("invalid_ttl")
-    return model.strip(), min(max(raw_ttl, TTL_MIN_SECONDS), TTL_MAX_SECONDS)
+    return (
+        model.strip(),
+        min(max(raw_ttl, TTL_MIN_SECONDS), TTL_MAX_SECONDS),
+        parse_holder(body.get("holder"), model.strip()),
+    )
+
+
+def parse_release(body: Any) -> str:
+    """The holder a `DELETE` names, or `""` for the bodyless operator path."""
+    if body is None:
+        return ""
+    if not isinstance(body, dict):
+        raise ValueError("invalid_payload")
+    if set(body) - {"holder"}:
+        raise ValueError("unexpected_field")
+    return parse_holder(body.get("holder"))
 
 
 def _read(path: Path) -> dict:
@@ -130,7 +170,13 @@ def household_alias(db_path: str) -> str:
 
 
 def write_request(
-    db_path: str, op: str, model: str = "", ttl_s: int = 0, *, now: float | None = None
+    db_path: str,
+    op: str,
+    model: str = "",
+    ttl_s: int = 0,
+    *,
+    holder: str = "",
+    now: float | None = None,
 ) -> None:
     """Ask the host broker for a lease change. The write itself is the signal —
     `solaris-gpu-lease-broker.path` watches this file."""
@@ -142,9 +188,10 @@ def write_request(
                 "op": op,
                 "model": model,
                 "ttl_s": ttl_s,
-                # The lease is held under the name of the model it serves —
-                # the same holder `gpu-lease.py acquire foundry` writes.
-                "holder": model,
+                # Who the window belongs to (#1347): the service that named
+                # itself, else the profile name — the holder `gpu-lease.py
+                # acquire foundry` has always written.
+                "holder": holder or model,
                 "requested_at": time.time() if now is None else now,
             }
         ),
@@ -153,7 +200,7 @@ def write_request(
 
 
 def state(db_path: str) -> dict:
-    """`{state, model, alias, expires_at}` — what `GET` answers.
+    """`{state, model, alias, expires_at, holder}` — what `GET` answers.
 
     `alias` is always the model llama-server has loaded *now*, which is what
     the `/v1` responses carry: the leased one only once the swap is through,
@@ -165,18 +212,21 @@ def state(db_path: str) -> dict:
         "model": "",
         "alias": household_alias(db_path),
         "expires_at": None,
+        "holder": "",
     }
     if gpu_lease.is_leased(path):
         lease = gpu_lease.record(path)
         mode = lease.get("mode")
         if mode not in MODELS:
             return idle
+        held_by = str(lease.get("holder") or mode)
         if not lease.get("ready"):
             return {
                 "state": "preparing",
                 "model": mode,
                 "alias": household_alias(db_path),
                 "expires_at": None,
+                "holder": held_by,
             }
         until = lease.get("until")
         return {
@@ -184,6 +234,7 @@ def state(db_path: str) -> dict:
             "model": mode,
             "alias": str(lease.get("alias") or ALIASES[mode]),
             "expires_at": until if isinstance(until, (int, float)) else None,
+            "holder": held_by,
         }
     request = read_request(db_path)
     handled = read_status(db_path).get("requested_at")
@@ -197,5 +248,6 @@ def state(db_path: str) -> dict:
             "model": request["model"],
             "alias": household_alias(db_path),
             "expires_at": None,
+            "holder": str(request.get("holder") or request["model"]),
         }
     return idle

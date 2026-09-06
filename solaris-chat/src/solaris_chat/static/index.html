@@ -2016,7 +2016,7 @@
           <span class="editor-status" id="household-model-status"></span>
 
           <h3>Add a model</h3>
-          <p class="lead">Pull a model into the local Ollama by tag or URL — a registry tag (<code>gemma4:12b</code>) or a Hugging Face GGUF repo (<code>hf.co/&lt;repo&gt;:&lt;quant&gt;</code>). Once pulled it appears in the pickers above. Admin only.</p>
+          <p class="lead">Pull a model into the local Ollama by tag or URL — a registry tag (<code>gemma4:12b</code>) or a Hugging Face GGUF repo (<code>hf.co/&lt;repo&gt;:&lt;quant&gt;</code>). This does not change the household or Gründlich chat model above, which always runs on the box's llama-server. Admin only. This tool is going away once Ollama is retired (solarisbay#1332).</p>
           <div class="model-row">
             <input id="pull-model-input" type="text" placeholder="gemma4:12b  or  hf.co/owner/repo:Q4_K_M" autocomplete="off" />
             <button id="pull-model-btn" class="btn-primary" type="button">Pull</button>
