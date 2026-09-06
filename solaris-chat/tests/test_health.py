@@ -105,7 +105,7 @@ async def test_health_ignores_the_neighbours(aiohttp_client, tmp_path):
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_readable_db(tmp_path),
-        ollama_url="http://127.0.0.1:1",
+        llama_server_url="http://127.0.0.1:1",
     )
     client = await aiohttp_client(app)
 

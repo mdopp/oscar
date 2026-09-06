@@ -290,7 +290,6 @@ def _payload(tmp_path, zip_bytes, categories, owner="mdopp"):
         "categories": categories,
         "hash": o.content_hash(zip_bytes),
         "db_path": str(tmp_path / "solaris.db"),
-        "ollama_url": "http://x",
         "model": "m",
     }
 

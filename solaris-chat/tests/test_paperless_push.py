@@ -1,6 +1,6 @@
 """Paperless document push (#931).
 
-The paperless REST client and the Ollama vision call are both faked (no live
+The paperless REST client and the llama-server vision call are both faked (no live
 instance, no model): these cover the PoC-validated handoff — gemma4:12b vision
 (think:false + a downscaled image) → POST the file OCR-skipped → PATCH the clean
 text into paperless full-text search — plus the idempotency marker, the
@@ -51,7 +51,7 @@ class FakePaperlessClient:
         self.suggested.append(document_id)
 
 
-class FakeOllama:
+class FakeVisionChat:
     """A vision model that returns canned text and records how it was called."""
 
     def __init__(self, text: str = "Sauberer Vision-Text"):
@@ -79,12 +79,12 @@ def _companion(vault: Path, rel: str, *, extracted: bool = True) -> Path:
     return md
 
 
-def _push(md: Path, vault: Path, ollama, client, *, image="IMGB64"):
+def _push(md: Path, vault: Path, chat, client, *, image="IMGB64"):
     """Run push_companion with the downscale helper stubbed to a fixed image."""
     orig = paperless.downscaled_vision_image
     paperless.downscaled_vision_image = lambda *_: image
     try:
-        return asyncio.run(push_companion(md, str(vault), ollama, client))
+        return asyncio.run(push_companion(md, str(vault), chat, "gemma-4-e4b", client))
     finally:
         paperless.downscaled_vision_image = orig
 
@@ -92,9 +92,9 @@ def _push(md: Path, vault: Path, ollama, client, *, image="IMGB64"):
 def test_handoff_posts_file_then_patches_vision_text(tmp_path):
     md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
     client = FakePaperlessClient(doc_id=7)
-    ollama = FakeOllama("Klarer deutscher Text")
+    chat = FakeVisionChat("Klarer deutscher Text")
 
-    assert _push(md, tmp_path, ollama, client) is True
+    assert _push(md, tmp_path, chat, client) is True
 
     # POST the ORIGINAL file (paperless stores it; OCR-skip is the deployment's
     # PAPERLESS_OCR_MODE — no per-request OCR flag is sent).
@@ -119,7 +119,7 @@ def test_ai_suggestions_failure_degrades_but_still_marks(tmp_path, monkeypatch):
         paperless.log, "error", lambda msg, **kw: records.append({"msg": msg, **kw})
     )
     client = SuggestBoom(doc_id=9)
-    assert _push(md, tmp_path, FakeOllama(), client) is True
+    assert _push(md, tmp_path, FakeVisionChat(), client) is True
     assert client.patched == [(9, "Sauberer Vision-Text")]
     assert PAPERLESS_MARKER in md.read_text(encoding="utf-8")
     assert any(
@@ -129,12 +129,14 @@ def test_ai_suggestions_failure_degrades_but_still_marks(tmp_path, monkeypatch):
 
 def test_vision_call_uses_think_false_and_the_downscaled_image(tmp_path):
     md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
-    ollama = FakeOllama()
-    _push(md, tmp_path, ollama, FakePaperlessClient(), image="DOWNSCALED")
+    chat = FakeVisionChat()
+    _push(md, tmp_path, chat, FakePaperlessClient(), image="DOWNSCALED")
 
-    assert len(ollama.calls) == 1
-    call = ollama.calls[0]
-    assert call["model"] == "gemma4:12b"
+    assert len(chat.calls) == 1
+    call = chat.calls[0]
+    # llama-server serves one model and ignores this field; the household
+    # alias is passed so a trace names what actually answered (#1332).
+    assert call["model"] == "gemma-4-e4b"
     assert call["think"] is False
     # The single downscaled page image is what the model sees (the PoC found the
     # full-res pages return empty).
@@ -144,19 +146,19 @@ def test_vision_call_uses_think_false_and_the_downscaled_image(tmp_path):
 def test_marker_makes_it_idempotent(tmp_path):
     md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
     client = FakePaperlessClient()
-    assert _push(md, tmp_path, FakeOllama(), client) is True
+    assert _push(md, tmp_path, FakeVisionChat(), client) is True
     assert PAPERLESS_MARKER in md.read_text(encoding="utf-8")
     # Second pass: already marked → no re-upload, no re-transcribe.
     client2 = FakePaperlessClient()
-    ollama2 = FakeOllama()
-    assert _push(md, tmp_path, ollama2, client2) is False
-    assert client2.posted == [] and ollama2.calls == []
+    chat2 = FakeVisionChat()
+    assert _push(md, tmp_path, chat2, client2) is False
+    assert client2.posted == [] and chat2.calls == []
 
 
 def test_unextracted_companion_is_not_pushed(tmp_path):
     md = _companion(tmp_path, "users/mdopp/uploads/scan.md", extracted=False)
     client = FakePaperlessClient()
-    assert _push(md, tmp_path, FakeOllama(), client) is False
+    assert _push(md, tmp_path, FakeVisionChat(), client) is False
     assert client.posted == []
 
 
@@ -165,7 +167,7 @@ def test_dedup_drop_skips_patch_but_still_marks(tmp_path):
     # but the companion is still marked so the pass doesn't retry forever.
     md = _companion(tmp_path, "users/mdopp/uploads/scan.md")
     client = FakePaperlessClient(doc_id=None)
-    assert _push(md, tmp_path, FakeOllama(), client) is True
+    assert _push(md, tmp_path, FakeVisionChat(), client) is True
     assert client.patched == []
     assert PAPERLESS_MARKER in md.read_text(encoding="utf-8")
 
@@ -177,7 +179,9 @@ def test_push_uploads_globs_resident_and_shared(tmp_path):
     orig = paperless.downscaled_vision_image
     paperless.downscaled_vision_image = lambda *_: "IMG"
     try:
-        pushed = asyncio.run(push_uploads(str(tmp_path), FakeOllama(), client))
+        pushed = asyncio.run(
+            push_uploads(str(tmp_path), FakeVisionChat(), "gemma-4-e4b", client)
+        )
     finally:
         paperless.downscaled_vision_image = orig
     assert pushed == 2
@@ -204,7 +208,9 @@ def test_companion_failure_logs_exception_type_and_traceback(tmp_path, monkeypat
     orig = paperless.downscaled_vision_image
     paperless.downscaled_vision_image = lambda *_: "IMG"
     try:
-        pushed = asyncio.run(push_uploads(str(tmp_path), FakeOllama(), BoomClient()))
+        pushed = asyncio.run(
+            push_uploads(str(tmp_path), FakeVisionChat(), "gemma-4-e4b", BoomClient())
+        )
     finally:
         paperless.downscaled_vision_image = orig
 
@@ -361,7 +367,7 @@ def test_push_timeout_does_not_mark_so_it_retries(tmp_path):
             raise PaperlessTaskTimeout("task-uuid")
 
     client = TimeoutClient()
-    assert _push(md, tmp_path, FakeOllama(), client) is False
+    assert _push(md, tmp_path, FakeVisionChat(), client) is False
     assert client.patched == []
     assert PAPERLESS_MARKER not in md.read_text(encoding="utf-8")
 

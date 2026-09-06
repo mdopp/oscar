@@ -266,7 +266,7 @@ def _prepare(args) -> tuple:
     drives its own `asyncio.run`, which raises if one is already running."""
     _refuse_if_leased()
     bench = _bench_models()
-    household = bench.build_household(args.ollama_url)
+    household = bench.build_household(args.llama_url)
     system = bench.build_system(household)
     tools = household._profile.toolbox.definitions()
     est = bench.check_shape(household, system)
@@ -350,7 +350,6 @@ def main() -> None:
     ap.add_argument("--stt-host", default="127.0.0.1")
     ap.add_argument("--stt-port", type=int, default=10300)
     ap.add_argument("--llama-url", default="http://127.0.0.1:11435")
-    ap.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     ap.add_argument("--model", default="", help="default: the household profile's")
     ap.add_argument("--language", default="de")
     ap.add_argument("--runs", type=int, default=RUNS)

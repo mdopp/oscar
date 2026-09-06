@@ -283,7 +283,7 @@
     .msg.me:hover .meta .rerun, .meta .rerun:focus-visible { opacity: 0.85; }
     .meta .stopped-note { color: var(--danger); margin-left: 6px; }
 
-    /* Per-turn LLM-step trace panel (#307): one row per Ollama call, click a
+    /* Per-turn LLM-step trace panel (#307): one row per model call, click a
        step to open the exact request/response in a modal. Loaded from the
        persisted per-message trace so it survives chat reload. */
     .meta details.steptrace { display: inline; }
@@ -2015,31 +2015,20 @@
           <p class="lead model-warn" id="household-model-warn" hidden>⚠️ A larger model on the household ("Zuhause") chat means slower voice/quick answers — the hot path is latency-sensitive. Keep it on the fast model unless you accept the latency.</p>
           <span class="editor-status" id="household-model-status"></span>
 
-          <h3>Add a model</h3>
-          <p class="lead">Pull a model into the local Ollama by tag or URL — a registry tag (<code>gemma4:12b</code>) or a Hugging Face GGUF repo (<code>hf.co/&lt;repo&gt;:&lt;quant&gt;</code>). This does not change the household or Gründlich chat model above, which always runs on the box's llama-server. Admin only. This tool is going away once Ollama is retired (solarisbay#1332).</p>
-          <div class="model-row">
-            <input id="pull-model-input" type="text" placeholder="gemma4:12b  or  hf.co/owner/repo:Q4_K_M" autocomplete="off" />
-            <button id="pull-model-btn" class="btn-primary" type="button">Pull</button>
-          </div>
-          <p class="model-current" id="pull-model-progress"></p>
-          <span class="editor-status" id="pull-model-status"></span>
-
-          <h3>VRAM headroom</h3>
-          <p class="lead">Live GPU VRAM of the box (reported by ServiceBay) vs the estimated footprint of the currently-selected models. Approximate — KV cache + context overhead are estimated.</p>
+          <h3>VRAM</h3>
+          <p class="lead">How much of the graphics card is in use right now, as ServiceBay's node agent measures it. The models themselves are set by the box's <code>llama</code> template, not from here.</p>
           <div id="vram-bar" hidden style="margin:10px 0 6px;">
             <div style="position:relative;height:22px;border-radius:8px;background:var(--panel);border:1px solid var(--line);overflow:hidden;">
               <div id="vram-used" style="height:100%;width:0;background:var(--ok);transition:width .35s var(--ease),background .35s;"></div>
-              <div id="vram-marker" hidden title="Selected models (estimated)" style="position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--accent);box-shadow:0 0 0 1px var(--bg);"></div>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:13px;color:var(--muted);">
               <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--ok);vertical-align:middle;margin-right:5px;"></i>used <b id="vram-used-label" style="color:var(--ink);">–</b></span>
               <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--panel);border:1px solid var(--line);vertical-align:middle;margin-right:5px;"></i>free <b id="vram-free-label" style="color:var(--ink);">–</b></span>
-              <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);vertical-align:middle;margin-right:5px;"></i>selected ≈ <b id="vram-sel-label" style="color:var(--ink);">–</b></span>
               <span>total <b id="vram-total-label" style="color:var(--ink);">–</b></span>
             </div>
           </div>
           <p class="model-current" id="vram-readout">Loading…</p>
-          <p class="lead model-warn" id="vram-warn" hidden>⚠️ The selected models' estimated VRAM exceeds the available VRAM — they likely won't all stay GPU-resident, which means CPU fallback and much slower turns.</p>
+          <p class="lead model-warn" id="vram-warn" hidden>⚠️ The card is nearly full. A model may fall back to the CPU, which makes every answer much slower.</p>
         </div>
       </div>
     </section>
@@ -2309,7 +2298,7 @@
       // <think>…</think>) block before the answer. This is a pure display
       // choice — the model still reasons; we only decide what the resident
       // sees: the raw block ("show"), a collapsible ("collapse", default), or
-      // nothing ("hide"). Stored locally; never sent to the engine/Ollama.
+      // nothing ("hide"). Stored locally; never sent to the engine or the model.
       var THINK_MODES = { show: 1, collapse: 1, hide: 1 };
       var thinkingMode = (function () {
         var saved = localStorage.getItem("solaris.thinking");
@@ -11612,105 +11601,33 @@
           .finally(function () { voiceApply.disabled = false; });
       });
 
-      // ---- Pull a model (admin; Ollama /api/model/pull, ndjson progress) ----
-      var pullInput = document.getElementById("pull-model-input");
-      var pullBtn = document.getElementById("pull-model-btn");
-      var pullProgress = document.getElementById("pull-model-progress");
-      var pullStatus = document.getElementById("pull-model-status");
-
-      function pullProgressText(chunk) {
-        if (chunk.error) return "Error: " + chunk.error;
-        var s = chunk.status || "";
-        if (typeof chunk.completed === "number" && typeof chunk.total === "number" && chunk.total > 0) {
-          return s + " — " + Math.floor((chunk.completed / chunk.total) * 100) + "%";
-        }
-        return s;
-      }
-
-      pullBtn.addEventListener("click", function () {
-        var model = pullInput.value.trim();
-        if (!model) return;
-        pullBtn.disabled = true;
-        pullStatus.className = "editor-status"; pullStatus.textContent = "Pulling…";
-        pullProgress.textContent = "";
-        fetch("/api/model/pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: model }) })
-          .then(function (r) {
-            if (r.status === 403) throw new Error("forbidden");
-            if (!r.ok || !r.body) throw new Error("failed");
-            var reader = r.body.getReader();
-            var dec = new TextDecoder();
-            var buf = "";
-            var lastErr = null;
-            function pump() {
-              return reader.read().then(function (res) {
-                if (res.done) return;
-                buf += dec.decode(res.value, { stream: true });
-                var lines = buf.split("\n");
-                buf = lines.pop();
-                lines.forEach(function (line) {
-                  if (!line.trim()) return;
-                  var chunk; try { chunk = JSON.parse(line); } catch (e) { return; }
-                  if (chunk.error) lastErr = chunk.error;
-                  pullProgress.textContent = pullProgressText(chunk);
-                });
-                return pump();
-              });
-            }
-            return pump().then(function () {
-              if (lastErr) throw new Error(lastErr);
-            });
-          })
-          .then(function () {
-            pullStatus.className = "editor-status";
-            pullStatus.textContent = "Pulled " + model + ".";
-            pullProgress.textContent = "success";
-            // Newly pulled model becomes a picker option + shifts headroom.
-            loadModel(); loadVram();
-          })
-          .catch(function (e) {
-            pullStatus.className = "editor-status err";
-            pullStatus.textContent = e.message === "forbidden" ? "Only admins can pull models." : "Pull failed: " + e.message;
-          })
-          .finally(function () { pullBtn.disabled = false; });
-      });
-
-      // ---- VRAM headroom estimate (admin; /api/vram) ----
+      // ---- VRAM in use (admin; /api/vram) ----
       var vramReadout = document.getElementById("vram-readout");
       var vramWarn = document.getElementById("vram-warn");
       var vramBar = document.getElementById("vram-bar");
       var vramUsedEl = document.getElementById("vram-used");
-      var vramMarker = document.getElementById("vram-marker");
       function gib(bytes) { return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GiB"; }
       function loadVram() {
         return fetch("/api/vram")
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
-            if (!j || !j.ok) { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; vramBar.hidden = true; return; }
-            var combined = j.combined_bytes || 0;
-            if (j.gpu_total_bytes) {
-              var total = j.gpu_total_bytes, used = j.gpu_used_bytes || 0;
-              var free = Math.max(total - used, 0);
-              var pct = Math.min(used / total * 100, 100);
-              vramUsedEl.style.width = pct.toFixed(1) + "%";
-              vramUsedEl.style.background = pct > 95 ? "var(--danger)" : (pct > 85 ? "var(--accent)" : "var(--ok)");
-              if (combined > 0) { vramMarker.hidden = false; vramMarker.style.left = Math.min(combined / total * 100, 100).toFixed(1) + "%"; }
-              else { vramMarker.hidden = true; }
-              document.getElementById("vram-used-label").textContent = gib(used);
-              document.getElementById("vram-free-label").textContent = gib(free);
-              document.getElementById("vram-sel-label").textContent = gib(combined);
-              document.getElementById("vram-total-label").textContent = gib(total);
-              vramBar.hidden = false;
-              vramReadout.textContent = "Selected models ≈ " + gib(combined) + " · " + gib(used) + " of " + gib(total) + " in use (" + gib(free) + " free).";
-            } else {
-              vramBar.hidden = true;
-              var txt = "Selected models need ≈ " + gib(combined);
-              vramReadout.textContent = (j.available_bytes == null)
-                ? txt + "; available VRAM unknown (ServiceBay reported no GPU)."
-                : txt + " of ≈ " + gib(j.available_bytes) + " available (estimate).";
+            if (!j || !j.ok || !j.gpu_total_bytes) {
+              vramReadout.textContent = "The graphics card did not report its memory.";
+              vramWarn.hidden = true; vramBar.hidden = true; return;
             }
-            vramWarn.hidden = !j.over_budget;
+            var total = j.gpu_total_bytes, used = j.gpu_used_bytes || 0;
+            var free = Math.max(total - used, 0);
+            var pct = Math.min(used / total * 100, 100);
+            vramUsedEl.style.width = pct.toFixed(1) + "%";
+            vramUsedEl.style.background = pct > 95 ? "var(--danger)" : (pct > 85 ? "var(--accent)" : "var(--ok)");
+            document.getElementById("vram-used-label").textContent = gib(used);
+            document.getElementById("vram-free-label").textContent = gib(free);
+            document.getElementById("vram-total-label").textContent = gib(total);
+            vramBar.hidden = false;
+            vramReadout.textContent = gib(used) + " of " + gib(total) + " in use (" + gib(free) + " free).";
+            vramWarn.hidden = pct <= 95;
           })
-          .catch(function () { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; vramBar.hidden = true; });
+          .catch(function () { vramReadout.textContent = "The graphics card did not report its memory."; vramWarn.hidden = true; vramBar.hidden = true; });
       }
 
       // Load the persona catalog + identity so `/persona` can offer the full

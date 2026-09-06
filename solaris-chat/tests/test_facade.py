@@ -873,7 +873,7 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
 
     _, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
-        ollama_url="http://x",
+        llama_server_url="http://x",
         fast_model="gemma4:e2b",
         thorough_model="gemma4:12b",
         soul_path="/nonexistent/SOUL.md",
@@ -904,7 +904,7 @@ async def test_household_profile_reads_persisted_model(tmp_path):
     db = str(tmp_path / "solaris.db")
     household, _, _, _, _, _, _ = build_engine_clients(
         db_path=db,
-        ollama_url="http://x",
+        llama_server_url="http://x",
         fast_model="gemma4:e2b",
         thorough_model="gemma4:12b",
         soul_path="/nonexistent/SOUL.md",

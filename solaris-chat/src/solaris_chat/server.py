@@ -82,7 +82,8 @@ from solaris_chat.engine.ingest.immich_client import RestImmichClient
 from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
-from solaris_chat.engine.ollama import OllamaChat, OllamaError
+from solaris_chat.engine.llama_embed import LlamaEmbed
+from solaris_chat.engine.llama_server import LlamaServerChat, LlamaServerError
 from solaris_chat.engine.knowledge import okf, projection, safe_slug
 from solaris_chat.engine.knowledge.records import ConceptRecord
 from solaris_chat.engine.knowledge.writer import write_concept
@@ -1382,7 +1383,8 @@ def build_app(
     tts_voices: str = "martin",
     solaris_db_path: str = "/var/lib/solaris/solaris.db",
     notes_dir: str = "/opt/data/notes",
-    ollama_url: str = "http://127.0.0.1:11434",
+    llama_server_url: str = "http://127.0.0.1:11435",
+    llama_embed_url: str = "http://127.0.0.1:11436",
     trace_recorder: Any = None,
     residents: list[str] | None = None,
     api_key: str = "",
@@ -3151,79 +3153,33 @@ def build_app(
         )
         return web.json_response({"ok": True, "current": value})
 
-    # The model tags whose combined VRAM footprint the headroom estimate sums:
-    # the household model (selected or fast default), the thorough model the
-    # admin/librarian profiles run, and the embedding model — i.e. what's
-    # actually meant to be co-resident on the box. fast/thorough collapse to one
-    # e4b tag now; combined_selected_bytes dedups, so it's counted once.
-    def selected_models() -> list[str]:
-        tags = [current_household_model(), thorough_model]
-        embed = os.environ.get("EMBED_MODEL", "").strip()
-        if embed:
-            tags.append(embed)
-        return [t for t in tags if t]
-
     async def get_vram(request: web.Request) -> web.Response:
+        """How full the card is right now — measured, not estimated (#1332).
+
+        The per-model estimate this used to add came from Ollama's `/api/tags`
+        + `/api/ps` disk/resident sizes. llama-server has no equivalent, and a
+        made-up number next to a measured one is worse than no number.
+        """
         if not is_admin(request, remote_groups_header, admin_group):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
-        client = OllamaChat(ollama_url)
-        try:
-            tags, ps = await client.tags(), await client.ps()
-        except Exception:  # noqa: BLE001 — Ollama down => no estimate, not a 500
-            tags, ps = [], []
-        selected = selected_models()
-        combined = vram.combined_selected_bytes(selected, tags, ps)
-        # Real total/used from ServiceBay's node agent (its nvidia-smi sees the
-        # whole GPU, overhead included) — falls back to env/in-container smi.
+        # ServiceBay's node agent runs nvidia-smi and sees the whole GPU,
+        # overhead included; the chat container has no GPU of its own.
         gpu = await vram.servicebay_gpu(sb_mcp_url, sb_mcp_token_path)
-        if gpu is not None:
-            gpu_total, gpu_used = gpu
-            available: int | None = max(gpu_total - gpu_used, 0)
-        else:
-            gpu_total = gpu_used = None
-            available = vram.available_bytes(ps)
+        if gpu is None:
+            gpu = vram.gpu_total_used()
+        if gpu is None:
+            return web.json_response(
+                {"ok": True, "gpu_total_bytes": None, "gpu_used_bytes": None}
+            )
+        gpu_total, gpu_used = gpu
         return web.json_response(
             {
                 "ok": True,
-                "estimate": True,
-                "selected": selected,
-                "combined_bytes": combined,
-                "available_bytes": available,
                 "gpu_total_bytes": gpu_total,
                 "gpu_used_bytes": gpu_used,
-                # available unknown => we can't judge fit, so don't flag.
-                "over_budget": available is not None and combined > available,
+                "available_bytes": max(gpu_total - gpu_used, 0),
             }
         )
-
-    async def pull_model(request: web.Request) -> web.StreamResponse:
-        if not is_admin(request, remote_groups_header, admin_group):
-            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 — any malformed JSON
-            return web.json_response(
-                {"ok": False, "reason": "invalid_json"}, status=400
-            )
-        model = (body.get("model") or "").strip()
-        if not model:
-            return web.json_response({"ok": False, "reason": "no_model"}, status=400)
-        log.info(
-            "chat.model.pull",
-            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
-            model=model,
-        )
-        resp = web.StreamResponse()
-        resp.content_type = "application/x-ndjson"
-        await resp.prepare(request)
-        client = OllamaChat(ollama_url)
-        try:
-            async for chunk in client.pull(model):
-                await resp.write((json.dumps(chunk) + "\n").encode())
-        except OllamaError as e:
-            await resp.write((json.dumps({"error": str(e)}) + "\n").encode())
-        await resp.write_eof()
-        return resp
 
     # -- the neighbour-service GPU lease (#1333) ----------------------------
     # foundry-chronicle asks here for the card; the box's `gpu-lease.py` is
@@ -4444,7 +4400,7 @@ def build_app(
         if not query:
             return web.json_response({"ok": True, "hits": []})
         tools = build_notes_tools(
-            notes_dir, lambda: uid, solaris_db_path, OllamaChat(ollama_url)
+            notes_dir, lambda: uid, solaris_db_path, LlamaEmbed(llama_embed_url)
         )
         search = next(t.handler for t in tools if t.name == "notes_search")
         hits = json.loads(await search({"query": query}))
@@ -5209,7 +5165,7 @@ def build_app(
         step (fail-open to ""). Runs inside `asyncio.to_thread`, so `asyncio.run`
         is safe (a worker thread has no running loop) — mirroring the music
         importer's classifier bridge."""
-        client = OllamaChat(ollama_url)
+        client = LlamaServerChat(llama_server_url)
 
         async def _ask(folder: str) -> str:
             msgs = [
@@ -5231,7 +5187,7 @@ def build_app(
         def classify(folder: str) -> str:
             try:
                 return asyncio.run(_ask(folder))
-            except (OllamaError, OSError, RuntimeError, ValueError):
+            except (LlamaServerError, OSError, RuntimeError, ValueError):
                 return ""
 
         return classify
@@ -5243,7 +5199,6 @@ def build_app(
             "owner_uid": owner,
             "db_path": solaris_db_path,
             "notes_dir": notes_dir,
-            "ollama_url": ollama_url,
             "model": current_household_model(),
             "caldav_url": caldav_url,
             "caldav_username": caldav_username,
@@ -6478,7 +6433,6 @@ def build_app(
     app.router.add_get("/api/voice", get_voice)
     app.router.add_put("/api/voice", put_voice)
     app.router.add_get("/api/vram", get_vram)
-    app.router.add_post("/api/model/pull", pull_model)
     app.router.add_post("/api/model-lease", set_model_lease)
     app.router.add_get("/api/model-lease", get_model_lease)
     app.router.add_delete("/api/model-lease", clear_model_lease)
@@ -6900,7 +6854,8 @@ async def serve(
     tts_voices: str = "martin",
     solaris_db_path: str = "/var/lib/solaris/solaris.db",
     notes_dir: str = "/opt/data/notes",
-    ollama_url: str = "http://127.0.0.1:11434",
+    llama_server_url: str = "http://127.0.0.1:11435",
+    llama_embed_url: str = "http://127.0.0.1:11436",
     trace_recorder: Any = None,
     api_key: str = "",
     bus: Any = None,
@@ -6966,7 +6921,8 @@ async def serve(
         solaris_db_path=solaris_db_path,
         speaker_id_enabled=speaker_id_enabled,
         notes_dir=notes_dir,
-        ollama_url=ollama_url,
+        llama_server_url=llama_server_url,
+        llama_embed_url=llama_embed_url,
         trace_recorder=trace_recorder,
         api_key=api_key,
         bus=bus,

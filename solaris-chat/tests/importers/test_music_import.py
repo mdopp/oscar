@@ -119,7 +119,6 @@ def _payload(db_path, notes_dir, music_dir, data_dir, owner="mdopp"):
         "notes_dir": notes_dir,
         "music_dir": music_dir,
         "data_dir": data_dir,
-        "ollama_url": "http://127.0.0.1:11434",
         "model": "gemma4:e4b",
         "cap": 0,  # resolution comes from the seeded cache, no network
     }

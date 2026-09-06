@@ -27,13 +27,13 @@ from solaris_chat.server import serve
 
 async def _run() -> None:
     context_window = await build_context_window(
-        settings.ollama_url, settings.context_window_override
+        settings.llama_server_url, settings.context_window_override
     )
     household, admin, guest, librarian, enrollment, recorder, bus = (
         build_engine_clients(
             db_path=settings.solaris_db_path,
-            ollama_url=settings.ollama_url,
             llama_server_url=settings.llama_server_url,
+            llama_embed_url=settings.llama_embed_url,
             fast_model=settings.fast_model,
             thorough_model=settings.thorough_model,
             soul_path=settings.soul_path,
@@ -213,7 +213,8 @@ async def _run() -> None:
         speaker_id_enabled=settings.speaker_id_enabled,
         model_lease_enabled=settings.model_lease_enabled,
         notes_dir=settings.notes_dir,
-        ollama_url=settings.ollama_url,
+        llama_server_url=settings.llama_server_url,
+        llama_embed_url=settings.llama_embed_url,
         trace_recorder=recorder,
         api_key=settings.api_key,
         bus=bus,
@@ -253,8 +254,8 @@ def main() -> None:
         "chat.boot",
         host=settings.host,
         port=settings.port,
-        ollama=settings.ollama_url,
         llama_server=settings.llama_server_url,
+        llama_embed=settings.llama_embed_url,
         engine="solaris",
     )
     asyncio.run(_run())

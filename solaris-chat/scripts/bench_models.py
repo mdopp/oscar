@@ -1,7 +1,7 @@
 """Compare gemma4 variants for the Solaris Engine model map (Phase 0b).
 
-Benches each candidate model against raw Ollama `/api/chat` with the prefill
-the engine actually sends: the **production** household prompt assembly —
+Benches each candidate model against llama-server's `/v1/chat/completions`
+with the prefill the engine actually sends: the **production** household prompt assembly —
 `build_engine_clients()`'s own toolbox, the shipped/operator SOUL.md, and the
 registry block the real `EntityRegistry` renders for a 51-entity house.
 Measures TTFT, wall time, prefill/decode rates per turn and scores tool-call
@@ -17,10 +17,14 @@ can't silently grow back.
 Needs `solaris_chat` importable (the container, or `pip install -e solaris-chat`)
 — this is a dev script and is not shipped in the runtime image.
 
-Run on the box (host network) or anywhere that reaches Ollama:
+llama-server serves ONE model at a time and ignores the request's `model`
+field, so `--models` only labels the runs: swap the served model between runs
+(the llama template's GPU lease, or by hand) and re-run.
 
-    python3 bench_models.py --url http://127.0.0.1:11434 \
-        --models gemma4:e2b,gemma4:e4b,gemma4:12b --runs 3
+Run on the box (host network) or anywhere that reaches llama-server:
+
+    python3 bench_models.py --url http://127.0.0.1:11435 \
+        --models gemma-4-e4b --runs 3
 """
 
 from __future__ import annotations
@@ -184,7 +188,7 @@ async def _states() -> list[dict[str, Any]]:
     return states
 
 
-def build_household(ollama_url: str) -> EngineClient:
+def build_household(llama_server_url: str) -> EngineClient:
     """The production household profile, with the synthetic house pre-loaded
     into its registry so no HA call is needed.
 
@@ -193,7 +197,7 @@ def build_household(ollama_url: str) -> EngineClient:
     cannot drift from the deployed one (#1149)."""
     household, *_rest = build_engine_clients(
         db_path="/tmp/solaris-bench.sqlite",
-        ollama_url=ollama_url,
+        llama_server_url=llama_server_url,
         fast_model="",
         thorough_model="",
         soul_path=soul_path(),
@@ -239,47 +243,78 @@ def check_shape(household: EngineClient, system: str) -> int:
 
 
 def chat(url: str, model: str, messages: list, tools: list, think: bool) -> dict:
+    """One streamed turn against llama-server's OpenAI endpoint.
+
+    `think` is `chat_template_kwargs.enable_thinking`, not a request field —
+    the same translation `LlamaServerChat` does, kept here so the bench pays
+    exactly what a household turn pays.
+    """
     body = {
         "model": model,
         "messages": messages,
         "tools": tools,
         "stream": True,
-        "think": think,
+        "stream_options": {"include_usage": True},
+        "chat_template_kwargs": {"enable_thinking": think},
     }
     req = urllib.request.Request(
-        f"{url}/api/chat",
+        f"{url}/v1/chat/completions",
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
     t0 = time.monotonic()
     ttft = None
     content = ""
-    tool_calls = []
-    final = {}
+    calls: dict[int, dict] = {}
+    final: dict = {}
     with urllib.request.urlopen(req, timeout=300) as resp:
-        for line in resp:
-            chunk = json.loads(line)
-            msg = chunk.get("message") or {}
-            if ttft is None and (msg.get("content") or msg.get("tool_calls")):
-                ttft = time.monotonic() - t0
-            content += msg.get("content") or ""
-            tool_calls += msg.get("tool_calls") or []
-            if chunk.get("done"):
+        for raw in resp:
+            line = raw.strip()
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == b"[DONE]":
+                break
+            chunk = json.loads(payload)
+            if chunk.get("usage") or chunk.get("timings"):
                 final = chunk
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            tool_deltas = delta.get("tool_calls") or []
+            if ttft is None and (delta.get("content") or tool_deltas):
+                ttft = time.monotonic() - t0
+            content += delta.get("content") or ""
+            for tc in tool_deltas:
+                slot = calls.setdefault(
+                    int(tc.get("index") or 0), {"name": "", "args": ""}
+                )
+                fn = tc.get("function") or {}
+                slot["name"] = fn.get("name") or slot["name"]
+                slot["args"] += fn.get("arguments") or ""
+    tool_calls = [
+        {"function": {"name": c["name"], "arguments": json.loads(c["args"] or "{}")}}
+        for _, c in sorted(calls.items())
+    ]
+    # llama-server reports its own prefill/decode timings on the final chunk in
+    # milliseconds; older builds send none, and a 0.0 rate reads as "not
+    # reported" rather than as a wrong measurement.
+    timings = final.get("timings") or {}
     return {
         "wall": time.monotonic() - t0,
         "ttft": ttft if ttft is not None else time.monotonic() - t0,
         "content": content,
         "tool_calls": tool_calls,
-        "prompt_tokens": final.get("prompt_eval_count", 0),
-        "prefill_tps": _rate(final, "prompt_eval_count", "prompt_eval_duration"),
-        "decode_tps": _rate(final, "eval_count", "eval_duration"),
+        "prompt_tokens": (final.get("usage") or {}).get("prompt_tokens", 0),
+        "prefill_tps": _rate(timings, "prompt_n", "prompt_ms"),
+        "decode_tps": _rate(timings, "predicted_n", "predicted_ms"),
     }
 
 
-def _rate(final: dict, count_key: str, dur_key: str) -> float:
-    dur = final.get(dur_key) or 0
-    return round(final.get(count_key, 0) / (dur / 1e9), 1) if dur else 0.0
+def _rate(timings: dict, count_key: str, dur_key: str) -> float:
+    dur = timings.get(dur_key) or 0
+    return round(timings.get(count_key, 0) / (dur / 1e3), 1) if dur else 0.0
 
 
 def run_model(
@@ -322,7 +357,7 @@ def run_model(
         "wall_p95": round(sorted(turn_walls)[int(len(turn_walls) * 0.95) - 1], 2),
         "ttft_p50": round(statistics.median(ttfts), 2),
         # The first turn of each run: system prompt + tools, no history yet —
-        # the prefill the engine pays every turn, straight from Ollama.
+        # the prefill the engine pays every turn, as llama-server counts it.
         "prompt_tokens": min(prefills) if prefills else 0,
         "tool_acc": f"{tool_ok}/{tool_total}",
         "samples": samples,
@@ -331,8 +366,8 @@ def run_model(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:11434")
-    ap.add_argument("--models", default="gemma4:e2b,gemma4:e4b,gemma4:12b")
+    ap.add_argument("--url", default="http://127.0.0.1:11435")
+    ap.add_argument("--models", default="gemma-4-e4b")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument(
         "--think", action="store_true", help="enable thinking (default off = fast path)"
@@ -345,7 +380,7 @@ def main() -> None:
     est = check_shape(household, system)
     lo, hi = MEASURED_TURN1_TOKENS
     print(f"prefill: {len(tools)} tools, {len(ENTITIES)} entities, ~{est} est-tok")
-    print(f"         (box turn-1 measurement {lo}-{hi} tok; Ollama's count below)")
+    print(f"         (box turn-1 measurement {lo}-{hi} tok; the server's count below)")
 
     for model in args.models.split(","):
         model = model.strip()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Realistic end-to-end latency benchmark for the Solaris chat path.
 
-Hits the REAL `/api/chat` endpoint (solaris-chat → Hermes → Ollama) with a
+Hits the REAL `/api/chat` endpoint (solaris-chat → Hermes → llama-server) with a
 multi-turn conversation and full generation — the latency a resident actually
 feels, not an isolated warm-prefill micro-benchmark. Reports per-turn wall time
 and p50/p95 across repeats.

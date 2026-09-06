@@ -243,7 +243,7 @@ def test_skill_promotion_tools_are_admin_only(tmp_path):
 
     household, admin, guest, _lib, _enroll, _rec, _bus = profiles.build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
-        ollama_url="http://ollama",
+        llama_server_url="http://ollama",
         fast_model="m",
         thorough_model="m",
         soul_path="",
@@ -300,7 +300,7 @@ async def test_household_drafts_into_pending_skills_not_the_notes_vault(tmp_path
     notes.mkdir()
     household, _admin, guest, _lib, _enroll, _rec, _bus = profiles.build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
-        ollama_url="http://ollama",
+        llama_server_url="http://ollama",
         fast_model="m",
         thorough_model="m",
         soul_path="",

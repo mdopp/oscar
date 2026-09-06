@@ -72,8 +72,7 @@ def run_music_import(
     owner_uid: str,
     db_path: str,
     notes_dir: str,
-    ollama_url: str,
-    model: str,
+    model: str = "",
     is_canceled=None,
     **opts: Any,
 ):
@@ -82,8 +81,8 @@ def run_music_import(
     progress events, then a final event carrying the write summary as ``result``.
 
     Classification is mechanical (``catalog.classify`` seed list) — no LLM in the
-    hot path. ``ollama_url``/``model`` are accepted (job-payload contract) but the
-    music analysis does not use them."""
+    hot path. ``model`` is accepted (job-payload contract) but the music analysis
+    does not use it."""
     result: dict[str, Any] = {}
     for ev in analyze_iter(history_bytes, paths, is_canceled=is_canceled, **opts):
         if "result" in ev:
@@ -168,8 +167,7 @@ def _music_runner_factory(payload: dict[str, Any]):
             owner_uid=payload["owner_uid"],
             db_path=payload["db_path"],
             notes_dir=payload["notes_dir"],
-            ollama_url=payload["ollama_url"],
-            model=payload["model"],
+            model=payload.get("model", ""),
             is_canceled=is_canceled,
             **opts,
         )
