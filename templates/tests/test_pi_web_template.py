@@ -109,6 +109,19 @@ def test_the_two_processes_share_the_state_volume(pod):
         assert {"/data", "/workspace"} <= mounts, container["name"]
 
 
+def test_data_perms_are_opened_before_the_nonroot_containers_start(pod):
+    """`DirectoryOrCreate` leaves the host path owned by userns-root; sessiond
+    and web both run as the image's non-root `USER node`, so without this
+    sessiond's first write (claiming its state socket) hits EACCES on every
+    start — box-verified against #1358."""
+    init = pod["spec"]["initContainers"]
+    perms = next(c for c in init if c["name"] == "pi-web-data-perms")
+    assert perms["securityContext"]["runAsUser"] == 0
+    mounts = {m["mountPath"] for m in perms["volumeMounts"]}
+    assert {"/data", "/workspace"} <= mounts
+    assert "/data" in perms["command"] and "/workspace" in perms["command"]
+
+
 def test_template_references_public_domain(template_text):
     """Without a reference the assembler never injects PUBLIC_DOMAIN and the
     subdomain's proxy host is dropped with nothing in the install log."""

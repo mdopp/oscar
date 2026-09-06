@@ -35,6 +35,25 @@ spec:
   # is the authorisation) and the engine binds 127.0.0.1 alone. The lease is
   # held by a host-side systemd unit instead — see post-deploy.py.
   restartPolicy: Always
+  initContainers:
+  # `DirectoryOrCreate` makes the host path owned by userns-root (the "core"
+  # host UID maps to container UID 0), but both real containers below run as
+  # the image's `USER node` — so sessiond's first write (claiming its state
+  # socket under /data/pi-web) hit EACCES on every start, box-verified against
+  # #1358 (crash loop, "mkdir '/data/pi-web': permission denied"). Same fix as
+  # solaris/template.yml's notes-perms: open perms once, as userns-root, before
+  # the non-root containers start.
+  - name: pi-web-data-perms
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    command: ["chmod", "-R", "a+rwX", "/data", "/workspace"]
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+    - mountPath: /workspace
+      name: pi-web-workspace
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
