@@ -233,7 +233,7 @@ def build_media_tools(
                 " neueste Folge auf einem Raum-Gerät — für 'Spiel die neueste Folge"
                 " von <Podcast>' und 'Podcasts von <Person>'. name = GENAU der"
                 " gesagte Podcast-/Personenname, WORTWÖRTLICH — niemals korrigieren,"
-                " übersetzen oder ersetzen ('tim pritlove' bleibt 'tim pritlove');"
+                " übersetzen oder ersetzen;"
                 " der Index fuzzy-matcht selbst. entity_id = media_player des"
                 " Zielraums; ohne entity_id wird nur aufgelöst — frag nach dem Raum"
                 " und rufe erneut auf. NUR Podcasts — Musik: play_music, Radio:"

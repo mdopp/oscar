@@ -35,6 +35,27 @@ CAPABILITY_TOOLS = {
     "status": ("get_solaris_status",),
 }
 
+# #1336: having the tool was not enough. Measured on the box after #1291,
+# "merk dir, dass der Müll dienstags kommt" hit fact_store 1 of 9 and "wie geht
+# es dir" hit get_solaris_status 0 of 9, while the status pointer's own literal
+# example "läuft alles" hit 3 of 3 — both halves were written as one example
+# sentence rather than as the intent. The schema description is what the model
+# weighs at call time, so it carries the phrasings; the SOUL pointer carries the
+# intent behind them.
+INTENT_PHRASINGS = {
+    "fact_store": ("merk dir", "denk daran", "notier dir", "nicht vergessen"),
+    "get_solaris_status": (
+        "wie geht es dir",
+        "bist du da",
+        "läuft alles",
+        "hast du probleme",
+    ),
+}
+SOUL_POINTERS = {
+    "get_solaris_status": ("befinden", "erreichbarkeit", "probleme gibt"),
+    "fact_store": ("merk dir", "denk daran", "notier dir"),
+}
+
 
 @pytest.fixture(scope="module")
 def bench():
@@ -85,3 +106,22 @@ def test_the_pack_no_longer_carries_model_facing_prose(pack):
     assert len(body) <= 900, f"{pack} is prose again ({len(body)} chars)"
     for heading in ("## When to use", "## Wann", "## Ablauf", "## Operating"):
         assert heading not in body, f"{pack} still carries a {heading} procedure"
+
+
+@pytest.mark.parametrize("tool,phrasings", INTENT_PHRASINGS.items())
+def test_the_tool_description_names_the_intent(household, tool, phrasings):
+    definitions = {
+        d["function"]["name"]: d for d in household._profile.toolbox.definitions()
+    }
+    description = definitions[tool]["function"]["description"].lower()
+    for phrase in phrasings:
+        assert phrase in description, f"{tool} description misses {phrase!r} (#1336)"
+
+
+@pytest.mark.parametrize("tool,phrasings", SOUL_POINTERS.items())
+def test_the_soul_pointer_names_the_intent(bench, tool, phrasings):
+    soul = Path(bench.soul_path()).read_text(encoding="utf-8")
+    assert tool in soul, f"{tool} has no SOUL pointer"
+    lowered = soul.lower()
+    for phrase in phrasings:
+        assert phrase in lowered, f"{tool} pointer misses {phrase!r} (#1336)"
