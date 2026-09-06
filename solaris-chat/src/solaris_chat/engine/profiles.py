@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from solaris_chat import gpu_lease, model_lease, settings_store
+from solaris_chat import gpu_lease, settings_store
 from solaris_chat.config import settings
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
@@ -135,16 +135,6 @@ def build_engine_clients(
     recorder = TraceRecorder()
     bus = SessionBus()
     registry = EntityRegistry(hass_url, hass_token)
-
-    def leased_model() -> str:
-        """The model a neighbour service is holding right now (#1260), or `""`.
-
-        A live lease wins over the admin's household pick for its duration: both
-        end up naming one model, and the leased one is the one already in VRAM.
-        """
-        if not settings.model_lease_enabled:
-            return ""
-        return model_lease.active_model(db_path)
 
     ha_tools: list[Tool] = (
         build_ha_tools(hass_url, hass_token, check_entity=registry.check_entity)
@@ -309,9 +299,7 @@ def build_engine_clients(
             # Admin-selectable from the panel (#366): the persisted override wins
             # per turn, falling back to the FAST_MODEL default when unset — so the
             # fast-only default holds for installs that never touch the picker.
-            model_resolver=lambda: (
-                leased_model() or settings_store.get_household_model(db_path)
-            ),
+            model_resolver=lambda: settings_store.get_household_model(db_path),
             soul_path=soul_path,
             registry=registry,
             think_default=False,
@@ -361,10 +349,6 @@ def build_engine_clients(
         EngineProfile(
             name="solaris-guest",
             model=fast_model or "gemma4:e4b",
-            # The guest turn is the same fast-model hot path, so it honours a
-            # live lease too — otherwise one visitor's question re-loads e4b
-            # mid-lease and pays the swap twice (#1260).
-            model_resolver=leased_model,
             soul_path=soul_path,
             registry=registry,
             think_default=False,

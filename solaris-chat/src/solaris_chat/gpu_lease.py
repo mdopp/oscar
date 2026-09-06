@@ -69,7 +69,8 @@ def is_leased(path: str | Path) -> bool:
     return bool(path) and Path(path).exists()
 
 
-def _read(path: str | Path) -> dict:
+def record(path: str | Path) -> dict:
+    """The lease exactly as the box wrote it, `{}` for anything unreadable."""
     try:
         data = json.loads(Path(path).read_text("utf-8"))
     except (OSError, ValueError):
@@ -79,7 +80,7 @@ def _read(path: str | Path) -> dict:
 
 def holder(path: str | Path) -> str:
     """Who holds it, for the log line; `""` when the file says nothing."""
-    name = _read(path).get("holder")
+    name = record(path).get("holder")
     return name.strip() if isinstance(name, str) else ""
 
 
@@ -94,7 +95,7 @@ def mutes_chat(path: str | Path) -> bool:
     """
     if not is_leased(path):
         return False
-    lease = _read(path)
+    lease = record(path)
     return lease.get("mode") not in ANSWERING_MODES or not lease.get("ready")
 
 
@@ -103,12 +104,16 @@ def state(path: str | Path) -> dict | None:
     none. `until` is epoch seconds — the browser formats it in local time."""
     if not is_leased(path):
         return None
-    lease = _read(path)
+    lease = record(path)
     until = lease.get("until")
     mode = lease.get("mode")
     return {
         "mode": mode if mode in ANSWERING_MODES else "exclusive",
         "model": str(lease.get("model") or ""),
+        # The `--alias` llama-server answers with while this lease stands
+        # (#1333) — the same string `/api/model-lease` and the `model` field of
+        # a `/v1` response carry, so the three surfaces cannot disagree.
+        "alias": str(lease.get("alias") or ""),
         "until": float(until) if isinstance(until, (int, float)) else 0.0,
         "answers": not mutes_chat(path),
     }

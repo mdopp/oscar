@@ -146,8 +146,6 @@ _WIDGET_SRC_RE = re.compile(r"\Awidget\.[a-z0-9_-]{1,32}\.[a-z0-9_-]{1,32}\Z")
 # Strong refs to the in-flight fire-and-forget posts (asyncio only holds weak
 # ones, so a task can otherwise be garbage-collected mid-flight).
 _usage_metrics_tasks: set[asyncio.Task[None]] = set()
-# Same, for the fire-and-forget FAST_MODEL re-warm at a lease end (#1260).
-_rewarm_tasks: set[asyncio.Task[bool]] = set()
 # Same, for the fire-and-forget Web Push fan-out of an HA notice (#1276) — the
 # caller is answered before a single push leaves the box.
 _ha_notify_tasks: set[asyncio.Task[None]] = set()
@@ -2551,7 +2549,7 @@ def build_app(
                 # "ok" | "unavailable" — the client banner's state token, same
                 # shape as the `ha` field the start page carries (#729/#1274).
                 "db": "unavailable" if db_reason else "ok",
-                # #1319: null, or {mode, model, until, answers} while another
+                # #1319: null, or {mode, model, alias, until, answers} while another
                 # job holds the GPU. The browser renders it as the same
                 # in-page notice the outage above uses, so the resident is
                 # told the assistant is slower and until when — instead of
@@ -3257,19 +3255,13 @@ def build_app(
         await resp.write_eof()
         return resp
 
-    # -- the neighbour-service model lease (#1260) --------------------------
-    # foundry-chronicle declares the window in which it holds the big model on
-    # this box; for its duration Solaris answers with that model rather than
-    # forcing a ~56 s swap each way. Loopback-only, no token, no shared secret,
-    # payload exactly {model, ttl_s} — see solaris_chat.model_lease.
-
-    def rewarm_fast_model() -> None:
-        """Pull FAST_MODEL back into VRAM without making anyone wait for it."""
-        if not fast_model:
-            return
-        task = asyncio.create_task(OllamaChat(ollama_url).warm(fast_model))
-        _rewarm_tasks.add(task)
-        task.add_done_callback(_rewarm_tasks.discard)
+    # -- the neighbour-service GPU lease (#1333) ----------------------------
+    # foundry-chronicle asks here for the card; the box's `gpu-lease.py` is
+    # what actually swaps llama-server's profile, driven by a host broker that
+    # watches the request file this writes (the engine container cannot switch
+    # systemd units). Loopback-only, no token, no shared secret, payload
+    # exactly {model, ttl_s} — contract mdopp/foundry-chronicle#321, state
+    # machine in solaris_chat.model_lease.
 
     async def set_model_lease(request: web.Request) -> web.Response:
         if not model_lease_enabled:
@@ -3286,17 +3278,57 @@ def build_app(
             model, ttl = model_lease.parse_payload(body)
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
-        expires_at = model_lease.grant(solaris_db_path, model, ttl)
-        log.info("chat.model_lease.set", model=model, ttl=ttl)
-        # The renewal cadence is answered, not assumed, so both sides read one
-        # number from one constant.
+        current = model_lease.state(solaris_db_path)
+        if current["state"] != "none" and current["model"] != model:
+            lease = gpu_lease.record(gpu_lease.lease_path(solaris_db_path))
+            return web.json_response(
+                {
+                    "ok": False,
+                    "reason": "held",
+                    "holder": str(lease.get("holder") or current["model"]),
+                    "expires_at": current["expires_at"],
+                },
+                status=409,
+            )
+        # The same POST requests and renews; the broker turns a renewal into a
+        # re-armed expiry timer rather than a second swap, so a held lease is
+        # answered at once with the deadline it already has.
+        model_lease.write_request(solaris_db_path, "acquire", model, ttl)
+        log.info("chat.model_lease.request", model=model, ttl=ttl)
+        if current["state"] == "ready":
+            return web.json_response(
+                {
+                    "ok": True,
+                    "state": "ready",
+                    "model": model,
+                    "alias": current["alias"],
+                    "expires_at": current["expires_at"],
+                    "renew_after": model_lease.renew_after(ttl),
+                }
+            )
+        # Not a failure: the first foundry lease of a box downloads 8 GB. The
+        # window starts at `ready`, which the caller polls GET for.
         return web.json_response(
             {
                 "ok": True,
+                "state": "preparing",
                 "model": model,
-                "ttl_s": ttl,
-                "renew_after": model_lease.RENEW_INTERVAL_SECONDS,
-                "expires_at": expires_at,
+                "alias": model_lease.ALIASES[model],
+                "retry_after": model_lease.RETRY_AFTER_SECONDS,
+                "expires_at": None,
+            },
+            status=202,
+        )
+
+    async def get_model_lease(request: web.Request) -> web.Response:
+        if not model_lease_enabled:
+            return web.json_response({"ok": False, "reason": "disabled"}, status=503)
+        if not is_loopback_caller(request):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        return web.json_response(
+            {
+                **model_lease.state(solaris_db_path),
+                "retry_after": model_lease.RETRY_AFTER_SECONDS,
             }
         )
 
@@ -3305,12 +3337,10 @@ def build_app(
             return web.json_response({"ok": False, "reason": "disabled"}, status=503)
         if not is_loopback_caller(request):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
-        was_live = bool(model_lease.active_model(solaris_db_path))
-        model_lease.clear(solaris_db_path)
-        if was_live:
-            log.info("chat.model_lease.cleared", model=fast_model)
-            rewarm_fast_model()
-        return web.json_response({"ok": True})
+        if model_lease.state(solaris_db_path)["state"] != "none":
+            model_lease.write_request(solaris_db_path, "release")
+            log.info("chat.model_lease.released")
+        return web.json_response({"ok": True, "state": "released"})
 
     # -- the household notice Home Assistant posts (#1276) ------------------
     #
@@ -6451,6 +6481,7 @@ def build_app(
     app.router.add_get("/api/vram", get_vram)
     app.router.add_post("/api/model/pull", pull_model)
     app.router.add_post("/api/model-lease", set_model_lease)
+    app.router.add_get("/api/model-lease", get_model_lease)
     app.router.add_delete("/api/model-lease", clear_model_lease)
     # Loopback-only, like the model lease above — NOT on /napi/ (see the
     # handler). This is the route an HA `rest_command` posts to.
@@ -6977,24 +7008,8 @@ async def serve(
     # Re-derive the context window periodically so a model switch adapts the
     # compaction cap without a restart (no-op when an explicit override pins it).
     refresh = asyncio.create_task(context_window.refresh_loop())
-    # A chronicle run that dies never sends its DELETE, so the TTL is what ends
-    # the lease — and the re-warm has to happen then, not on the next resident's
-    # turn, which would otherwise pay the cold load (#1260).
-    lease_watch: asyncio.Task[None] | None = None
-    if model_lease_enabled:
-
-        async def rewarm_after_lease() -> None:
-            log.info("chat.model_lease.expired", model=fast_model)
-            if fast_model:
-                await OllamaChat(ollama_url).warm(fast_model)
-
-        lease_watch = asyncio.create_task(
-            model_lease.expiry_watch(solaris_db_path, rewarm_after_lease)
-        )
     try:
         await asyncio.Event().wait()
     finally:
         refresh.cancel()
-        if lease_watch is not None:
-            lease_watch.cancel()
         await runner.cleanup()
