@@ -412,19 +412,18 @@ def build_wakeword_tools(
             # "Weckwort"/"Aufweckwort" survive here on purpose: these are words a
             # resident SAYS (or that STT mishears), not words Solaris shows back.
             description=(
-                "Startet den interaktiven Aufnahme-Modus zum Verbessern oder Trainieren des Wakewords „Solaris“. "
-                "RUFE DIESES TOOL SOFORT AUF, wenn der Nutzer sein Wakeword/Weckwort verbessern, anpassen oder trainieren möchte — "
-                "auch bei STT-Erkennungsfehlern wie „Wake World verbessern“, „Breakwater trainieren“, „Weckwort verbessern“, "
-                "„Aufweckwort trainieren“, „Solaris trainieren“, „neues Wakeword“. "
-                "Nimmt optional 'uid' entgegen — den gesprochenen oder buchstabierten Vornamen; die Schreibweise normalisiert das Tool selbst. "
-                "Beispiele: „Wakeword verbessern“, „Wake World verbessern“, „Breakwater trainieren“, „Weckwort trainieren“, „Solaris trainieren“."
+                "Startet den Aufnahme-Modus für das Wakeword „Solaris“. SOFORT"
+                " aufrufen, wenn jemand sein Wakeword/Weckwort verbessern,"
+                " anpassen oder trainieren will — auch verhört als „Wake World“,"
+                " „Breakwater“, „Aufweckwort“. 'uid' = der genannte Vorname;"
+                " die Schreibweise normalisiert das Tool selbst."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Der gesprochene oder buchstabierte Name des Sprechers, so wie er ihn genannt hat",
+                        "description": "Vorname des Sprechers, wie genannt",
                     },
                     "target_count": {
                         "type": "integer",
@@ -438,8 +437,8 @@ def build_wakeword_tools(
         Tool(
             name="record_wakeword_sample",
             description=(
-                "Zeichnet eine Sprachprobe für das Wakeword auf und gibt den verbleibenden Countdown zurück. "
-                "Wird während des aktiven Wakeword-Aufnahme-Dialogs nach jedem eingesprochenen Wort gerufen."
+                "Nimmt eine Wakeword-Sprachprobe auf und gibt den Countdown"
+                " zurück. Im laufenden Aufnahme-Dialog nach jedem Wort rufen."
             ),
             parameters={
                 "type": "object",
@@ -450,7 +449,7 @@ def build_wakeword_tools(
                     },
                     "transcript": {
                         "type": "string",
-                        "description": "Das von Whisper STT erfasste Wort (z.B. 'Solaris', 'Cello')",
+                        "description": "Das von STT erfasste Wort",
                     },
                 },
             },
@@ -460,8 +459,8 @@ def build_wakeword_tools(
         Tool(
             name="audit_wakeword_samples",
             description=(
-                "Überprüft die Qualität aller bisher gespeicherten Wakeword-Aufnahmen und hebt auffällige "
-                "oder fehlerhafte Aufnahmen hervor („Aufnahmen überprüfen“, „Qualität prüfen“)."
+                "Prüft die Qualität der gespeicherten Wakeword-Aufnahmen und"
+                " hebt fehlerhafte hervor („Aufnahmen prüfen“)."
             ),
             parameters={"type": "object", "properties": {}},
             handler=_handle_audit,
@@ -469,9 +468,7 @@ def build_wakeword_tools(
         ),
         Tool(
             name="list_wakeword_samples",
-            description=(
-                "Listet alle bisher gespeicherten Wakeword-Sprachproben auf, die für zukünftige Trainingswiederholungen wiederverwendet werden."
-            ),
+            description=("Listet die gespeicherten Wakeword-Sprachproben."),
             parameters={"type": "object", "properties": {}},
             handler=_handle_list,
             visibility=Visibility.HOUSEHOLD,
@@ -479,14 +476,15 @@ def build_wakeword_tools(
         Tool(
             name="delete_wakeword_sample",
             description=(
-                "Löscht eine fehlerhafte oder misslungene Wakeword-Sprachprobe („Aufnahme löschen“, „Probe löschen“, „neu aufnehmen“)."
+                "Löscht eine misslungene Wakeword-Sprachprobe („Aufnahme"
+                " löschen“, „neu aufnehmen“)."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "sample_id": {
                         "type": "string",
-                        "description": "Die ID der zu löschenden Probe, wie von list_wakeword_samples zurückgegeben",
+                        "description": "Proben-ID aus list_wakeword_samples",
                     }
                 },
             },
@@ -496,14 +494,14 @@ def build_wakeword_tools(
         Tool(
             name="trigger_wakeword_training",
             description=(
-                "Plant das GPU-Training für das neu verfeinerte Wakeword „Solaris“ ein — der Trainings-Container auf der Grafikkarte holt den Lauf ab und baut das neue Modell."
+                "Plant das GPU-Training für das verfeinerte Wakeword „Solaris“ ein."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "uid": {
                         "type": "string",
-                        "description": "Optional: User-ID des Nutzers",
+                        "description": "Optional: User-ID",
                     }
                 },
             },

@@ -909,13 +909,13 @@ def build_music_query_tools(
             name="music_query",
             description=(
                 "Beantwortet Fragen zur eigenen Musikbibliothek (nicht"
-                " notes_search). op='songs_by_artist' (artist): welche Songs von X"
-                " habe ich. op='list_artists' (optional prefix): welche Künstler"
-                " habe ich. op='artist_info' (artist): Genre, Kurzbio, Songanzahl."
-                " op='song_lyrics' (title, optional artist): der Liedtext, live aus"
-                " der Bibliothek. op='wishlist': welche Alben soll ich mir noch"
-                " anschaffen (gewollt/früher geliebt, aber weder digital noch"
-                " physisch da). Exakter Treffer gewinnt, sonst unscharf."
+                " notes_search). songs_by_artist (artist): welche Songs von X habe"
+                " ich. list_artists (optional prefix): welche Künstler habe ich."
+                " artist_info (artist): Genre, Kurzbio, Songanzahl. song_lyrics"
+                " (title, optional artist): der Liedtext, live aus der Bibliothek."
+                " wishlist: welche Alben soll ich mir noch anschaffen"
+                " (gewollt/früher geliebt, aber weder digital noch physisch da)."
+                " Exakter Treffer gewinnt, sonst unscharf."
             ),
             parameters={
                 "type": "object",
@@ -954,9 +954,7 @@ def build_music_query_tools(
                     " GESPIELTE Song genommen — track NUR setzen, wenn der Nutzer"
                     " einen Titel NENNT (wortwörtlich). playlist = Name nur, wenn"
                     " genannt; sonst weglassen. NICHT zum Abspielen (play_music) und"
-                    " NICHT für Radiosender. Liefert das Ergebnis 'say', sprich"
-                    " diese Zeile wörtlich; melde nur den zurückgegebenen 'title'"
-                    " und Playlist-Namen aus der Antwort."
+                    " NICHT für Radiosender. Sprich die 'say'-Zeile wörtlich."
                 ),
                 parameters={
                     "type": "object",

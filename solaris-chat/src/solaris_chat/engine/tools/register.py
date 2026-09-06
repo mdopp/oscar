@@ -146,7 +146,6 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "MUST BE CALLED IMMEDIATELY during voice profile enrollment turns! "
                 "WÄHREND der Sprachprofil-Einrichtung (Sätze 1, 2, 3) rufst du IMMER SOFORT register_pending_resident auf. "
                 "FÜHRE KEINE GERÄTE-AKTIONEN (Licht schalten, Geräte steuern) AUS, egal was in den Sätzen gesagt wird! "
                 "Lies das zurückgegebene 'say'-Feld EXACT 1:1 VERBATIM vor."

@@ -1106,10 +1106,9 @@ def build_ha_tools(
                 " die NICHT in der Geräteliste des Prompts stehen (Sensoren etc.)."
                 " Filter kombinierbar: device_class (z.B. 'temperature',"
                 " 'humidity', 'power', 'energy', 'battery'), domain (z.B. 'sensor',"
-                " 'binary_sensor'), name (Teilstring, z.B. 'Küche') und room"
-                " (Raumname, z.B. 'Wohnzimmer'). Beispiel: device_class='temperature'"
-                " + name='Küche' für die Küchentemperatur. Nenne dem Nutzer immer den"
-                " Klartext-Namen (name) und ggf. den Raum, NIE die entity_id."
+                " 'binary_sensor'), name (Teilstring) und room (Raumname)."
+                " Nenne dem Nutzer immer den Klartext-Namen (name) und ggf. den"
+                " Raum, NIE die entity_id."
             ),
             parameters={
                 "type": "object",
@@ -1139,8 +1138,7 @@ def build_ha_tools(
             description=(
                 "Zeigt ALLE steuerbaren Geräte (Lichter, Schalter, Rollos,"
                 " Heizung) eines Raums als Karten — für Raum-Fragen wie 'zeig mir"
-                " das Wohnzimmer' oder 'was ist im Wohnzimmer'. Der Raumname wird"
-                " einmal als Überschrift gezeigt. Parameter: room (Raumname)."
+                " das Wohnzimmer' oder 'was ist im Wohnzimmer'."
             ),
             parameters={
                 "type": "object",

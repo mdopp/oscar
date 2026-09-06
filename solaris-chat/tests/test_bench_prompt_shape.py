@@ -86,3 +86,19 @@ def test_prefill_matches_the_box_measurement(bench, household):
 def test_check_shape_rejects_a_drifted_prompt(bench, household):
     with pytest.raises(SystemExit, match="prefill shape drifted"):
         bench.check_shape(household, "Du bist Solaris.")
+
+
+def test_tool_decision_bench_pins_the_1336_table():
+    """The four sentences + ≥4/5 target the box verify re-runs (#1336)."""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "bench_tool_decision.py"
+    spec = importlib.util.spec_from_file_location("bench_tool_decision", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.SENTENCES == [
+        ("spiel Radio Bayern 3", "play_radio"),
+        ("such in meinen Notizen nach Urlaub", "notes_search"),
+        ("merk dir, dass der Müll dienstags kommt", "fact_store"),
+        ("wie geht es dir", "get_solaris_status"),
+    ]
+    assert (module.TARGET, module.RUNS) == (4, 5)
+    assert module.PREFILL_BUDGET == 8000

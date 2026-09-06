@@ -120,8 +120,7 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
                 "Setzt eine Aufgabe auf die To-Do-Liste. Rufe das SOFORT auf, sobald"
                 " der Nutzer etwas Zu-Erledigendes nennt — 'wir müssen X', 'ich muss"
                 " X', 'denk an X', 'X besorgen/kaufen', 'morgen X'. NICHT vorher um"
-                " Erlaubnis fragen (eine Aufgabe ist leicht wieder zu löschen);"
-                " einfach eintragen und danach kurz bestätigen ('Notiert: X ✓')."
+                " Erlaubnis fragen; eintragen und kurz bestätigen ('Notiert: X ✓')."
                 " Nennt der Nutzer einen Tag ('morgen', '1. August'), gib due als"
                 " ISO-Datum YYYY-MM-DD mit (wird dann auch ein Kalendereintrag)."
             ),

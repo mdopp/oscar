@@ -45,7 +45,7 @@ _DESCRIPTION = (
     " DER NUTZER ES NENNT; bei 'das'/'die letzte Aktion' direkt nach einer"
     " Aktion target WEGLASSEN — dann wird die letzte Aktion gepinnt."
     " scope='household' NUR bei 'unsere/die gemeinsame Startseite'. remove=true"
-    " zum Entfernen. Gib die 'say'-Zeile der Antwort wörtlich aus."
+    " zum Entfernen. Sprich die 'say'-Zeile wörtlich."
 )
 
 

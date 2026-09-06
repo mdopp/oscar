@@ -522,8 +522,12 @@ def build_notes_tools(
         Tool(
             name="fact_store",
             description=(
-                "Speichert einen dauerhaften Fakt über den Haushalt"
-                " (Vorlieben, Routinen, Personen — keine Gerätezustände)."
+                "Merkt sich einen dauerhaften Fakt über Haushalt oder Person"
+                " (Vorlieben, Routinen, wiederkehrende Termine, Personen)."
+                " Rufe es auf, sobald jemand dich etwas behalten heißt —"
+                " „merk dir“, „denk daran“, „notier dir“, „nicht vergessen“ —"
+                " oder etwas dauerhaft Gültiges nennt. Nicht nachfragen,"
+                " speichern. Keine Gerätezustände."
             ),
             parameters={
                 "type": "object",

@@ -107,10 +107,12 @@ def build_status_tools(
         Tool(
             name="get_solaris_status",
             description=(
-                "Prüft, ob Solaris selbst gerade rundläuft: Gedächtnis,"
-                " Haussteuerung, Sprachsteuerung. Ohne Parameter, ändert nichts."
-                " Für 'läuft alles?', 'bist du da?', 'geht die Haussteuerung"
-                " gerade?'. NICHT für einzelne Geräte — dafür ha_get_state."
+                "Sagt, wie es Solaris selbst geht: Gedächtnis, Haussteuerung,"
+                " Sprachsteuerung. Rufe es auf, sobald jemand nach deinem"
+                " Befinden, deiner Erreichbarkeit oder deinem Zustand fragt —"
+                " „wie geht es dir“, „alles gut bei dir“, „bist du da“,"
+                " „läuft alles“, „hast du Probleme“. Ohne Parameter, ändert"
+                " nichts. NICHT für einzelne Geräte — dafür ha_get_state."
             ),
             parameters={"type": "object", "properties": {}},
             handler=get_solaris_status,
