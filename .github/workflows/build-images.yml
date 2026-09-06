@@ -27,6 +27,7 @@ on:
       - 'solaris-chat/**'
       - 'tts-martin/**'
       - 'wakeword-trainer/**'
+      - 'pi-web/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
@@ -35,6 +36,7 @@ on:
       - 'solaris-chat/**'
       - 'tts-martin/**'
       - 'wakeword-trainer/**'
+      - 'pi-web/**'
       - '.github/workflows/build-images.yml'
   workflow_call:
     inputs:
@@ -94,6 +96,9 @@ jobs:
             context: solaris-chat
             inject_version: true
             description: "Solaris chat — the Solaris Engine agent core (direct llama-server agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-protocol facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOLARIS_API_KEY server-side."
+          - image: solaris-pi-web
+            context: pi-web
+            description: "PI WEB — the web UI for the Pi Coding Agent (@jmfederico/pi-web), built here because upstream publishes an npm package and no image. Runs isolated on the box behind Authelia; talks to llama-server over host.containers.internal and holds the coding lease while it is up."
           - image: solaris-wakeword-trainer
             context: wakeword-trainer
             # TensorFlow-GPU base: ~10 GB unpacked, well past the 10 GB the GHA
