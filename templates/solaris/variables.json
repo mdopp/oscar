@@ -6,7 +6,7 @@
   },
   "CHAT_PORT": {
     "type": "text",
-    "description": "Host loopback port the chat server binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth; HA's conversation agent and the gatekeeper reach the engine's /ollama facade on it via host loopback. Default 8787. NB: the servicebay.healthcheck annotation uses the literal 8787 — change it there too if you change this.",
+    "description": "Host loopback port the chat server binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth; HA's conversation agent and the gatekeeper reach the engine's /ollama protocol facade on it via host loopback. Default 8787. NB: the servicebay.healthcheck annotation uses the literal 8787 — change it there too if you change this.",
     "default": "8787"
   },
   "CHAT_SUBDOMAIN": {
@@ -31,26 +31,26 @@
   },
   "SOLARIS_API_KEY": {
     "type": "secret",
-    "description": "Server-side bearer for the engine's Ollama-compatible facade: HA's conversation agent and the gatekeeper present it as `Authorization: Bearer <key>`. Auto-generated; regenerate from the wizard if it leaks (the post-deploy re-wires HA's conversation entry on the next deploy)."
+    "description": "Server-side bearer for the engine's Ollama-protocol facade: HA's conversation agent and the gatekeeper present it as `Authorization: Bearer <key>`. Auto-generated; regenerate from the wizard if it leaks (the post-deploy re-wires HA's conversation entry on the next deploy)."
   },
   "CONTEXT_WINDOW": {
     "type": "text",
-    "description": "Context window in tokens, used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this, and the /context command reports it. Leave EMPTY (or `auto`) to AUTO-DERIVE it at runtime from the live Ollama active model (#235). Set a positive integer ONLY to OVERRIDE that derivation (ops control). Fallback when auto and Ollama is unreachable: OLLAMA_CONTEXT_LENGTH, then a safe static 32768.",
+    "description": "Context window in tokens, used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this, and the /context command reports it. Leave EMPTY (or `auto`) to AUTO-DERIVE it at runtime from llama-server's `/props` (#235), which also follows a leased profile onto its window. Set a positive integer ONLY to OVERRIDE that derivation (ops control). Fallback when auto and llama-server is unreachable: LLAMA_CONTEXT_LENGTH, then a safe static 32768.",
     "default": ""
-  },
-  "OLLAMA_URL": {
-    "type": "text",
-    "description": "URL of Ollama's API (host loopback — this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). Since #1318 this is no longer the chat backend: it serves the embeddings (`nomic-embed-text`), the document/vision ingest, the `/api/ps` context derivation and the neighbour-service model lease. Chat goes to LLAMA_SERVER_URL.",
-    "default": "http://127.0.0.1:11434"
   },
   "LLAMA_SERVER_URL": {
     "type": "text",
-    "description": "URL of llama.cpp's llama-server (host loopback — default `http://127.0.0.1:11435` matches the llama template). This is the CHAT backend: the same Gemma 4 E4B weights, but with Google's MTP drafter for speculative decoding, which Ollama cannot do at all. Box-measured over 28 production-shaped turns: 0.30 s per finished answer against Ollama's 0.62 s, tool calls 12/12 on both (#1318). The engine sends `chat_template_kwargs: {enable_thinking: false}` on every household turn — llama.cpp otherwise turns Gemma's reasoning ON by default and the resident pays for an invisible English thinking trace. Set to an empty string to fall back to Ollama's `/api/chat` (an install without the `llama` template).",
+    "description": "URL of llama.cpp's llama-server (host loopback — default `http://127.0.0.1:11435` matches the llama template). This is the CHAT backend and, through the multimodal projector, the vision ingest that describes scans and photos (#1332): the Gemma 4 E4B weights with Google's MTP drafter for speculative decoding, which Ollama could not do at all. Box-measured over 28 production-shaped turns: 0.30 s per finished answer against Ollama's 0.62 s, tool calls 12/12 on both (#1318). The engine sends `chat_template_kwargs: {enable_thinking: false}` on every household turn — llama.cpp otherwise turns Gemma's reasoning ON by default and the resident pays for an invisible English thinking trace. There is no fallback backend: since #1332 this is the only one.",
     "default": "http://127.0.0.1:11435"
+  },
+  "LLAMA_EMBED_URL": {
+    "type": "text",
+    "description": "URL of the SECOND llama-server instance — the embeddings one (host loopback — default `http://127.0.0.1:11436` matches the llama template's LLAMA_EMBED_PORT). It serves `nomic-embed-text` on OpenAI `/v1/embeddings` and is what the OKF vector store and the vault's semantic search embed through, replacing Ollama's `/api/embed` (#1332). The vectors are unchanged: same model, same f16 weights, same mean pooling, same raw text with no query/document prefix, so the ~46k rows already stored stay comparable. Set to an empty string to run without embeddings — the drain keeps its queue and search degrades to keyword hits.",
+    "default": "http://127.0.0.1:11436"
   },
   "FAST_MODEL": {
     "type": "text",
-    "description": "The engine's fast model — the household/voice hot path (device control, quick answers) DEFAULT. `gemma4:e4b` (box-measured 3.3 GB resident @ ctx 32768): the effective-4B gemma4 — strong enough to drive the multi-step voice flows the smaller `gemma4:e2b` fabricated (it would claim an enrolment finished without ever calling the tool, #396), while still a fast single-digit-second hot-path model. The tag must be pulled in Ollama (the ollama template ships it). An admin can re-point the household chat at THOROUGH_MODEL from the panel's Model picker (#366); the selection persists and the household profile picks it up on the next turn — but a larger model on the latency-sensitive hot path is slower, so this stays the fast default.",
+    "description": "The engine's fast model — the household/voice hot path (device control, quick answers) DEFAULT. `gemma4:e4b` (box-measured 3.3 GB resident @ ctx 32768): the effective-4B gemma4 — strong enough to drive the multi-step voice flows the smaller `gemma4:e2b` fabricated (it would claim an enrolment finished without ever calling the tool, #396), while still a fast single-digit-second hot-path model. llama-server serves one model at a time and ignores this name on the wire; it is what the panel and the traces call the household model. An admin can re-point the household chat at THOROUGH_MODEL from the panel's Model picker (#366); the selection persists and the household profile picks it up on the next turn — but a larger model on the latency-sensitive hot path is slower, so this stays the fast default.",
     "default": "gemma4:e4b"
   },
   "THOROUGH_MODEL": {
@@ -273,7 +273,7 @@
   },
   "DEADLINES_SYNC_URL_BASE": {
     "type": "text",
-    "description": "The Radicale ROOT the per-resident calendar sync writes under (#997 / #1010 / #1011, option A). The engine PUTs to `{base}/{resident_uid}/solaris/` — under each RESIDENT's own principal, which the converged Radicale rights let the `solaris` account write. The engine pod is host-networked (it reaches HA/ollama at 127.0.0.1), so this is the box-local Radicale loopback root. Blank disables the calendar sync.",
+    "description": "The Radicale ROOT the per-resident calendar sync writes under (#997 / #1010 / #1011, option A). The engine PUTs to `{base}/{resident_uid}/solaris/` — under each RESIDENT's own principal, which the converged Radicale rights let the `solaris` account write. The engine pod is host-networked (it reaches HA/llama-server at 127.0.0.1), so this is the box-local Radicale loopback root. Blank disables the calendar sync.",
     "default": "http://127.0.0.1:5232/"
   },
   "HOUSEHOLD_CALENDAR_UID": {

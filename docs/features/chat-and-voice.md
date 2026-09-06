@@ -97,14 +97,14 @@ Wired by `templates/solaris/post-deploy.py` at install; the engine reads:
 
 | env | purpose |
 |---|---|
-| `LLAMA_SERVER_URL` | local llama-server endpoint (GPU) — the chat backend (#1318) |
-| `OLLAMA_URL` | local Ollama endpoint (GPU) — embeddings + vision ingest only; leaving with #1332 |
+| `LLAMA_SERVER_URL` | local llama-server endpoint (GPU) — the chat backend (#1318) and the vision ingest through its projector (#1332) |
+| `LLAMA_EMBED_URL` | the second llama-server instance (GPU) — `nomic-embed-text` on `/v1/embeddings` (#1332) |
 | `HASS_URL` / `HASS_TOKEN` | Home Assistant API + long-lived token |
 | `SOLARIS_API_KEY` | Bearer for the `/ollama` facade + `/api/chat` |
 
 The household model, `gemma4:e4b` with the MTP drafter, is managed by the
-`llama` template and stays resident on the GPU. The panel's Model picker
-still offers **"Pull a model into the local Ollama"** — that call still
-really pulls into Ollama (`OllamaChat.pull`, `/api/model/pull`) and is
-unrelated to the llama-server chat path; it retires along with Ollama once
-#1332 lands.
+`llama` template and stays resident on the GPU. The panel's "Pull a model"
+tool went with Ollama in #1332 — llama-server has no registry to pull from,
+and the models are set by the template. What the panel still shows is the
+household/thorough profile picker and a VRAM readout of what ServiceBay's
+node agent measures.

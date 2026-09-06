@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from solaris_chat.engine import remember
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools.notes import build_notes_tools
 
 from tests.test_engine import _SCHEMA, _client

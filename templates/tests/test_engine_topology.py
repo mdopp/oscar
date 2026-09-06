@@ -1,7 +1,7 @@
 """Tests for the Solaris-Engine-era solaris Pod topology (Phase 4 decommission).
 
 The Pod runs exactly TWO app containers: `chat` (the engine — agent loop,
-chat surface, Ollama facade for HA, scheduler, crons) and `gatekeeper` (the
+chat surface, Ollama-protocol facade for HA, scheduler, crons) and `gatekeeper` (the
 Wyoming bridge for wyoming-satellite hardware). Hermes, the config-agent
 sidecar, the trace side-pod and the admin-soul idle container are gone;
 their duties live in-process in the engine. Validates template.yml +
@@ -103,13 +103,22 @@ def test_chat_carries_engine_env(raw_template):
         "GATEKEEPER_MCP_TOKEN",
         "HASS_URL",
         "HASS_TOKEN",
-        "OLLAMA_URL",
+        "LLAMA_SERVER_URL",
+        "LLAMA_EMBED_URL",
         "FAST_MODEL",
         "THOROUGH_MODEL",
     ):
         assert needed in chat, f"chat env missing {needed}"
-    # The Hermes-era wiring must not resurface.
-    for gone in ("HERMES_URL", "HERMES_ADMIN_URL", "CONFIG_AGENT_URL", "TRACE_PROXY"):
+    # The Hermes-era wiring must not resurface — nor the Ollama-era one
+    # (#1332): OLLAMA_URL named a service that no longer exists, and an env
+    # var pointing at a dead port reads as a working fallback.
+    for gone in (
+        "HERMES_URL",
+        "HERMES_ADMIN_URL",
+        "CONFIG_AGENT_URL",
+        "TRACE_PROXY",
+        "OLLAMA_URL",
+    ):
         assert gone not in chat
 
 

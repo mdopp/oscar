@@ -32,7 +32,8 @@ else
   bad "panel SSE turn (incident: Network error)"
 fi
 
-# 3. facade non-stream turn (gatekeeper/HA path)
+# 3. facade non-stream turn (gatekeeper/HA path) — the Ollama-PROTOCOL
+#    surface on the engine, which outlived the ollama service (#1332).
 R=$(curl -s -m 90 -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"model":"solaris","stream":false,"messages":[{"role":"user","content":"Sag nur Hallo."}]}' \
   $CHAT/ollama/api/chat | python3 -c "import json,sys; print(json.load(sys.stdin)['message']['content'])" 2>/dev/null)
@@ -154,13 +155,17 @@ curl -sf -m 30 -o /tmp/.regr-tts.wav -X POST http://127.0.0.1:8881/v1/audio/spee
   -H "Content-Type: application/json" -d '{"input": "Regressionstest.", "voice": "martin"}' \
   && ok "martin synthesis" || bad "martin synthesis"
 
-# 7. model residency — both chat models loaded (incident: load-order
-#    eviction left 12b cold for Gründlich/crons).
-PS=$(podman exec ollama ollama ps 2>/dev/null)
-if echo "$PS" | grep -q e2b && echo "$PS" | grep -q 12b; then
-  ok "e2b + 12b co-resident"
+# 7. model servers up — the household model with its drafter, and the
+#    embeddings instance (#1332; incident: a stopped embeddings server leaves
+#    vault search silently on keyword hits).
+curl -sf -m 10 http://127.0.0.1:11435/health >/dev/null \
+  && ok "llama-server :11435" || bad "llama-server :11435"
+if curl -sf -m 30 -X POST http://127.0.0.1:11436/v1/embeddings \
+     -H "Content-Type: application/json" -d '{"input": "Regressionstest."}' \
+     | grep -q '"embedding"'; then
+  ok "embeddings :11436"
 else
-  bad "model residency: $(echo "$PS" | tail -n +2 | awk '{print $1}' | paste -sd,)"
+  bad "embeddings :11436 (semantic vault search is degraded)"
 fi
 
 # 8. STT wyoming reachable

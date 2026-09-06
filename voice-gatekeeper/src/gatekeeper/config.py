@@ -140,7 +140,7 @@ class Settings:
             openwakeword_uri=os.environ.get(
                 "OPENWAKEWORD_URI", "tcp://127.0.0.1:10400"
             ),
-            # The Solaris Engine's Ollama-compatible facade (the chat server's
+            # The Solaris Engine's Ollama-PROTOCOL facade (the chat server's
             # loopback port, /ollama prefix). Voice always speaks to the
             # household profile — there is deliberately no admin URL here.
             engine_url=os.environ.get(

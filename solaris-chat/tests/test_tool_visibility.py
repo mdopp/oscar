@@ -21,7 +21,7 @@ import sqlite3
 import pytest
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import (
     CHANNEL_VOICE,
     Tool,
@@ -55,7 +55,7 @@ from solaris_chat.engine.tools.wakeword_trainer import build_wakeword_tools
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.server import build_app
 
-from tests.test_engine import _SCHEMA, FakeOllama
+from tests.test_engine import _SCHEMA, FakeChat
 
 
 @pytest.fixture
@@ -317,7 +317,7 @@ async def test_undeclared_tool_is_withheld_when_speaker_id_is_off():
 
 
 def _voice_app(db, soul, results, tools, speaker_id_enabled: bool = True):
-    def engine(name: str, fake: FakeOllama) -> EngineClient:
+    def engine(name: str, fake: FakeChat) -> EngineClient:
         return EngineClient(
             EngineProfile(
                 name=name,
@@ -326,13 +326,13 @@ def _voice_app(db, soul, results, tools, speaker_id_enabled: bool = True):
                 toolbox=Toolbox(tools),
             ),
             db_path=db,
-            ollama=fake,
+            chat=fake,
             recorder=TraceRecorder(),
             context_window=32768,
             bus=SessionBus(),
         )
 
-    fake = FakeOllama(results)
+    fake = FakeChat(results)
     return (
         build_app(
             engine=engine("household", fake),

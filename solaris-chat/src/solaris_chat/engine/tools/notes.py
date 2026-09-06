@@ -23,7 +23,8 @@ from solaris_chat import notes_index, notes_search
 from solaris_chat.engine import grounding
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.knowledge import okf, projection
-from solaris_chat.engine.ollama import OllamaChat, OllamaError
+from solaris_chat.engine.llama_embed import LlamaEmbed
+from solaris_chat.engine.llama_server import LlamaServerError
 from solaris_chat.engine.tools import Tool, Visibility
 from solaris_chat.logging import log
 from solaris_chat.notes_search import SHARED_UID, _USER_PATH_RE
@@ -117,7 +118,7 @@ def _render_okf_hit(
 
 
 def build_notes_tools(
-    notes_dir: str, uid_getter, db_path: str = "", ollama: OllamaChat | None = None
+    notes_dir: str, uid_getter, db_path: str = "", embed: LlamaEmbed | None = None
 ) -> list[Tool]:
     root = Path(notes_dir)
 
@@ -236,10 +237,11 @@ def build_notes_tools(
         """Cosine top-k over `okf_vectors` — the guarded fallback (#651).
 
         Runs only when the cheaper sources came up short; the query embed is
-        capped by `_EMBED_TIMEOUT_S` because it sits on the voice hot path and a
-        cold `nomic-embed-text` can evict a chat model. Timeout / OllamaError /
-        missing model → degrade to the structured result (empty here)."""
-        if not db_path or ollama is None:
+        capped by `_EMBED_TIMEOUT_S` because it sits on the voice hot path and
+        the embeddings server may be mid-batch on an ingest drain — or stopped
+        outright for a coding lease. Timeout / transport error / server down →
+        degrade to the structured result (empty here)."""
+        if not db_path or embed is None:
             return []
         conn = projection.open_conn(db_path)
         try:
@@ -262,9 +264,9 @@ def build_notes_tools(
             return []
         try:
             embeds = await asyncio.wait_for(
-                ollama.embed(_EMBED_MODEL, [query]), _EMBED_TIMEOUT_S
+                embed.embed(_EMBED_MODEL, [query]), _EMBED_TIMEOUT_S
             )
-        except (TimeoutError, OllamaError, OSError):
+        except (TimeoutError, LlamaServerError, OSError):
             log.info("engine.notes_search.embed_skipped")
             return []
         if not embeds:

@@ -1,4 +1,4 @@
-"""Client for the Solaris Engine's Ollama-compatible facade.
+"""Client for the Solaris Engine's Ollama-PROTOCOL facade.
 
 The engine (solaris-chat) exposes `/ollama/api/chat` — stateless, the caller
 owns the conversation history. The gatekeeper keeps a short rolling history

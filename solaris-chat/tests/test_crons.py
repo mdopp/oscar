@@ -294,7 +294,7 @@ async def test_knowledge_night_run_calls_all_steps(db, monkeypatch, tmp_path):
     async def fake_ingest(settings):
         calls.append("ingest")
 
-    async def fake_drain(db_path, ollama_url):
+    async def fake_drain(db_path, embed_url):
         calls.append("drain")
 
     def fake_obsidian(settings, writer, uid):
@@ -309,7 +309,7 @@ async def test_knowledge_night_run_calls_all_steps(db, monkeypatch, tmp_path):
     class _Settings:
         solaris_db_path = db
         notes_dir = str(tmp_path)
-        ollama_url = "http://x"
+        llama_embed_url = "http://x"
         default_uid = "household"
 
     job = crons.CronJob(name="knowledge-night-run", minute=30, hour=2)
@@ -334,7 +334,7 @@ async def test_knowledge_night_run_one_failing_step_does_not_abort_rest(
     async def fake_ingest(settings):
         raise RuntimeError("boom")
 
-    async def fake_drain(db_path, ollama_url):
+    async def fake_drain(db_path, embed_url):
         calls.append("drain")
 
     def fake_obsidian(settings, writer, uid):
@@ -349,7 +349,7 @@ async def test_knowledge_night_run_one_failing_step_does_not_abort_rest(
     class _Settings:
         solaris_db_path = db
         notes_dir = str(tmp_path)
-        ollama_url = "http://x"
+        llama_embed_url = "http://x"
         default_uid = "household"
 
     job = crons.CronJob(name="knowledge-night-run", minute=30, hour=2)
@@ -697,7 +697,7 @@ async def test_bibliothekar_runs_one_librarian_turn_per_nonempty_scope(db, tmp_p
     class _Settings:
         solaris_db_path = db
         notes_dir = str(tmp_path)
-        ollama_url = "http://x"
+        llama_embed_url = "http://x"
         default_uid = "household"
 
     librarian = _FakeEngine()
@@ -726,7 +726,7 @@ async def test_bibliothekar_skipped_without_librarian(db, tmp_path):
     class _Settings:
         solaris_db_path = db
         notes_dir = str(tmp_path)
-        ollama_url = "http://x"
+        llama_embed_url = "http://x"
         default_uid = "household"
 
     runner = crons.CronRunner(
@@ -753,7 +753,7 @@ async def test_bibliothekar_one_bad_scope_does_not_abort_others(db, tmp_path):
     class _Settings:
         solaris_db_path = db
         notes_dir = str(tmp_path)
-        ollama_url = "http://x"
+        llama_embed_url = "http://x"
         default_uid = "household"
 
     class _FlakyLibrarian(_FakeEngine):

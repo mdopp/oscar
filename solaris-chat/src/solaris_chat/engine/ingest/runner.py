@@ -24,7 +24,7 @@ from solaris_chat.logging import log
 
 from ..knowledge import PendingEmbeddingQueue, embed_worker, projection
 from ..knowledge.writer import OkfWriter
-from ..ollama import OllamaChat
+from ..llama_server import LlamaServerChat
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
 from .exports import ExportsIngest
@@ -82,10 +82,11 @@ async def run_ingest(settings: Settings) -> None:
     prune_empty_note_shells(settings.solaris_db_path, settings.notes_dir)
 
     # Drain the embedding queue the adapters just filled into okf_vectors. Rides
-    # this ingest thread (never the voice hot path — nomic-embed-text is a VRAM
-    # slot); drain() never raises, but wrap it to match the per-adapter degrade.
+    # this ingest thread (never the voice hot path — a batch of 64 keeps the
+    # embeddings server busy); drain() never raises, but wrap it to match the
+    # per-adapter degrade.
     try:
-        await embed_worker.drain(settings.solaris_db_path, settings.ollama_url)
+        await embed_worker.drain(settings.solaris_db_path, settings.llama_embed_url)
     except Exception as e:  # noqa: BLE001 — the drain must not crash the trigger.
         log.error("engine.ingest.embed_drain_failed", error=str(e))
 
@@ -288,8 +289,10 @@ async def _run_paperless(settings: Settings) -> None:
         return
     try:
         client = RestPaperlessClient(settings.paperless_url, settings.paperless_token)
-        ollama = OllamaChat(settings.ollama_url)
-        pushed = await push_uploads(settings.notes_dir, ollama, client)
+        chat = LlamaServerChat(settings.llama_server_url)
+        pushed = await push_uploads(
+            settings.notes_dir, chat, settings.fast_model, client
+        )
         # …then read paperless's own confirmed correspondent/document type back
         # into the documents' notes (#1051) — the push has to run first so a
         # just-stored document is part of this same pass.

@@ -168,7 +168,7 @@ async def _clients(rooms_url: str, tmp_path):
 
     return build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
-        ollama_url="http://x",
+        llama_server_url="http://x",
         fast_model="gemma4:e2b",
         thorough_model="gemma4:12b",
         soul_path="/nonexistent/SOUL.md",
@@ -204,7 +204,7 @@ async def test_no_room_toolbox_without_a_url(tmp_path):
 
     household, *_rest = build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
-        ollama_url="http://x",
+        llama_server_url="http://x",
         fast_model="gemma4:e2b",
         thorough_model="gemma4:12b",
         soul_path="/nonexistent/SOUL.md",

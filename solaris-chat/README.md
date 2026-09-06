@@ -2,11 +2,10 @@
 
 The household assistant's agent core and its chat surface, in one small
 offline-capable process. The Hermes gateway era is over: the engine speaks
-to llama.cpp's `llama-server` directly (`/v1/chat/completions`, #1318 —
-Ollama served this path before; it falls back to Ollama's `/api/chat` only
-on an install with no `llama` template), owns its sessions in `solaris.db`,
-and replaces what used to be three gateway containers, a config sidecar and
-a trace proxy.
+to llama.cpp's `llama-server` directly (`/v1/chat/completions`, #1318 — Ollama
+served this path before, and #1332 moved its last two jobs across too), owns
+its sessions in `solaris.db`, and replaces what used to be three gateway
+containers, a config sidecar and a trace proxy.
 
 ## What one process owns
 
@@ -62,8 +61,8 @@ it over the host loopback.
 |---|---|---|
 | `CHAT_HOST` / `CHAT_PORT` | `127.0.0.1` / `8787` | Loopback bind. |
 | `SOLARIS_API_KEY` | — | Bearer for the `/ollama` facade. |
-| `LLAMA_SERVER_URL` | `http://127.0.0.1:11435` | The chat LLM backend (#1318). Empty falls back to `OLLAMA_URL`'s `/api/chat`. |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | Embeddings, vision ingest, the model lease — leaving with #1332. |
+| `LLAMA_SERVER_URL` | `http://127.0.0.1:11435` | The chat backend (#1318) and, through its mmproj, the vision ingest (#1332). |
+| `LLAMA_EMBED_URL` | `http://127.0.0.1:11436` | The embeddings instance — `nomic-embed-text` on `/v1/embeddings` (#1332). Empty ⇒ keyword-only vault search. |
 | `FAST_MODEL` / `THOROUGH_MODEL` | `gemma4:e4b` / `gemma4:e4b` | The model map — one model for everything since 12b retired 2026-07-13. |
 | `HASS_URL` / `HASS_TOKEN` | — | HA tools + registry + announce. |
 | `SOUL_PATH` | `/var/lib/solaris/SOUL.md` | Household soul (mtime-cached). |

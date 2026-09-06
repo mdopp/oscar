@@ -149,9 +149,11 @@ The single biggest gap: embeddings are enqueued
 semantic search, and the OKF projection is invisible to the agent (only web
 concept pages and the music tools read it).
 
-- **Embedding call**: `embed(model, inputs)` added to `engine/ollama.py`,
-  hitting `POST /api/embed` with `nomic-embed-text` (768-dim, ~274 MB — noise
-  next to the chat models; added to the managed model set).
+- **Embedding call**: `embed(model, inputs)` in `engine/llama_embed.py`,
+  hitting `POST /v1/embeddings` with `nomic-embed-text` (768-dim, ~274 MB —
+  noise next to the chat model) on its own small `llama-server --embeddings`
+  instance. Historically this was Ollama's `/api/embed`; #1332 moved it, on
+  the same weights and the same raw text, so the vectors carried over.
 - **Vector store**: a plain table in `solaris.db` —
   `okf_vectors(embedding_id PK, concept_id, model, dim, vector BLOB float32,
   updated)` — plus **numpy brute-force cosine top-k**. At household scale

@@ -4,14 +4,14 @@ Implements the HermesClient surface (create/list/get/delete session,
 set_title, chat, chat_stream, list_toolsets) so `server.py`'s routing,
 compaction and the browser SSE protocol keep working unchanged — but the
 "gateway" is a profile object: a model tag, a soul, a toolbox and an optional
-entity registry, all sharing one store, one Ollama connection and one trace
-recorder. Three of these replace the three Hermes gateways; what used to be
+entity registry, all sharing one store, one llama-server connection and one
+trace recorder. Three of these replace the three Hermes gateways; what used to be
 a container-and-port is now a constructor call.
 
 Events yielded by `chat_stream` mirror the Hermes SSE shapes `_normalize`
 folds for the browser: `assistant.delta`, `tool.started`/`tool.completed`,
 `run.completed` (with `reasoning_content` on the final assistant message).
-Plus `llm.step` (model + wall_s after each Ollama pass) for the live
+Plus `llm.step` (model + wall_s after each model pass) for the live
 activity bubble (#347); `_normalize` folds it to a `step` browser event.
 """
 
@@ -34,8 +34,7 @@ from solaris_chat.engine import confirm, grounding, remember, store
 from solaris_chat.engine import tasks as tasks_svc
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.knowledge import projection
-from solaris_chat.engine.llama_server import LlamaServerChat
-from solaris_chat.engine.ollama import OllamaChat, OllamaError
+from solaris_chat.engine.llama_server import LlamaServerChat, LlamaServerError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import (
@@ -421,16 +420,14 @@ class EngineClient:
         profile: EngineProfile,
         *,
         db_path: str,
-        # The chat backend: LlamaServerChat on the box (#1318), OllamaChat
-        # where no llama-server is configured. Same `stream()` contract.
-        ollama: OllamaChat | LlamaServerChat,
+        chat: LlamaServerChat,
         recorder: TraceRecorder,
         context_window: int | None = None,
         bus: SessionBus | None = None,
     ):
         self._profile = profile
         self._db_path = db_path
-        self._ollama = ollama
+        self._chat = chat
         self._recorder = recorder
         self._context_window = context_window
         self._bus = bus
@@ -599,7 +596,7 @@ class EngineClient:
                 conversation_id=conversation_id,
             ):
                 yield event
-        except OllamaError as e:
+        except LlamaServerError as e:
             log.error("engine.turn.failed", session_id=session_id, error=str(e))
             raise EngineError(str(e)) from e
         finally:
@@ -724,7 +721,7 @@ class EngineClient:
                 pending_key=conversation_id,
             ):
                 yield event
-        except OllamaError as e:
+        except LlamaServerError as e:
             log.error("engine.respond.failed", source=source, error=str(e))
             raise EngineError(str(e)) from e
         finally:
@@ -973,7 +970,7 @@ class EngineClient:
         ]
         try:
             result = None
-            async for kind, payload in self._ollama.stream(
+            async for kind, payload in self._chat.stream(
                 self._model(),
                 msgs,
                 tools=None,
@@ -989,7 +986,7 @@ class EngineClient:
             if start == -1 or end == -1 or end < start:
                 return []
             parsed = json.loads(raw[start : end + 1])
-        except (OllamaError, ValueError, TypeError):
+        except (LlamaServerError, ValueError, TypeError):
             return []
         return choice_tools._clean(parsed)
 
@@ -1225,7 +1222,7 @@ class EngineClient:
             pass_tools, pass_choice = (
                 (routed_tools, routed_choice) if turn_pass == 0 else (tools, "")
             )
-            async for kind, payload in self._ollama.stream(
+            async for kind, payload in self._chat.stream(
                 model,
                 sent,
                 tools=pass_tools,

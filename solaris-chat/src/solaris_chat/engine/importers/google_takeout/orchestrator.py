@@ -446,8 +446,7 @@ def _run_music(zip_bytes: bytes, history: str, cfg: dict[str, Any], is_canceled=
         owner_uid=cfg["owner_uid"],
         db_path=cfg["db_path"],
         notes_dir=cfg["notes_dir"],
-        ollama_url=cfg["ollama_url"],
-        model=cfg["model"],
+        model=cfg.get("model", ""),
         is_canceled=is_canceled,
     )
 

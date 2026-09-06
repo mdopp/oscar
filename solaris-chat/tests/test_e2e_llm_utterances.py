@@ -1,6 +1,6 @@
 """End-to-End LLM Integration Test Suite (#1056).
 
-Tests full E2E inference turns with local Ollama (gemma4:e4b) + solaris-chat
+Tests full E2E inference turns against the box's llama-server + solaris-chat
 engine tools to ensure the LLM correctly generates tool calls and the engine
 resolves streams without false matches.
 
@@ -14,30 +14,33 @@ import json
 import urllib.request
 import pytest
 
-from solaris_chat.engine.ollama import OllamaChat
+from solaris_chat.engine.llama_server import LlamaServerChat
 from solaris_chat.engine.tools.radio import build_radio_tools
 
 
-def _is_ollama_available() -> bool:
+LLAMA_URL = "http://127.0.0.1:11435"
+
+
+def _is_llama_available() -> bool:
     try:
-        req = urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=1.5)
+        req = urllib.request.urlopen(f"{LLAMA_URL}/health", timeout=1.5)
         return req.status == 200
     except Exception:
         return False
 
 
-OLLAMA_AVAILABLE = _is_ollama_available()
+LLAMA_AVAILABLE = _is_llama_available()
 
 
 @pytest.mark.skipif(
-    not OLLAMA_AVAILABLE, reason="Local Ollama endpoint (127.0.0.1:11434) unavailable"
+    not LLAMA_AVAILABLE, reason="llama-server (127.0.0.1:11435) unavailable"
 )
 @pytest.mark.asyncio
 async def test_e2e_llm_1live_resolution(tmp_path):
     notes_dir = str(tmp_path / "notes")
     os.makedirs(notes_dir, exist_ok=True)
 
-    ollama = OllamaChat("http://127.0.0.1:11434")
+    chat = LlamaServerChat(LLAMA_URL)
 
     radio_tools = build_radio_tools(
         hass_url="http://127.0.0.1:8123",
@@ -68,12 +71,12 @@ async def test_e2e_llm_1live_resolution(tmp_path):
     ]
 
     chat_res = None
-    async for kind, res in ollama.stream("gemma4:e4b", messages, tools=tool_schemas):
+    async for kind, res in chat.stream("gemma-4-e4b", messages, tools=tool_schemas):
         if kind == "done":
             chat_res = res
 
-    assert chat_res is not None, "Ollama returned no response"
-    assert chat_res.tool_calls, f"Ollama failed to generate a tool call: {chat_res}"
+    assert chat_res is not None, "llama-server returned no response"
+    assert chat_res.tool_calls, f"no tool call was generated: {chat_res}"
 
     tc = chat_res.tool_calls[0]
     t_name = tc["function"]["name"]

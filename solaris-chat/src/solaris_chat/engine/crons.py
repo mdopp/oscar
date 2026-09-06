@@ -496,7 +496,9 @@ class CronRunner:
             except Exception as e:  # noqa: BLE001
                 log.error("engine.night.obsidian_failed", error=str(e))
             try:
-                await embed_worker.drain(settings.solaris_db_path, settings.ollama_url)
+                await embed_worker.drain(
+                    settings.solaris_db_path, settings.llama_embed_url
+                )
             except Exception as e:  # noqa: BLE001
                 log.error("engine.night.embed_drain_failed", error=str(e))
 
@@ -508,9 +510,8 @@ class CronRunner:
         # files and re-embeds via content_hash → #650 drain.
         await self._run_in_worker(_ingest_step)
         # Bibliothekar first (it and the stenograph share the fast model), THEN
-        # the document extractor (a stronger model) — so ollama swaps models once
-        # per night (fast → strong) instead of thrashing fast→strong→fast. Both
-        # edit vault files the re-ingest below projects.
+        # the document extractor. Both edit vault files the re-ingest below
+        # projects.
         try:
             await self._bibliothekar()
         except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.

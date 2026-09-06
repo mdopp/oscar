@@ -1,6 +1,6 @@
 """Env-driven configuration for the Solaris Engine chat server.
 
-One process owns the agent loop, the chat surface, the Ollama facade for
+One process owns the agent loop, the chat surface, the Ollama-protocol facade for
 HA Assist, the timer scheduler and the night crons. It maps the Authelia
 trusted-proxy identity header to a resident uid and holds the API key
 server-side.
@@ -136,8 +136,8 @@ class Settings:
     soul_path: str
     logout_url: str
     context_window_override: int | None
-    ollama_url: str
     llama_server_url: str
+    llama_embed_url: str
     compaction_threshold: float
     attachments_dir: str
     frame_ancestors: str
@@ -272,22 +272,25 @@ class Settings:
             # panel hides the logout link (avoids a dead link when unset).
             logout_url=os.environ.get("LOGOUT_URL", ""),
             # Context window (tokens): empty/"auto" => derive from the live
-            # Ollama active model at runtime (#235), so the compaction cap always
+            # llama-server at runtime (#235), so the compaction cap always
             # matches what the model is actually loaded with and adapts per
             # model. A positive integer here is an explicit operator OVERRIDE
             # that wins over the derived value (ops control).
             context_window_override=context.parse_override(
                 os.environ.get("CONTEXT_WINDOW")
             ),
-            # Where Ollama's API lives (host loopback — the chat pod is
-            # hostNetwork). Embeddings, vision ingest and the model lease.
-            ollama_url=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
-            # Where llama.cpp's llama-server lives — the chat backend (#1318).
-            # Empty falls back to Ollama's /api/chat, which is what an install
-            # without the `llama` template has.
+            # Where llama.cpp's llama-server lives — the chat backend (#1318)
+            # and, through its mmproj, the vision ingest (#1332). Host loopback:
+            # the chat pod is hostNetwork.
             llama_server_url=os.environ.get(
                 "LLAMA_SERVER_URL", "http://127.0.0.1:11435"
             ),
+            # The second llama-server instance, serving `nomic-embed-text` on
+            # /v1/embeddings (#1332). Empty ⇒ no embeddings: the OKF drain
+            # keeps its queue and the vault's semantic search degrades to
+            # keyword hits, which is what an install without the `llama`
+            # template gets.
+            llama_embed_url=os.environ.get("LLAMA_EMBED_URL", "http://127.0.0.1:11436"),
             # Fraction of the context window at which a chat is auto-compacted
             # (#210): extract durable learnings to memory, then continue in a
             # fresh small-context session. ~0.90 leaves headroom so a turn never

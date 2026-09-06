@@ -1,13 +1,14 @@
 # llama.cpp (Household Model Server)
 
 [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` serving
-**one** model — Gemma 4 E4B — for Solaris' household hot path: the voice
-turns, the chat, the device commands. It replaced Ollama on that path in
-solarisbay#1318.
+Solaris' models: **Gemma 4 E4B** for the household hot path — the voice turns,
+the chat, the device commands, and (through the multimodal projector) the
+photo and document descriptions — plus a second, small instance serving
+**`nomic-embed-text`** for the vault's semantic search.
 
-Everything else stays on the `ollama` template: embeddings
-(`nomic-embed-text`), the document/vision ingest, and the model lease a
-neighbour service declares over the box's GPU.
+It replaced Ollama on the chat path in solarisbay#1318 and took over the last
+two jobs — embeddings and the vision ingest — in solarisbay#1332. The `ollama`
+template is retired; nothing on this box runs it any more.
 
 ## Why a second model server
 
@@ -38,10 +39,40 @@ Tool calls were 12/12 on both, German answers complete on both.
 - `LLAMA_DRAFT_N_MAX` — drafted tokens per step (`4`; 43.4% accepted, against
   25% at 8).
 - `LLAMA_GPU_PASSTHROUGH` — blank auto-detects a CDI-registered NVIDIA GPU.
+- `LLAMA_EMBED_PORT` / `LLAMA_EMBED_REPO` / `LLAMA_EMBED_FILE` /
+  `LLAMA_EMBED_ALIAS` / `LLAMA_EMBED_CONTEXT_LENGTH` — the embeddings server
+  (below). Empty `LLAMA_EMBED_PORT` skips it.
 
 Point the solaris template's `LLAMA_SERVER_URL` at
-`http://127.0.0.1:<LLAMA_PORT>`; leaving it empty makes the engine fall back
-to Ollama's `/api/chat`.
+`http://127.0.0.1:<LLAMA_PORT>` and its `LLAMA_EMBED_URL` at
+`http://127.0.0.1:<LLAMA_EMBED_PORT>`.
+
+## The embeddings server (solarisbay#1332)
+
+A second `llama-server`, its own Quadlet (`llama-embed.service`), loopback
+only, ~300 MB of VRAM: `nomic-embed-text-v1.5` f16 with `--embeddings`,
+serving OpenAI `/v1/embeddings` on `LLAMA_EMBED_PORT` (default `11436`). The
+Solaris Engine embeds the OKF vector store and every semantic vault query
+through it.
+
+It is a separate unit rather than a second container in the pod because the
+GPU fixup below replaces the pod's `.kube` unit outright, and a pod sibling
+would go with it.
+
+**Vector compatibility is the whole point of the defaults.** The rows already
+in `okf_vectors` were computed by Ollama's `nomic-embed-text` tag: v1.5, f16,
+768 dimensions, mean pooling, on the **raw text** — Ollama never applied the
+`search_document:` / `search_query:` prefixes the model card describes, and
+neither does Solaris. Same model, same quantisation, same pooling, same raw
+text ⇒ old and new vectors are comparable and nothing had to be re-embedded.
+Changing `LLAMA_EMBED_FILE` to a smaller quant, or adding a prefix, would not
+fail — it would quietly make search worse.
+
+Two flags in the unit are not tuning: `--pooling mean` (the model is
+mean-pooled; anything else yields valid-looking, incomparable vectors) and
+`--ubatch-size` equal to the context length (an embedding model runs
+non-causal attention, and llama.cpp rejects anything longer than one
+micro-batch).
 
 ## Who may reach the endpoint — an ADR-0007 carve-out for on-box consumers
 
@@ -120,7 +151,7 @@ python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
 ```
 
 `acquire` writes `${DATA_DIR}/solarisbay/gpu_lease.json`; without `--model` it
-then stops `ollama`, `solaris-whisper`, `solaris-whisper-batch`, `solaris-tts`,
+then stops `llama-embed`, `solaris-whisper`, `solaris-whisper-batch`, `solaris-tts`,
 `solaris-wakeword-trainer` and `llama` — the five units the night
 measurements stopped by hand, plus Solaris' own model server. It refuses when
 someone else already holds the lease. `release` starts them again, waits for
@@ -159,8 +190,9 @@ what is on it, so the household keeps an assistant.
   than disappearing. Both units read their provider from
   `${DATA_DIR}/solarisbay/voice-device.env`, which the lease flips to
   `cpu`/`cuda` and restarts them on; whisper drops to `small-int8` with it.
-  `ollama`, `solaris-whisper-batch` and `solaris-wakeword-trainer` still stop —
-  they hold VRAM and nobody is waiting on them.
+  `llama-embed`, `solaris-whisper-batch` and `solaris-wakeword-trainer` still
+  stop — they hold VRAM and nobody is waiting on them. Semantic vault search
+  falls back to keyword hits for the window.
 
 ### `--model foundry` — the foundry evening (solarisbay#1325)
 
@@ -174,12 +206,11 @@ take the voice stack away. This profile therefore stops **nothing**:
   cell K2). The 12B runs **instead of** the household E4B, not beside it:
   9 636 + 3 872 + the voice stack's 4 508 MiB under load is 18 016 of a
   16 380 MiB card. Without the E4B it is 14 144, with 2 236 MiB to spare.
-* All five units — `ollama`, `solaris-whisper`, `solaris-whisper-batch`,
+* All five units — `llama-embed`, `solaris-whisper`, `solaris-whisper-batch`,
   `solaris-tts`, `solaris-wakeword-trainer` — keep running, on the **GPU**;
-  `voice-device.env` is not touched. Ollama is asked to drop the chat model it
-  holds resident (its warm E4B is 4 798 MiB, which the 12B needs); it keeps
-  serving embeddings and the vision ingest, and `ollama-warm.service` puts the
-  model back at release.
+  `voice-device.env` is not touched. The embeddings server's 300 MB fits
+  beside the 12B, so the household keeps its semantic vault search for the
+  whole evening.
 * Solaris answers the household from the 12B and **shows no banner**: operator
   decision of 2026-09-05. Nothing the resident does changes — voice included —
   except that an answer takes about a second longer. `/api/whoami` still names

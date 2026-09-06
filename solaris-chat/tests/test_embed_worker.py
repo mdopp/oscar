@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from solaris_chat.engine.knowledge import embed_worker, projection
+from solaris_chat.engine.llama_server import LlamaServerError
 
 # okf_vectors (0018) — the only table the worker touches.
 _SCHEMA = """
@@ -23,19 +24,16 @@ CREATE TABLE okf_vectors (
 
 
 class _FakeClient:
-    """Stands in for OllamaChat: model present, embed returns a per-text vector."""
+    """Stands in for LlamaEmbed: embed returns a per-text vector."""
 
     def __init__(self, *, embed_raises: bool = False):
         self.embed_raises = embed_raises
         self.embed_calls: list[list[str]] = []
 
-    async def tags(self):
-        return [{"name": "nomic-embed-text:latest"}]
-
     async def embed(self, model, inputs):
         self.embed_calls.append(list(inputs))
         if self.embed_raises:
-            raise RuntimeError("ollama down")
+            raise LlamaServerError("llama-server /v1/embeddings 503")
         return [[float(len(t)), 1.0, 2.0] for t in inputs]
 
 
@@ -69,7 +67,7 @@ def _entry(eid: str, text: str) -> dict:
 
 async def test_drain_last_line_wins_and_deletes_queue(db_path, monkeypatch):
     client = _FakeClient()
-    monkeypatch.setattr(embed_worker, "OllamaChat", lambda url: client)
+    monkeypatch.setattr(embed_worker, "LlamaEmbed", lambda url: client)
     # e1 appears twice — the second (longer text) must win.
     _enqueue(
         db_path,
@@ -96,7 +94,7 @@ async def test_drain_last_line_wins_and_deletes_queue(db_path, monkeypatch):
 
 async def test_drain_resumes_preexisting_draining_and_fresh_queue(db_path, monkeypatch):
     client = _FakeClient()
-    monkeypatch.setattr(embed_worker, "OllamaChat", lambda url: client)
+    monkeypatch.setattr(embed_worker, "LlamaEmbed", lambda url: client)
     # A crashed run left a .draining file; a fresh queue also has work.
     _enqueue(db_path, [_entry("old", "x")], suffix=".jsonl.draining")
     _enqueue(db_path, [_entry("new", "y")], suffix=".jsonl")
@@ -111,9 +109,11 @@ async def test_drain_resumes_preexisting_draining_and_fresh_queue(db_path, monke
     assert ids == {"old", "new"}
 
 
-async def test_drain_leaves_draining_when_embed_raises(db_path, monkeypatch):
+async def test_drain_leaves_draining_when_the_embeddings_server_is_down(
+    db_path, monkeypatch
+):
     client = _FakeClient(embed_raises=True)
-    monkeypatch.setattr(embed_worker, "OllamaChat", lambda url: client)
+    monkeypatch.setattr(embed_worker, "LlamaEmbed", lambda url: client)
     _enqueue(db_path, [_entry("e1", "aa")])
 
     await embed_worker.drain(db_path, "http://x")

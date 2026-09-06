@@ -1,6 +1,6 @@
 """Frontend-contract checks for the per-turn LLM-step trace panel (#307).
 
-Each assistant reply carries a "steps" panel — one row per Ollama call showing
+Each assistant reply carries a "steps" panel — one row per model call showing
 `model · wall_s · tokens`; clicking a step opens a modal with that call's exact
 request/response, fetched through the chat server's `/__traces__/<id>`
 pass-through (the #305 detail). The panel is loaded from the persisted per-turn

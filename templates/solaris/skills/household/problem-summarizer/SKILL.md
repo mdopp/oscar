@@ -24,7 +24,7 @@ system.
    invent problems:
    - Recent error/warn lines from the stack via the `terminal` tool, e.g.
      `podman logs --since 168h solaris-chat 2>&1 | grep -iE "error|warn|fail"`
-     (and the equivalent for `solaris-gatekeeper`, `ollama`, …). Look for
+     (and the equivalent for `solaris-gatekeeper`, `llama`, …). Look for
      *resolved* sequences.
    - Past admin/diagnostic threads recalled from memory, where a problem was
      reported, investigated and fixed.

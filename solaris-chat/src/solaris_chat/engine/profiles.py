@@ -25,7 +25,7 @@ from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ingest.jellyfin import RestJellyfinMusicClient
 from solaris_chat.engine.llama_server import LlamaServerChat
-from solaris_chat.engine.ollama import OllamaChat
+from solaris_chat.engine.llama_embed import LlamaEmbed
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.calendar_tools import build_calendar_tools
@@ -89,8 +89,8 @@ def _skills_prompt(skills_dir: str) -> str:
 def build_engine_clients(
     *,
     db_path: str,
-    ollama_url: str,
     llama_server_url: str = "",
+    llama_embed_url: str = "",
     fast_model: str,
     thorough_model: str,
     soul_path: str,
@@ -123,15 +123,13 @@ def build_engine_clients(
     SessionBus,
 ]:
     """Returns (household, admin, guest, librarian, enrollment) + recorder + bus."""
-    ollama = OllamaChat(ollama_url)
     # The chat backend (#1318): llama.cpp's llama-server with the Gemma-4 MTP
-    # drafter, half the wait per answer. Ollama keeps the calls that are its
-    # own — embeddings, the vision ingest, /api/ps, the model lease.
-    chat = (
-        LlamaServerChat(llama_server_url, lease_path=str(gpu_lease.lease_path(db_path)))
-        if llama_server_url
-        else ollama
+    # drafter, half the wait per answer.
+    chat = LlamaServerChat(
+        llama_server_url, lease_path=str(gpu_lease.lease_path(db_path))
     )
+    # The second llama-server instance, serving nomic-embed-text (#1332).
+    embed = LlamaEmbed(llama_embed_url) if llama_embed_url else None
     recorder = TraceRecorder()
     bus = SessionBus()
     registry = EntityRegistry(hass_url, hass_token)
@@ -184,7 +182,7 @@ def build_engine_clients(
             )
     if notes_dir:
         household_tools += build_notes_tools(
-            notes_dir, _current_uid, db_path=db_path, ollama=ollama
+            notes_dir, _current_uid, db_path=db_path, embed=embed
         )
     # Aufgaben (to-do) tools (#todo): add/list/complete tasks on the one shared
     # list. Household holds it; scoped to the caller via _current_uid.
@@ -273,7 +271,7 @@ def build_engine_clients(
         return EngineClient(
             profile,
             db_path=db_path,
-            ollama=chat,
+            chat=chat,
             recorder=recorder,
             context_window=context_window,
             bus=bus,
@@ -365,7 +363,7 @@ def build_engine_clients(
     # physically cannot delete or touch HA. Per-scope ephemeral sessions re-root
     # every write to the scope's subtree, so default-deny holds by construction.
     librarian_tools: list[Tool] = (
-        build_notes_tools(notes_dir, _current_uid, db_path=db_path, ollama=ollama)
+        build_notes_tools(notes_dir, _current_uid, db_path=db_path, embed=embed)
         + build_document_tools(notes_dir, _current_uid)
         if notes_dir
         else []

@@ -7,8 +7,8 @@ controls the home via Home Assistant, and fronts the Voice PE speaker
 through HA's Assist pipeline. (The earlier Hermes-gateway architecture was
 fully replaced in v0.10 — see `solaris-architecture.md` for the full picture
 and flows. Ollama served the chat path until #1318 moved it to llama-server
-for speculative decoding; Ollama still serves embeddings and vision ingest
-until #1332 finishes moving those too.)
+for speculative decoding, and its last two jobs — embeddings and the vision
+ingest — moved in #1332; nothing runs Ollama any more.)
 
 ```mermaid
 flowchart LR
@@ -16,7 +16,8 @@ flowchart LR
     Browser["💻 Browser"] -- SSO --> Chat
     HA -- "conversation.solaris" --> Chat["Solaris Engine<br/>(solaris-chat)"]
     Chat -- "per-turn model, thinking off" --> Llama["llama-server (GPU)<br/>e4b + MTP drafter · :11435"]
-    Chat -- "embeddings · vision ingest" --> Ollama["ollama (GPU)<br/>nomic-embed-text — leaving, #1332"]
+    Chat -- "photo · document descriptions" --> Llama
+    Chat -- "embeddings" --> Embed["llama-server (GPU)<br/>nomic-embed-text · :11436"]
     Chat -- "tools · registry · announce" --> HA
     Chat --- DB[("solaris.db")]
     Chat --- Notes[("notes vault")]
@@ -101,10 +102,11 @@ is headed — zones, ADRs and the V1 backlog — is
   bodies `daily-chronicle`, `problem-summarizer`) and `admin-soul/` (the
   operator persona: `admin-diagnose`, `admin-logs`, `admin-act` + its
   `SOUL.md`).
-- **ServiceBay templates** (`templates/{ollama,llama,solaris}/`) — three
-  services: `llama` (llama.cpp serving the household model with Google's MTP
-  drafter — half the wait per answer, #1318), `ollama` (embeddings + the
-  vision ingest) and `solaris` — one Pod with four
+- **ServiceBay templates** (`templates/{llama,solaris}/`) — two services:
+  `llama` (llama.cpp serving the household model with Google's MTP drafter —
+  half the wait per answer, #1318 — its multimodal projector for photo and
+  document descriptions, and a second small instance serving the embeddings,
+  #1332) and `solaris` — one Pod with four
   containers (`chat`, `gatekeeper`, `openwakeword`, `tts-bridge`) plus two
   init containers (`notes-perms`, `schema-init`). `post-deploy.py` seeds the soul,
   adopts the HA token, wires the **voice pipeline** (wyoming whisper/piper,
@@ -134,8 +136,7 @@ is headed — zones, ADRs and the V1 backlog — is
 
 1. ServiceBay → Settings → Registries → Add `mdopp/solarisbay`
    (`https://github.com/mdopp/solarisbay.git`).
-2. After save, the `ollama`, `llama` and `solaris` templates and the
-   `solarisbay` stack
+2. After save, the `llama` and `solaris` templates and the `solarisbay` stack
    appear in the wizard.
 3. Install the stack. The `solaris` template's `post-deploy.py` does the
    rest (soul, HA token adoption, jellyfin integration, voice pipeline,
@@ -148,8 +149,8 @@ solarisbay/
 ├── README.md                       # this file
 ├── solaris-architecture.md         # the architecture record
 ├── templates/                       # ServiceBay templates
-│   ├── ollama/                       # embeddings + vision ingest — its own service
-│   ├── llama/                        # llama.cpp: the household chat model + MTP drafter
+│   ├── ollama/                       # RETIRED (#1332) — tombstone README only
+│   ├── llama/                        # llama.cpp: the chat model + MTP drafter + embeddings
 │   └── solaris/                      # the assistant service
 │       ├── template.yml             # one Pod: chat, gatekeeper, openwakeword, tts-bridge
 │       ├── post-deploy.py           # soul + HA wiring + admin MCP token
@@ -163,7 +164,7 @@ solarisbay/
 ├── wakeword-trainer/               # Docker image source (microWakeWord GPU)
 ├── stacks/
 │   └── solarisbay/
-│       └── stack.yml               # templates: [ollama, llama, solaris]
+│       └── stack.yml               # templates: [llama, solaris]
 └── .github/workflows/
     └── build-images.yml            # publishes the GHCR images
 ```

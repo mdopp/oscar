@@ -391,7 +391,7 @@ async def test_guest_toolset_excludes_run_tool():
 
     household, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
-        ollama_url="http://o",
+        llama_server_url="http://o",
         fast_model="m",
         thorough_model="m",
         soul_path="/nonexistent/SOUL.md",
@@ -416,7 +416,7 @@ async def test_household_has_self_enrollment_tools():
 
     household, _, guest, _, _, _, _ = build_engine_clients(
         db_path=":memory:",
-        ollama_url="http://o",
+        llama_server_url="http://o",
         fast_model="m",
         thorough_model="m",
         soul_path="/nonexistent/SOUL.md",

@@ -1,6 +1,6 @@
 """Tests for the Solaris Engine core: store, agent loop, tools, scheduler.
 
-The loop tests run against a scripted fake Ollama (no network): each call
+The loop tests run against a scripted fake backend (no network): each call
 pops the next scripted result, so a tool-chain turn (tool_calls -> dispatch
 -> final answer) exercises the real loop, store and trace paths.
 """
@@ -24,7 +24,7 @@ from solaris_chat.engine.client import (
     _split_followups,
     compact_history,
 )
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.ha import build_ha_tools
@@ -117,7 +117,7 @@ def soul(tmp_path) -> str:
     return str(path)
 
 
-class FakeOllama:
+class FakeChat:
     """Pops one scripted ChatResult per call; records what it was sent."""
 
     def __init__(self, results: list[ChatResult]):
@@ -146,8 +146,8 @@ class FakeOllama:
         yield "done", result
 
 
-def _client(db, soul, results, tools=None) -> tuple[EngineClient, FakeOllama]:
-    fake = FakeOllama(results)
+def _client(db, soul, results, tools=None) -> tuple[EngineClient, FakeChat]:
+    fake = FakeChat(results)
     client = EngineClient(
         EngineProfile(
             name="household",
@@ -156,7 +156,7 @@ def _client(db, soul, results, tools=None) -> tuple[EngineClient, FakeOllama]:
             toolbox=Toolbox(tools or []),
         ),
         db_path=db,
-        ollama=fake,  # duck-typed
+        chat=fake,  # duck-typed
         recorder=TraceRecorder(),
         context_window=32768,
     )
@@ -321,7 +321,7 @@ async def test_plain_turn_streams_and_persists(db, soul):
 async def test_model_resolver_overrides_static_model(db, soul):
     # #366: a profile resolver re-points the model per turn; empty falls back.
     override = {"value": ""}
-    fake = FakeOllama(
+    fake = FakeChat(
         [
             ChatResult(content="a"),
             ChatResult(content="b"),
@@ -335,7 +335,7 @@ async def test_model_resolver_overrides_static_model(db, soul):
             model_resolver=lambda: override["value"],
         ),
         db_path=db,
-        ollama=fake,
+        chat=fake,
         recorder=TraceRecorder(),
         context_window=32768,
     )
@@ -808,7 +808,7 @@ async def test_compact_history_applied_in_loop_before_model_call(db, soul):
 async def test_claim_passes_through_without_tools(db, soul):
     """The guard is gated on the profile having tools: a tool-less Q&A profile
     that states 'das Licht ist an' has nothing to dispatch and must accept its
-    answer on the first pass (no re-prompt, single Ollama call)."""
+    answer on the first pass (no re-prompt, single model call)."""
     client, fake = _client(
         db, soul, [ChatResult(content="Ja, das Licht ist an.", completion_tokens=4)]
     )

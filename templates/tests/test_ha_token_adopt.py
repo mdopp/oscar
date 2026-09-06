@@ -46,8 +46,8 @@ def _pod_yml(value: str) -> str:
         '      value: "http://127.0.0.1:8123"\n'
         "    - name: HASS_TOKEN\n"
         f"      value: {value}\n"
-        "    - name: OLLAMA_URL\n"
-        '      value: "http://127.0.0.1:11434"\n'
+        "    - name: LLAMA_SERVER_URL\n"
+        '      value: "http://127.0.0.1:11435"\n'
     )
 
 

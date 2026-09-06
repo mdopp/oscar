@@ -87,20 +87,18 @@ def _add_entity(db_path, ent_id, name, resident, aliases, okf_path):
     conn.close()
 
 
-def _search_tool(root, db_path, uid, ollama=None):
-    for tool in build_notes_tools(
-        str(root), lambda: uid, db_path=db_path, ollama=ollama
-    ):
+def _search_tool(root, db_path, uid, embed=None):
+    for tool in build_notes_tools(str(root), lambda: uid, db_path=db_path, embed=embed):
         if tool.name == "notes_search":
             return tool
     raise AssertionError("notes_search tool missing")
 
 
-async def _search(root, db_path, uid, query, ollama=None, **kw):
+async def _search(root, db_path, uid, query, embed=None, **kw):
     # The FTS index (#830) is what notes_search now queries for keyword candidates;
     # on the box the boot backfill fills it — mirror that here before searching.
     notes_index.backfill(db_path, str(root))
-    tool = _search_tool(root, db_path, uid, ollama)
+    tool = _search_tool(root, db_path, uid, embed)
     return json.loads(await tool.handler({"query": query, **kw}))
 
 
@@ -194,7 +192,7 @@ async def test_topic_anchor_boosts_ordering(env):
 # ---- semantic branch (PR 2) --------------------------------------------------
 
 
-class _FakeOllama:
+class _FakeEmbed:
     def __init__(self, vector, delay=0.0):
         self._vector = vector
         self._delay = delay
@@ -232,9 +230,9 @@ async def test_semantic_hit_when_fuzzy_sparse(env):
     _okf_file(root, "okf/people/anna.md", "Anna")
     _add_entity(db_path, "e1", "Anna", "household", [], "okf/people/anna.md")
     _add_vector(db_path, "emb1", "e1", "entity", [1.0, 0.0, 0.0])
-    ollama = _FakeOllama([1.0, 0.0, 0.0])
+    embed = _FakeEmbed([1.0, 0.0, 0.0])
     # 'kletterfreundin' matches nothing fuzzy/alias → semantic branch runs.
-    hits = await _search(root, db_path, "household", "kletterfreundin", ollama=ollama)
+    hits = await _search(root, db_path, "household", "kletterfreundin", embed=embed)
     assert any(h["path"] == "okf/people/anna.md" for h in hits)
 
 
@@ -250,7 +248,7 @@ async def test_semantic_skipped_when_enough_fuzzy_hits(env):
         async def embed(self, model, inputs):
             raise AssertionError("semantic branch must be skipped")
 
-    hits = await _search(root, db_path, "household", "urlaub", ollama=_Boom())
+    hits = await _search(root, db_path, "household", "urlaub", embed=_Boom())
     assert len(hits) >= 3
 
 
@@ -259,7 +257,7 @@ async def test_semantic_timeout_degrades(env):
     _okf_file(root, "okf/people/anna.md", "Anna")
     _add_entity(db_path, "e1", "Anna", "household", [], "okf/people/anna.md")
     _add_vector(db_path, "emb1", "e1", "entity", [1.0, 0.0, 0.0])
-    slow = _FakeOllama([1.0, 0.0, 0.0], delay=5.0)
+    slow = _FakeEmbed([1.0, 0.0, 0.0], delay=5.0)
     # embed exceeds the 2s guard → degrade to structured (empty) result.
-    hits = await _search(root, db_path, "household", "kletterfreundin", ollama=slow)
+    hits = await _search(root, db_path, "household", "kletterfreundin", embed=slow)
     assert hits == []

@@ -242,10 +242,10 @@ async def test_say_short_circuit_bypasses_second_pass(tmp_path):
         toolbox=Toolbox(tools),
         ephemeral=True,
     )
-    # Mock Ollama stream to count passes
+    # Mock the model stream to count passes
     pass_count = 0
 
-    class MockOllama:
+    class MockChat:
         async def stream(self, model, messages, **kwargs):
             nonlocal pass_count
             pass_count += 1
@@ -269,7 +269,7 @@ async def test_say_short_circuit_bypasses_second_pass(tmp_path):
                 yield "done", Result()
 
     client = EngineClient(
-        profile, db_path=db, ollama=MockOllama(), recorder=TraceRecorder()
+        profile, db_path=db, chat=MockChat(), recorder=TraceRecorder()
     )
     session_id = "test_sc_session"
     messages = [{"role": "user", "content": "Richte alex ein"}]
@@ -305,7 +305,7 @@ async def test_facade_chat_turns_generator_execution(tmp_path):
     profile = EngineProfile(
         name="solaris-enrollment", model="dummy", soul_path="", ephemeral=True
     )
-    client = EngineClient(profile, db_path=db, ollama=None, recorder=None)
+    client = EngineClient(profile, db_path=db, chat=None, recorder=None)
 
     # Execute facade handler logic directly
     if client.profile_name == "solaris-enrollment":

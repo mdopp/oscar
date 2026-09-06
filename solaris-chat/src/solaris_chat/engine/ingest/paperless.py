@@ -38,7 +38,7 @@ from pathlib import Path
 
 from solaris_chat.logging import log
 
-from ..ollama import OllamaChat, OllamaError
+from ..llama_server import LlamaServerChat, LlamaServerError
 from .paperless_client import PaperlessClient, PaperlessTaskTimeout
 from .upload_extract import (
     EXTRACTED_MARKER,
@@ -48,30 +48,36 @@ from .upload_extract import (
 
 PAPERLESS_MARKER = "<!-- paperless -->"
 
-# The vision model + prompt that transcribe the downscaled page to clean text.
-# think:false is load-bearing (the PoC found reasoning-on returns empty on this
-# path); a plain "transcribe verbatim" prompt, no facts — paperless only needs
-# the searchable text, the fact extraction stays in the nightly librarian turn.
-_VISION_MODEL = "gemma4:12b"
+# The prompt that transcribes the downscaled page to clean text. think:false is
+# load-bearing (the PoC found reasoning-on returns empty on this path); a plain
+# "transcribe verbatim" prompt, no facts — paperless only needs the searchable
+# text, the fact extraction stays in the nightly librarian turn.
+#
+# The model is whatever llama-server currently holds — the household E4B with
+# its mmproj, or a leased profile for the window (#1332). llama-server serves
+# one model at a time and ignores the request's `model` field, so there is no
+# tag to choose here the way there was on Ollama.
 _VISION_PROMPT = (
     "Transkribiere den GESAMTEN Text dieses Dokuments wortgetreu. "
     "Nur der Text, keine Erklärung, keine Zusammenfassung."
 )
 
 
-async def _vision_text(ollama: OllamaChat, image_b64: str) -> str:
+async def _vision_text(chat: LlamaServerChat, model: str, image_b64: str) -> str:
     """Clean transcription of `image_b64` from the vision model, or "".
 
     think:false + the single downscaled image is the PoC-validated shape; any
-    Ollama error degrades to "" (the doc is still stored, just without indexed
-    text) rather than aborting the push."""
+    backend error degrades to "" (the doc is still stored, just without indexed
+    text) rather than aborting the push. The image rides the message as bare
+    base64 on `images`, which `LlamaServerChat` turns into an OpenAI
+    `image_url` data-URL part."""
     messages = [{"role": "user", "content": _VISION_PROMPT, "images": [image_b64]}]
     try:
         result = None
-        async for kind, payload in ollama.stream(_VISION_MODEL, messages, think=False):
+        async for kind, payload in chat.stream(model, messages, think=False):
             if kind == "done":
                 result = payload
-    except OllamaError as e:
+    except LlamaServerError as e:
         log.error("engine.ingest.paperless_vision_failed", error=str(e))
         return ""
     return result.content.strip() if result else ""
@@ -80,7 +86,8 @@ async def _vision_text(ollama: OllamaChat, image_b64: str) -> str:
 async def push_companion(
     companion_md: Path,
     notes_dir: str,
-    ollama: OllamaChat,
+    chat: LlamaServerChat,
+    model: str,
     client: PaperlessClient,
 ) -> bool:
     """Push one upload companion to paperless. Never raises.
@@ -102,7 +109,7 @@ async def push_companion(
     file_bytes, filename = media
 
     image_b64 = downscaled_vision_image(notes_dir, companion_rel)
-    text = await _vision_text(ollama, image_b64) if image_b64 else ""
+    text = await _vision_text(chat, model, image_b64) if image_b64 else ""
 
     try:
         doc_id = await client.post_document(file_bytes, filename)
@@ -137,7 +144,7 @@ async def push_companion(
 
 
 async def push_uploads(
-    notes_dir: str, ollama: OllamaChat, client: PaperlessClient
+    notes_dir: str, chat: LlamaServerChat, model: str, client: PaperlessClient
 ) -> int:
     """Push every extracted-but-unpushed upload companion. Never raises.
 
@@ -150,7 +157,7 @@ async def push_uploads(
     pushed = 0
     for companion in companions:
         try:
-            if await push_companion(companion, notes_dir, ollama, client):
+            if await push_companion(companion, notes_dir, chat, model, client):
                 pushed += 1
         except Exception as e:  # noqa: BLE001 — one bad file must not stop the pass.
             # repr() + traceback, not str(): many failures here (aiohttp

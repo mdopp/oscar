@@ -249,7 +249,7 @@ def test_onboarding_tools_are_admin_only(tmp_path):
 
     household, admin, guest, _lib, _enroll, _rec, _bus = profiles.build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
-        ollama_url="http://ollama",
+        llama_server_url="http://ollama",
         fast_model="m",
         thorough_model="m",
         soul_path="",

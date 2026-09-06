@@ -196,7 +196,7 @@ def test_classify_llm_failopen():
     )
 
     def boom(folder):
-        raise RuntimeError("ollama down")
+        raise RuntimeError("model backend down")
 
     assert o.classify_archive(z, llm=boom)["claims"] == []  # error → unknown
 
@@ -290,7 +290,6 @@ def _payload(tmp_path, zip_bytes, categories, owner="mdopp"):
         "categories": categories,
         "hash": o.content_hash(zip_bytes),
         "db_path": str(tmp_path / "solaris.db"),
-        "ollama_url": "http://x",
         "model": "m",
     }
 

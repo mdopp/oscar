@@ -98,14 +98,14 @@ async def test_health_is_503_with_the_reason_when_the_database_is_unreadable(
 
 
 async def test_health_ignores_the_neighbours(aiohttp_client, tmp_path):
-    # No Home Assistant configured and an Ollama URL pointing nowhere: Solaris is
+    # No Home Assistant configured and a backend URL pointing nowhere: Solaris is
     # still a working chat server with its history, so the tile stays green.
     app = build_app(
         engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_readable_db(tmp_path),
-        ollama_url="http://127.0.0.1:1",
+        llama_server_url="http://127.0.0.1:1",
     )
     client = await aiohttp_client(app)
 
