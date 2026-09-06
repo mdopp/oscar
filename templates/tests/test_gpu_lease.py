@@ -186,10 +186,21 @@ def test_the_coding_profile_is_the_only_cell_that_measured(pd):
     args = pd.server_args("11435", "/models", pd.CODING_PROFILE)
     assert "-m /models/Qwen3.8-27B-UD-IQ3_XXS.gguf" in " ".join(args)
     assert "--spec-draft-model /models/mtp-Qwen3.8-27B-Q4_0.gguf" in " ".join(args)
-    assert args[args.index("-c") + 1] == "65536"
+    assert args[args.index("-c") + 1] == "81920"
     assert args[args.index("-ctk") + 1] == "q8_0"
     assert args[args.index("-ctv") + 1] == "q8_0"
     assert args[args.index("--parallel") + 1] == "1"
+
+
+def test_the_coding_profile_switches_thinking_off_at_the_server(pd):
+    """Box-measured 2026-09-06 (#1321): with tools in the request and the flag
+    missing, Qwen answers a one-line request with 222 generated tokens, 200 of
+    them an invisible `reasoning_content` trace; with it, 35. goose aborts the
+    run when a reply hits its output-token limit, so the trace does not just
+    cost time. `solaris-chat` sends the same switch per request — the leased
+    server is driven by tools that do not, so it has to default to it."""
+    args = pd.server_args("11435", "/models", pd.CODING_PROFILE)
+    assert args[args.index("--reasoning") + 1] == "off"
 
 
 def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
@@ -197,6 +208,7 @@ def test_the_household_profile_is_unchanged_by_the_new_knobs(pd):
     on every deploy for nothing."""
     args = pd.server_args("11435", "/models")
     assert "-ctk" not in args and "-ctv" not in args and "--parallel" not in args
+    assert "--reasoning" not in args
 
 
 def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
@@ -460,3 +472,151 @@ def test_the_cli_knows_the_foundry_model(pd, monkeypatch):
     )
     assert pd.lease_cli(["acquire", "foundry", "--model", "foundry"]) == 0
     assert seen["model"] == "foundry"
+
+
+# ── #1333: the HTTP lease — --alias, the renewal, and the host broker ──────
+
+
+def test_every_profile_names_itself_in_the_v1_responses(pd):
+    """foundry reads the `model` field of the answer to record which model
+    wrote a chronicle entry; without `--alias` that field is a GGUF path."""
+    assert "--alias gemma-4-e4b" in " ".join(pd.server_args("11435", "/models"))
+    assert "--alias qwen3.8-27b" in " ".join(
+        pd.server_args("11435", "/models", pd.CODING_PROFILE)
+    )
+    assert "--alias gemma-4-12b" in " ".join(
+        pd.server_args("11435", "/models", pd.FOUNDRY_PROFILE)
+    )
+
+
+def test_both_argv_sources_carry_the_alias(pd):
+    """`server_args` renders the Quadlet on a GPU box, template.yml the kube
+    unit everywhere else — a name that only one of them sets is a name a
+    neighbour cannot rely on."""
+    tmpl = (TEMPLATES / "llama" / "template.yml").read_text(encoding="utf-8")
+    assert '- "--alias"' in tmpl
+    assert '- "{{LLAMA_MODEL_ALIAS}}"' in tmpl
+    variables = json.loads(
+        (TEMPLATES / "llama" / "variables.json").read_text(encoding="utf-8")
+    )
+    assert variables["LLAMA_MODEL_ALIAS"]["default"] == "gemma-4-e4b"
+    assert pd.env_profile()["alias"] == variables["LLAMA_MODEL_ALIAS"]["default"]
+
+
+def test_the_lease_records_the_alias_the_holder_will_be_answered_by(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    assert pd.read_lease(str(tmp_path))["alias"] == "gemma-4-12b"
+
+
+def test_a_renewal_moves_the_deadline_without_swapping_again(
+    pd, tmp_path, swap_box, systemctl_calls, no_box
+):
+    """The holder renews every few minutes. Reloading llama-server each time
+    would cost the household a cold load per renewal — the deadline moves, the
+    server does not."""
+    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    first_until = pd.read_lease(str(tmp_path))["until"]
+    systemctl_calls.clear()
+    no_box.clear()
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 7200) == 0
+    assert systemctl_calls == []
+    assert pd.read_lease(str(tmp_path))["until"] > first_until
+    armed = [c for c in no_box if c and c[0] == "systemd-run"]
+    assert armed and "--on-active=7200" in armed[0]
+
+
+def _request(pd, tmp_path, **fields) -> None:
+    path = pathlib.Path(pd.request_file(str(tmp_path)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(fields))
+
+
+def test_the_broker_acquires_what_the_engine_asked_for(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    _request(
+        pd,
+        tmp_path,
+        op="acquire",
+        model="foundry",
+        ttl_s=900,
+        holder="foundry",
+        requested_at=1.5,
+    )
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["mode"] == "foundry" and lease["holder"] == "foundry"
+    status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
+    # The requested_at goes back unchanged — that is how the HTTP side knows
+    # this request has been dealt with and is not still "preparing".
+    assert status["requested_at"] == 1.5
+    assert status["state"] == "ready"
+    assert status["alias"] == "gemma-4-12b"
+    assert status["expires_at"] == lease["until"]
+
+
+def test_the_broker_releases_and_says_which_model_is_back(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    _request(pd, tmp_path, op="release", model="", requested_at=2.5)
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert not _lease(tmp_path, pd).exists()
+    status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
+    assert status["state"] == "released"
+    assert status["alias"] == "gemma-4-e4b"
+    assert status["requested_at"] == 2.5
+
+
+def test_a_failed_acquire_is_reported_rather_than_left_pending(
+    pd, tmp_path, monkeypatch, swap_box
+):
+    """A holder polling GET must find out; a silent failure would leave it
+    waiting for a window that is never coming."""
+    monkeypatch.setattr(pd, "download_model", lambda *a: False)
+    _request(pd, tmp_path, op="acquire", model="foundry", ttl_s=900, requested_at=3.5)
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
+    assert status["state"] == "error"
+    assert status["expires_at"] is None
+
+
+def test_an_unknown_request_never_reaches_the_units(pd, tmp_path, systemctl_calls):
+    _request(pd, tmp_path, op="acquire", model="llama5", requested_at=4.5)
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert systemctl_calls == []
+    assert not _lease(tmp_path, pd).exists()
+
+
+def test_no_request_at_all_is_a_no_op(pd, tmp_path, systemctl_calls):
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert systemctl_calls == []
+    assert not pathlib.Path(pd.status_file(str(tmp_path))).exists()
+
+
+def test_the_broker_units_watch_the_file_the_engine_writes(pd, tmp_path):
+    path_unit, service_unit = render = pd.render_broker_units(
+        str(tmp_path), "11435", "/x/gpu-lease.py"
+    )
+    assert len(render) == 2
+    assert f"PathChanged={pd.request_file(str(tmp_path))}" in path_unit
+    assert f"Unit={pd.BROKER_UNIT}.service" in path_unit
+    assert "/x/gpu-lease.py broker" in service_unit
+    assert f"Environment=DATA_DIR={tmp_path}" in service_unit
+
+
+def test_installing_the_broker_enables_the_watcher(pd, tmp_path, monkeypatch, no_box):
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    monkeypatch.setattr(
+        pd, "systemctl", lambda verb, units: bool(calls.append((verb, units))) or True
+    )
+    monkeypatch.setattr(
+        pd.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path))
+    )
+    pd.install_broker_units(str(tmp_path), "11435", "/x/gpu-lease.py")
+    unit_dir = tmp_path / ".config" / "systemd" / "user"
+    assert (unit_dir / f"{pd.BROKER_UNIT}.path").exists()
+    assert (unit_dir / f"{pd.BROKER_UNIT}.service").exists()
+    assert calls == [("enable", ("--now", f"{pd.BROKER_UNIT}.path"))]

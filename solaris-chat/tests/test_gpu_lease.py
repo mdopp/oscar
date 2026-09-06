@@ -132,12 +132,14 @@ def test_the_state_the_banner_is_built_from(tmp_path):
     assert gpu_lease.state(_coding(tmp_path)) == {
         "mode": "coding",
         "model": "Qwen 3.8 27B",
+        "alias": "",
         "until": 2_000_000_000.0,
         "answers": True,
     }
     assert gpu_lease.state(_held(tmp_path)) == {
         "mode": "exclusive",
         "model": "",
+        "alias": "",
         "until": 0.0,
         "answers": False,
     }
@@ -226,6 +228,7 @@ def _foundry(tmp_path, ready=True, until=2_000_000_000.0):
                 "until": until,
                 "mode": "foundry",
                 "model": "Gemma 4 12B",
+                "alias": "gemma-4-12b",
                 "ready": ready,
             }
         ),
@@ -248,6 +251,9 @@ def test_the_foundry_state_names_the_model_without_claiming_silence(tmp_path):
     assert gpu_lease.state(_foundry(tmp_path)) == {
         "mode": "foundry",
         "model": "Gemma 4 12B",
+        # #1333: the `--alias` llama-server answers with, empty for a lease
+        # written before the box carried one.
+        "alias": "gemma-4-12b",
         "until": 2_000_000_000.0,
         "answers": True,
     }

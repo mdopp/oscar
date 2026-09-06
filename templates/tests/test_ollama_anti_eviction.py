@@ -64,21 +64,6 @@ def test_keep_alive_default_is_short(variables):
     assert variables["OLLAMA_KEEP_ALIVE"]["default"] == "15m"
 
 
-def test_keep_alive_default_covers_the_model_lease_ttl(variables):
-    # The lease (#1260) makes the household answer on a model a neighbour
-    # holds, for up to LEASE_TTL_SECONDS = 900s. A shorter service default
-    # would let that model fall out of VRAM inside a live lease, so the turn
-    # the lease exists to speed up would pay the ~56s reload instead. Read from
-    # the lease module itself so raising the TTL can't silently undercut this.
-    lease = _load(
-        "solaris_chat_model_lease",
-        TEMPLATES.parent / "solaris-chat" / "src" / "solaris_chat" / "model_lease.py",
-    )
-    default = variables["OLLAMA_KEEP_ALIVE"]["default"]
-    assert default.endswith("m")
-    assert int(default[:-1]) * 60 >= lease.LEASE_TTL_SECONDS
-
-
 # ── template.yml env wiring ───────────────────────────────────────────────
 
 

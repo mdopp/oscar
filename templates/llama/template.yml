@@ -44,6 +44,11 @@ spec:
     # canonical Google Gemma-4 template. Without it llama-server falls back
     # to a generic template and Gemma's tool-call channel never renders.
     - "--jinja"
+    # The name llama-server reports in the `model` field of every /v1 answer
+    # (#1333): without it that field is the GGUF path, and a neighbour service
+    # recording which model wrote something has nothing to record.
+    - "--alias"
+    - "{{LLAMA_MODEL_ALIAS}}"
     # Speculative decoding with Google's own MTP drafter: box-measured
     # 133.5 tok/s against Ollama's 53.0 on the same weights (#1318).
     # `--spec-type` is mandatory and `--draft-max` no longer exists — the

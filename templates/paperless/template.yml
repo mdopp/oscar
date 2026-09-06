@@ -26,6 +26,26 @@ metadata:
       interval: 30s
       timeout: 5s
       startup_timeout: 5m
+    # What a backup of this service must contain, keyed by the pod volume it
+    # covers. ServiceBay reads NO backup annotation: per-service manifests are
+    # code in the platform (packages/backup-manifest) and its coverage gate only
+    # sees templates shipped from the servicebay repo, so this template cannot
+    # register itself — mdopp/servicebay#2849. Until that lands, this block is
+    # the written contract in the shape SERVICE_BACKUP_MANIFESTS uses, and the
+    # host-side nightly timer on the box is what actually copies the vault.
+    # The OKF projection in solaris.db is deliberately absent: it is re-ingested
+    # from paperless (ADR 0002), so paperless is its backup, not the other way
+    # round.
+    solaris.backup-contract: |
+      include:
+        paperless-media: "The scanned originals. Nothing else holds them; losing this is losing the paperwork."
+        paperless-data: "Search index, classifier model, app data. Rebuildable, but only by re-indexing every document."
+      dump:
+        paperless-pgdata: "Correspondents, document types, custom fields and the confirmed classifications the ingest adapter reads back. Capture with pg_dump against the postgres container, never as a file copy: a copy of a live cluster is torn, and the data dir is credential-coupled the way immich/pgdata is."
+      keep:
+        paperless-consume: "Scans that arrived but are not ingested yet. It lives inside the file-share tree, which the platform holds as bulk (Tier B) rather than in a config tarball, so it is kept where it lies and not duplicated here."
+      exclude:
+        paperless-redis: "Celery broker state. Rebuilt by the next task run."
 spec:
   # hostNetwork so NPM (also hostNetwork) proxies the webserver from the host
   # loopback, and so the #931 PaperlessIngest adapter running in the solaris

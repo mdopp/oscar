@@ -14,6 +14,11 @@
     "description": "The chat weights, downloaded into ${DATA_DIR}/llama/models. Default `gemma-4-E4B-it-Q4_0.gguf` (4.59 GB) — the household model, box-measured at 133.5 tok/s and 0.30 s per finished answer with the drafter below, against 53.0 tok/s / 0.62 s for the same model on Ollama (solarisbay#1318). Gemma 4 12B was measured too and rejected: 1.35 s per answer, more than twice the wait for the resident.",
     "default": "gemma-4-E4B-it-Q4_0.gguf"
   },
+  "LLAMA_MODEL_ALIAS": {
+    "type": "text",
+    "description": "The model name llama-server reports in the `model` field of its /v1 answers (`--alias`). Default `gemma-4-e4b`. Without it the field carries the GGUF path, which is what a neighbour service reads back to record which model answered it (solarisbay#1333); the leased profiles report `gemma-4-12b` and `qwen3.8-27b` under the same rule.",
+    "default": "gemma-4-e4b"
+  },
   "LLAMA_DRAFT_FILE": {
     "type": "text",
     "description": "Google's official Multi-Token-Prediction drafter for the same model (98.7 MB), the whole reason this template exists — speculative decoding roughly doubles the household answer rate and Ollama has no draft-model knob at all. Set to an empty string only to measure without it; the server then runs at about half the speed.",

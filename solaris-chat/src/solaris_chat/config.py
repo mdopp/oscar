@@ -227,9 +227,10 @@ class Settings:
     # would withhold a resident's own notes from every spoken turn forever — it
     # collapses to Haushalt instead. Vertraulich is never spoken either way.
     speaker_id_enabled: bool = False
-    # Honour a neighbour service's model lease (#1260)? The off switch for the
-    # foundry-chronicle contract: false ⇒ the lease endpoint refuses and every
-    # turn runs FAST_MODEL, so leaving the contract needs a setting, no rebuild.
+    # Honour a neighbour service's GPU lease (#1260, #1333)? The off switch for
+    # the foundry-chronicle contract: false ⇒ the lease endpoint answers 503 and
+    # the card stays the household's, so leaving the contract needs a setting,
+    # no rebuild.
     model_lease_enabled: bool = True
 
     @classmethod

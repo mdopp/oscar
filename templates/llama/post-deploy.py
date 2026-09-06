@@ -2,7 +2,7 @@
 """
 post-deploy hook for the `llama` template.
 
-Four responsibilities:
+Five responsibilities:
 
   1. **Download the GGUFs.** llama-server serves a file, not a registry —
      nothing pulls on first start. The weights, Google's MTP drafter and the
@@ -26,6 +26,13 @@ Four responsibilities:
      foundry` take the softer path: llama-server is reloaded with that
      profile's model instead of stopped, and Solaris answers the household
      from it.
+
+  5. **Install the lease broker** (#1333). A neighbour *container* cannot run
+     any of that, so it asks the Engine over HTTP instead; the Engine writes
+     `${DATA_DIR}/solarisbay/gpu_lease_request.json` and
+     `solaris-gpu-lease-broker.path` runs this script's `broker` verb, which
+     performs the same `acquire`/`release` and reports back in
+     `gpu_lease_status.json`.
 
 Idempotent: a second run finds the files on disk and skips the download; the
 Quadlet is re-activated only when it isn't the live unit source; the
@@ -250,6 +257,8 @@ def env_profile() -> dict[str, str]:
         "draft_n_max": env("LLAMA_DRAFT_N_MAX", "4"),
         "cache_type": "",
         "parallel": "",
+        "reasoning": "",
+        "alias": env("LLAMA_MODEL_ALIAS", "gemma-4-e4b"),
         "label": "Gemma 4 E4B",
     }
 
@@ -281,6 +290,11 @@ def server_args(
         "-c",
         context_length,
         "--jinja",
+        # The `model` field of every /v1 response, and what a neighbour service
+        # reads back to name the model it was answered by (#1333). Without it
+        # llama-server reports the GGUF path.
+        "--alias",
+        profile["alias"],
     ]
     # Both only appear for a profile that measured as needing them: the coding
     # model's 64 recurrent layers cost 748 MiB of state PER SEQUENCE, so with
@@ -303,6 +317,8 @@ def server_args(
         ]
     if mmproj_file:
         args += ["--mmproj", f"{models_dir_in_container}/{mmproj_file}"]
+    if profile["reasoning"]:
+        args += ["--reasoning", profile["reasoning"]]
     return args
 
 
@@ -460,6 +476,19 @@ LEASE_SCRIPT = "gpu-lease.py"
 LEASE_FILE = "gpu_lease.json"
 PROFILE_FILE = "llama-profile.json"
 
+# The neighbour-service front for all of this (#1333, contract
+# mdopp/foundry-chronicle#321). foundry asks over HTTP — `POST
+# /api/model-lease` on the Engine — because that is the only door a container
+# on this box can reach: it has no systemd, no `gpu-lease.py` and no way to
+# restart llama.service. So the Engine writes what it wants into
+# `gpu_lease_request.json`, this script's `.path` unit notices the write, and
+# the `broker` verb below runs the very same `acquire`/`release` a human would
+# type. The answer goes back through `gpu_lease_status.json`.
+LEASE_REQUEST_FILE = "gpu_lease_request.json"
+LEASE_STATUS_FILE = "gpu_lease_status.json"
+BROKER_UNIT = "solaris-gpu-lease-broker"
+SYSTEMD_USER_DIR = "~/.config/systemd/user"
+
 # `ollama.service` also pulls `ollama-warm.service` back in on start (#1236),
 # which is what re-warms Ollama's own fast model; llama-server warms by
 # loading at startup, which is what `release` waits for.
@@ -494,16 +523,32 @@ VOICE_DEVICE_ENV = {
 # cell H1): 15 004 of 16 380 MiB, 32.6 tok/s, tool calls 12/12, no thinking
 # leak, drafter acceptance 71.4%. `--parallel 1` and q8 KV are not tuning —
 # with llama-server's stock 4 slots or f16 KV the drafter never loads at all.
+#
+# 80k is the top of the ladder, re-measured 2026-09-06 (#1321): 15 700 MiB,
+# 33.6 tok/s, 12/12, and a 76 530-token prompt prefilled at 286 tok/s without
+# an OOM. 96k does not exist — with q8 KV the cache allocation fails and the
+# drafter never loads, and the `-ctv q4_0` that would make it fit drops prompt
+# processing to 47-96 tok/s, so a full window would take half an hour to read.
+# `--fit-target` is not the lever #1321 guessed it was: `--fit` gives up as
+# soon as `-ngl` is set by hand, which this profile does.
 CODING_PROFILE = {
     "model_repo": "unsloth/Qwen3.8-27B-GGUF",
     "model_file": "Qwen3.8-27B-UD-IQ3_XXS.gguf",
     "draft_repo": "ggml-org/Qwen3.8-27B-GGUF",
     "draft_file": "mtp-Qwen3.8-27B-Q4_0.gguf",
     "mmproj_file": "",
-    "context_length": "65536",
+    "context_length": "81920",
     "draft_n_max": "4",
     "cache_type": "q8_0",
     "parallel": "1",
+    # Box-measured 2026-09-06 (#1321): with tools in the request and no flag,
+    # Qwen puts 200 of 222 generated tokens into a `reasoning_content` trace
+    # the caller never sees, and goose aborts the whole run when one reply
+    # runs into its output-token limit. The household never noticed because
+    # solaris-chat sends this per request (#1318); a leased server is driven
+    # by aider/goose/Continue, which do not.
+    "reasoning": "off",
+    "alias": "qwen3.8-27b",
     "label": "Qwen 3.8 27B",
 }
 
@@ -526,6 +571,8 @@ FOUNDRY_PROFILE = {
     "draft_n_max": "4",
     "cache_type": "",
     "parallel": "",
+    "reasoning": "",
+    "alias": "gemma-4-12b",
     "label": "Gemma 4 12B",
 }
 
@@ -561,6 +608,14 @@ def lease_file(data_dir: str) -> str:
 
 def profile_file(data_dir: str) -> str:
     return os.path.join(data_dir, "solarisbay", PROFILE_FILE)
+
+
+def request_file(data_dir: str) -> str:
+    return os.path.join(data_dir, "solarisbay", LEASE_REQUEST_FILE)
+
+
+def status_file(data_dir: str) -> str:
+    return os.path.join(data_dir, "solarisbay", LEASE_STATUS_FILE)
 
 
 def voice_device_file(data_dir: str) -> str:
@@ -824,6 +879,23 @@ def lease_acquire(
         )
         return 2
     profile = LEASE_PROFILES.get(model)
+    # A renewal (#1333): the same holder asking again for the model it already
+    # has moves the deadline, it does not swap the server a second time — a
+    # restart every renewal interval would rebuild exactly the thrash the lease
+    # exists to prevent.
+    if profile and current.get("mode") == model and current.get("ready"):
+        current["until"] = time.time() + duration_sec
+        write_lease(data_dir, current)
+        schedule_expiry(data_dir, port, duration_sec)
+        jlog(
+            "info",
+            "llama:lease",
+            "lease renewed",
+            holder=holder,
+            model=profile["label"],
+            until_sec=int(current["until"]),
+        )
+        return 0
     if profile:
         if not gpu_container_is_live_source():
             # The swap rewrites llama.container. If llama.service is still the
@@ -862,6 +934,9 @@ def lease_acquire(
             "until": now + duration_sec,
             "mode": model or "exclusive",
             "model": profile["label"] if profile else "",
+            # What llama-server answers as for the window — solaris-chat hands
+            # this straight to the lease holder (#1333).
+            "alias": profile["alias"] if profile else "",
             # Flipped once the leased model answers /health. Until then the
             # card is in the swap and the Engine still says it is busy.
             "ready": False,
@@ -958,6 +1033,161 @@ def lease_release(data_dir: str, port: str) -> int:
     return 0
 
 
+def read_request(data_dir: str) -> dict[str, object]:
+    try:
+        with open(request_file(data_dir), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_status(data_dir: str, record: dict[str, object]) -> None:
+    path = status_file(data_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "llama:broker",
+            "could not write the lease status",
+            path=path,
+            error=str(e),
+        )
+
+
+def broker_run(data_dir: str, port: str) -> int:
+    """Apply the request the Engine wrote, and answer in the status file.
+
+    The `requested_at` is echoed back unchanged: that is how the HTTP side
+    tells a request still waiting for this unit from one it has already
+    handled, without either side keeping a clock.
+    """
+    request = read_request(data_dir)
+    if not request:
+        return 0
+    op = request.get("op")
+    requested_at = request.get("requested_at")
+    if op == "release":
+        rc = lease_release(data_dir, port)
+        write_status(
+            data_dir,
+            {
+                "requested_at": requested_at,
+                "op": "release",
+                "state": "released",
+                "model": "",
+                "alias": household_profile(data_dir)["alias"],
+                "expires_at": None,
+                "error": "" if rc == 0 else "llama-server did not come back",
+            },
+        )
+        return 0
+    model = str(request.get("model") or "")
+    profile = LEASE_PROFILES.get(model)
+    if op != "acquire" or profile is None:
+        write_status(
+            data_dir,
+            {
+                "requested_at": requested_at,
+                "op": op,
+                "state": "error",
+                "model": model,
+                "alias": household_profile(data_dir)["alias"],
+                "expires_at": None,
+                "error": "unknown request",
+            },
+        )
+        return 0
+    ttl = int(request.get("ttl_s") or LEASE_DEFAULT_DURATION_SEC)
+    rc = lease_acquire(data_dir, model, port, model, ttl)
+    lease = read_lease(data_dir)
+    ready = rc == 0 and bool(lease.get("ready"))
+    write_status(
+        data_dir,
+        {
+            "requested_at": requested_at,
+            "op": "acquire",
+            "state": "ready" if ready else "error",
+            "model": model,
+            "alias": profile["alias"]
+            if ready
+            else household_profile(data_dir)["alias"],
+            "expires_at": lease.get("until") if ready else None,
+            "error": "" if ready else "the lease could not be taken",
+        },
+    )
+    return 0
+
+
+def render_broker_units(data_dir: str, port: str, script: str) -> tuple[str, str]:
+    """The `.path`/`.service` pair, pure so the test can read them.
+
+    A path unit rather than a socket or a poll: the request file is on the
+    volume the chat pod already mounts, so the write itself is the signal and
+    nothing has to be exposed to the container.
+    """
+    path_unit = (
+        "[Unit]\n"
+        "Description=Watch for a Solaris GPU lease request (#1333)\n"
+        "\n"
+        "[Path]\n"
+        f"PathChanged={request_file(data_dir)}\n"
+        f"Unit={BROKER_UNIT}.service\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    service_unit = (
+        "[Unit]\n"
+        "Description=Apply a Solaris GPU lease request (#1333)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"Environment=DATA_DIR={data_dir}\n"
+        f"Environment=LLAMA_PORT={port}\n"
+        # The first foundry lease downloads 8 GB before it swaps anything.
+        "TimeoutStartSec=3600\n"
+        f"ExecStart={sys.executable} {script} broker\n"
+    )
+    return path_unit, service_unit
+
+
+def install_broker_units(data_dir: str, port: str, script: str) -> None:
+    """Write + enable the request watcher. Idempotent: same text, same enable."""
+    if not script:
+        return
+    unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
+    path_unit, service_unit = render_broker_units(data_dir, port, script)
+    try:
+        os.makedirs(unit_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(request_file(data_dir)), exist_ok=True)
+        for name, text in (
+            (f"{BROKER_UNIT}.path", path_unit),
+            (f"{BROKER_UNIT}.service", service_unit),
+        ):
+            with open(os.path.join(unit_dir, name), "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(os.path.join(unit_dir, name), 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "llama:broker",
+            "could not install the lease broker; foundry's HTTP lease will not switch anything",
+            path=unit_dir,
+            error=str(e),
+        )
+        return
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    systemctl("enable", ("--now", f"{BROKER_UNIT}.path"))
+    jlog("info", "llama:broker", "lease broker installed", unit=f"{BROKER_UNIT}.path")
+
+
 def lease_cli(argv: list[str]) -> int:
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
     port = env("LLAMA_PORT", "11435")
@@ -1048,6 +1278,12 @@ def main() -> int:
     # still installs instead of trying to move the GPU.
     if len(sys.argv) > 1 and sys.argv[1] in ("acquire", "release"):
         return lease_cli(sys.argv[1:])
+    # The host broker (#1333): what `solaris-gpu-lease-broker.service` runs when
+    # the Engine writes a request for a neighbour service.
+    if len(sys.argv) > 1 and sys.argv[1] == "broker":
+        return broker_run(
+            env("DATA_DIR", "/mnt/data/stacks"), env("LLAMA_PORT", "11435")
+        )
 
     port = env("LLAMA_PORT", "11435")
     repo = env("LLAMA_MODEL_REPO", "ggml-org/gemma-4-E4B-it-GGUF")
@@ -1120,6 +1356,7 @@ def main() -> int:
     # Before the wait, not after: a first install that is still loading weights
     # must not be the reason the lease script is missing when foundry asks.
     lease_script = install_lease_script(data_dir)
+    install_broker_units(data_dir, port, lease_script)
     save_household_profile(data_dir)
 
     if leased:

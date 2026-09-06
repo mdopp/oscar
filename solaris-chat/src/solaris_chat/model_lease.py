@@ -1,26 +1,27 @@
-"""The neighbour-service model lease (#1260, contract mdopp/foundry-chronicle#299).
+"""The neighbour-service GPU lease over HTTP (#1333, contract
+mdopp/foundry-chronicle#321).
 
-foundry-chronicle shares this box and holds `gemma4:12b` for hours; that model
-and the household's `gemma4:e4b` do not fit beside the voice stack (measured:
-voice 4508 MiB, e4b 3.26 GB, 12b 8.09 GB of 15.6 GiB usable). Insisting on the
-fast model during their evening costs a ~56 s model swap **each way, per turn**,
-so for the duration of a declared lease Solaris answers with the model they
-already hold.
+`POST/DELETE /api/model-lease` was the Ollama-era model swap (#1260): for the
+duration of a declared window Solaris answered with the model foundry already
+held. With llama.cpp serving one model at a time (#1318) that swap no longer
+exists — the real primitive is the box's GPU lease (#1319/#1325), which
+reloads llama-server on the leased profile. This module keeps the HTTP shape
+foundry built against and makes it the front for that primitive.
 
-The negotiated contract, in one place:
+The engine cannot switch systemd units from inside its container, so it does
+not try: a request is *written* to `gpu_lease_request.json` and a host
+`solaris-gpu-lease-broker.path` runs `gpu-lease.py` for it. Which means the
+HTTP layer never blocks on a 12 GB download — it answers from the two files
+the box owns:
 
-* they `POST` `{model, ttl_s}` over the loopback and `DELETE` at the end —
-  no token, no shared secret, and the payload carries **no** session, round or
-  guild identifier (`PAYLOAD_KEYS` and its test pin that shut).
-* `LEASE_TTL_SECONDS` is the safety net and `RENEW_INTERVAL_SECONDS` is derived
-  from it, so the two cadences cannot drift apart: a crashed evening lets the
-  lease expire instead of pinning the household on the big model forever.
-* Everything here fails **open**: no lease, an unreadable lease or an expired
-  lease all read as "no lease", i.e. normal operation on `FAST_MODEL`.
+* `gpu_lease.json` — the lease itself, written by `gpu-lease.py`. Its `ready`
+  flag is what separates `preparing` from `ready`.
+* `gpu_lease_status.json` — what the broker did with the last request. Its
+  `requested_at` is compared against the request's, so a request still to be
+  picked up reads as `preparing` instead of as no lease at all.
 
-The lease is persisted beside `solaris.db` — deliberately ours alone, not a
-file shared with them: surviving a `solaris-chat` restart is our problem by
-agreement, not a coupling of two containers to one path.
+Everything here fails **open**: an unreadable or missing file reads as "no
+lease", i.e. the household model on a normal box.
 """
 
 from __future__ import annotations
@@ -28,112 +29,173 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-# 15 minutes. The renewal cadence is derived, never a second literal — a
-# renewal interval that drifts past the TTL rebuilds exactly the model-swap
-# thrash the contract exists to prevent (foundry-chronicle's own catch).
-LEASE_TTL_SECONDS = 900
-RENEW_INTERVAL_SECONDS = LEASE_TTL_SECONDS // 3
+from solaris_chat import gpu_lease
+
+# The two leases a neighbour may ask for; anything else is a 400. Both are
+# `gpu-lease.py --model` values — the HTTP name and the box's profile name are
+# deliberately one word, so a lease cannot be requested under a name the box
+# does not know.
+MODELS = ("foundry", "coding")
+
+# 5 minutes to 4 hours. The floor keeps a lease from expiring inside its own
+# swap (the 12B cold-loads in ~40 s), the ceiling is the box's own default
+# lease duration — ours to enforce, not theirs to exceed.
+TTL_MIN_SECONDS = 300
+TTL_MAX_SECONDS = 14400
+
+# What a `preparing` answer tells the caller to wait before polling `GET`.
+RETRY_AFTER_SECONDS = 30
+
+# The model name llama-server reports (`--alias`) per lease, and for the
+# household model when no lease is held. The box sets the same three strings
+# in `templates/llama/post-deploy.py`; the leased ones are read back out of
+# the lease file rather than assumed, so only the household default lives in
+# two places (and `llama-profile.json` overrides it).
+ALIASES = {"foundry": "gemma-4-12b", "coding": "qwen3.8-27b"}
+HOUSEHOLD_ALIAS = "gemma-4-e4b"
 
 # The complete payload. Adding a key here is a contract change on both sides.
 PAYLOAD_KEYS = ("model", "ttl_s")
 
-# How often the expiry watch looks; small against the 15-minute TTL so the
-# re-warm starts promptly after a chronicle run dies without its DELETE.
-WATCH_INTERVAL_SECONDS = 30.0
+REQUEST_FILENAME = "gpu_lease_request.json"
+STATUS_FILENAME = "gpu_lease_status.json"
+PROFILE_FILENAME = "llama-profile.json"
 
 
-def lease_path(db_path: str) -> Path:
-    return Path(db_path).parent / "model_lease.json"
+def request_path(db_path: str) -> Path:
+    return Path(db_path).parent / REQUEST_FILENAME
+
+
+def status_path(db_path: str) -> Path:
+    return Path(db_path).parent / STATUS_FILENAME
+
+
+def profile_path(db_path: str) -> Path:
+    return Path(db_path).parent / PROFILE_FILENAME
+
+
+def renew_after(ttl: int) -> int:
+    """When the holder should POST again — a third of the window, so a missed
+    renewal has two more chances before the lease expires."""
+    return max(ttl // 3, 60)
 
 
 def parse_payload(body: Any) -> tuple[str, int]:
     """`(model, ttl)` from a `{model, ttl_s}` body, or `ValueError(<reason>)`.
 
     The key set is closed: an unknown field is refused rather than ignored, so
-    a session/round/guild identifier cannot quietly appear later. The TTL is
-    capped at `LEASE_TTL_SECONDS` — the safety net is ours to enforce.
+    a session/round/guild identifier cannot quietly appear later.
     """
     if not isinstance(body, dict):
         raise ValueError("invalid_payload")
     if set(body) - set(PAYLOAD_KEYS):
         raise ValueError("unexpected_field")
     model = body.get("model")
-    if not isinstance(model, str) or not model.strip():
+    if not isinstance(model, str) or model.strip() not in MODELS:
         raise ValueError("invalid_model")
-    raw_ttl = body.get("ttl_s", LEASE_TTL_SECONDS)
+    raw_ttl = body.get("ttl_s", TTL_MAX_SECONDS)
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl <= 0:
         raise ValueError("invalid_ttl")
-    return model.strip(), min(raw_ttl, LEASE_TTL_SECONDS)
+    return model.strip(), min(max(raw_ttl, TTL_MIN_SECONDS), TTL_MAX_SECONDS)
 
 
-def grant(db_path: str, model: str, ttl: int, *, now: float | None = None) -> float:
-    """Persist the lease; returns its absolute expiry (epoch seconds)."""
-    expires_at = (time.time() if now is None else now) + ttl
-    path = lease_path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"model": model, "expires_at": expires_at}), "utf-8")
-    return expires_at
-
-
-def clear(db_path: str) -> None:
-    lease_path(db_path).unlink(missing_ok=True)
-
-
-def _read(db_path: str) -> tuple[str, float]:
-    """`(model, expires_at)` as stored, or `("", 0.0)` for anything unreadable."""
+def _read(path: Path) -> dict:
     try:
-        data = json.loads(lease_path(db_path).read_text("utf-8"))
+        data = json.loads(path.read_text("utf-8"))
     except (OSError, ValueError):
-        return "", 0.0
-    if not isinstance(data, dict):
-        return "", 0.0
-    model = data.get("model")
-    expires_at = data.get("expires_at")
-    if not isinstance(model, str) or not model.strip():
-        return "", 0.0
-    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
-        return "", 0.0
-    return model.strip(), float(expires_at)
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def active_model(db_path: str, *, now: float | None = None) -> str:
-    """The leased model while the lease is live, else `""` (fail-open)."""
-    model, expires_at = _read(db_path)
-    return model if model and expires_at > (time.time() if now is None else now) else ""
+def read_request(db_path: str) -> dict:
+    return _read(request_path(db_path))
 
 
-def expired(db_path: str, *, now: float | None = None) -> bool:
-    """True only for a readable lease whose TTL has run out.
+def read_status(db_path: str) -> dict:
+    return _read(status_path(db_path))
 
-    A DELETE removes the file, so this is the window-*end-without-a-DELETE*
-    signal — which is what the re-warm hangs off, and why an explicit DELETE
-    and an expiry never both warm.
+
+def household_alias(db_path: str) -> str:
+    """The alias llama-server answers with when no lease is held.
+
+    Taken from the profile the llama post-deploy records beside the lease, so
+    an operator who deployed other weights is reported as those weights.
     """
-    model, expires_at = _read(db_path)
-    return bool(model) and expires_at <= (time.time() if now is None else now)
+    alias = _read(profile_path(db_path)).get("alias")
+    return (
+        alias.strip() if isinstance(alias, str) and alias.strip() else HOUSEHOLD_ALIAS
+    )
 
 
-async def expiry_watch(
-    db_path: str,
-    on_expire: Callable[[], Awaitable[None]],
-    *,
-    interval: float = WATCH_INTERVAL_SECONDS,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
+def write_request(
+    db_path: str, op: str, model: str = "", ttl_s: int = 0, *, now: float | None = None
 ) -> None:
-    """Clear an expired lease and re-warm, without waiting for the next turn.
+    """Ask the host broker for a lease change. The write itself is the signal —
+    `solaris-gpu-lease-broker.path` watches this file."""
+    path = request_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "op": op,
+                "model": model,
+                "ttl_s": ttl_s,
+                # The lease is held under the name of the model it serves —
+                # the same holder `gpu-lease.py acquire foundry` writes.
+                "holder": model,
+                "requested_at": time.time() if now is None else now,
+            }
+        ),
+        "utf-8",
+    )
 
-    A crashed chronicle run never sends its DELETE; without this the household
-    would keep answering on the big model until someone asked something, and
-    then pay the cold-load on that first turn.
+
+def state(db_path: str) -> dict:
+    """`{state, model, alias, expires_at}` — what `GET` answers.
+
+    `alias` is always the model llama-server has loaded *now*, which is what
+    the `/v1` responses carry: the leased one only once the swap is through,
+    the household one before and after.
     """
-    if sleep is None:
-        import asyncio
-
-        sleep = asyncio.sleep
-    while True:
-        if expired(db_path):
-            clear(db_path)
-            await on_expire()
-        await sleep(interval)
+    path = gpu_lease.lease_path(db_path)
+    idle = {
+        "state": "none",
+        "model": "",
+        "alias": household_alias(db_path),
+        "expires_at": None,
+    }
+    if gpu_lease.is_leased(path):
+        lease = gpu_lease.record(path)
+        mode = lease.get("mode")
+        if mode not in MODELS:
+            return idle
+        if not lease.get("ready"):
+            return {
+                "state": "preparing",
+                "model": mode,
+                "alias": household_alias(db_path),
+                "expires_at": None,
+            }
+        until = lease.get("until")
+        return {
+            "state": "ready",
+            "model": mode,
+            "alias": str(lease.get("alias") or ALIASES[mode]),
+            "expires_at": until if isinstance(until, (int, float)) else None,
+        }
+    request = read_request(db_path)
+    handled = read_status(db_path).get("requested_at")
+    if (
+        request.get("op") == "acquire"
+        and request.get("model") in MODELS
+        and request.get("requested_at") != handled
+    ):
+        return {
+            "state": "preparing",
+            "model": request["model"],
+            "alias": household_alias(db_path),
+            "expires_at": None,
+        }
+    return idle
