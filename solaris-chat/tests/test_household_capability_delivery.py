@@ -38,12 +38,13 @@ CAPABILITY_TOOLS = {
 # #1336: having the tool was not enough. Measured on the box after #1291,
 # "merk dir, dass der Müll dienstags kommt" hit fact_store 1 of 9 and "wie geht
 # es dir" hit get_solaris_status 0 of 9, while the status pointer's own literal
-# example "läuft alles" hit 3 of 3 — both halves were written as one example
-# sentence rather than as the intent. The schema description is what the model
-# weighs at call time, so it carries the phrasings; the SOUL pointer carries the
-# intent behind them.
+# example "läuft alles" hit 3 of 3 — the status half was written as one example
+# sentence rather than as the intent, and naming the intent instead fixed it
+# (5/5 on the box). Naming the same intent for fact_store did not: the box run
+# that pinned this fix measured 0/5, the model answering "Notiert: ..." without
+# ever calling the tool — worse than the 1/9 baseline it was meant to improve,
+# so that half is reverted pending a real fix (#1336 stays open for fact_store).
 INTENT_PHRASINGS = {
-    "fact_store": ("merk dir", "denk daran", "notier dir", "nicht vergessen"),
     "get_solaris_status": (
         "wie geht es dir",
         "bist du da",
@@ -53,7 +54,6 @@ INTENT_PHRASINGS = {
 }
 SOUL_POINTERS = {
     "get_solaris_status": ("befinden", "erreichbarkeit", "probleme gibt"),
-    "fact_store": ("merk dir", "denk daran", "notier dir"),
 }
 
 
