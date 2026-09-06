@@ -82,6 +82,37 @@ Under `{{DATA_DIR}}`:
 - `file-share/data/paperless-consume` — the watched drop dir (auto-ingest); the
   path #931 writes OCR-skipped docs into.
 
+## Backup — what must be preserved
+
+The `solaris.backup-contract` annotation in `template.yml` classifies every pod
+volume, one line each, with the reason:
+
+- `paperless/media` — **the scanned originals.** Nothing else holds them.
+- `paperless/data` — search index, classifier model, app data.
+- `paperless/pgdata` — correspondents, document types, custom fields and the
+  confirmed classifications the #931 ingest adapter reads back. Captured with
+  `pg_dump` against the `postgres` container, **never** as a file copy: a copy of
+  a live cluster is torn, and the data dir is credential-coupled the same way
+  ServiceBay treats `immich/pgdata`.
+- `file-share/data/paperless-consume` — scans that arrived but are not ingested
+  yet. It sits inside the file-share tree, which the platform holds as bulk
+  (ADR 0002 Tier B), so it is kept where it lies rather than duplicated here.
+- `paperless/redis` — Celery broker state; rebuilt by the next task run, not
+  backed up.
+
+The OKF projection in `solaris.db` is deliberately **not** in the contract: it is
+re-ingested from paperless (ADR 0002), so paperless is its backup.
+
+**ServiceBay does not read this annotation.** Per-service backup manifests are
+code in the platform (`packages/backup-manifest`) and its coverage gate only
+scans templates shipped from the servicebay repo, so a template from the
+solarisbay registry cannot register itself and there is no `pg_dump` collector to
+register. That gap is filed as mdopp/servicebay#2849; until it lands, what
+actually copies the vault on the box is the nightly host timer
+(`paperless-vault-backup.timer`, 02:30 UTC). The template test
+`test_paperless_backup_contract.py` keeps this contract in step with the pod, so
+the manifest can be lifted across unchanged once the platform can hold it.
+
 ## Verify
 
 Deployed through ServiceBay onto the box:
