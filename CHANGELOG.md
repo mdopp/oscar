@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.56.0](https://github.com/mdopp/solarisbay/compare/v0.55.1...v0.56.0) (2026-09-06)
+
+
+### Features
+
+* **chat:** give live notice frames the same id as the catch-up store ([4467853](https://github.com/mdopp/solarisbay/commit/4467853a8403638c4cb3c045154044a8994b2381)), closes [#1346](https://github.com/mdopp/solarisbay/issues/1346)
+* **chat:** let a lease holder name itself and release only its own window ([54a7051](https://github.com/mdopp/solarisbay/commit/54a7051927f0e5774b48f041d8e4c39e478a93d8)), closes [#1347](https://github.com/mdopp/solarisbay/issues/1347)
+* **template:** let sibling pods reach llama-server without LAN exposure ([18db01c](https://github.com/mdopp/solarisbay/commit/18db01c1d147e209629eb9be2d8a34500a4dbbc6)), closes [#1344](https://github.com/mdopp/solarisbay/issues/1344)
+
+
+### Bug Fixes
+
+* **template:** add llama v1-to-v2 migration script ([#1350](https://github.com/mdopp/solarisbay/issues/1350)) ([2f5ba16](https://github.com/mdopp/solarisbay/commit/2f5ba16b68bfd433223dd7d6d8a69eebe1dd8151))
+* **template:** make the llama migration script executable ([#1351](https://github.com/mdopp/solarisbay/issues/1351)) ([e56a478](https://github.com/mdopp/solarisbay/commit/e56a478ebf5f7b6ac55156a58a8629c9771e03ce))
+
 ## [0.55.1](https://github.com/mdopp/solarisbay/compare/v0.55.0...v0.55.1) (2026-09-06)
 
 
