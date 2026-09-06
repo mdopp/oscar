@@ -42,7 +42,10 @@ no token; contract mdopp/foundry-chronicle#321,
 `solaris_chat.model_lease`) — `{"model": "foundry", "ttl_s": 900}` →
 `200 ready` with an `alias`, or `202 preparing` with `retry_after` to poll;
 `409 held` if someone else holds it; no `DELETE` and the lease just expires
-back to household. **The `model` field of every `/v1` response carries the
+back to household. An optional `holder` (#1347) names the *service* asking —
+one permanent name like `foundry-chronicle`, never a session or a group — so
+`GET` says whose window is open and `DELETE {"holder": ...}` closes only that
+one; a bodyless `DELETE` stays the operator's unconditional way out. **The `model` field of every `/v1` response carries the
 alias of what is actually loaded** — a consumer reads its model from the
 response, never from its own setting, because the lease can swap under it.
 

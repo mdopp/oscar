@@ -468,7 +468,10 @@ Ollama/12b) — akzeptierte Folge, vom Operator bestätigt.
 Vertrag foundry-chronicle#321). `POST {"model":"foundry","ttl_s":900}` → `200 ready`
 mit `alias` oder `202 preparing` mit `retry_after` (dann `GET` pollen), `409 held`
 bei fremdem Halter; `DELETE` gibt frei; ohne `DELETE` läuft die Frist ab und das
-Haushaltsmodell kommt zurück. Das `model`-Feld jeder `/v1`-Antwort trägt den Alias
+Haushaltsmodell kommt zurück. Optionales `holder` (#1347) benennt den *Dienst*
+(ein dauerhafter Name wie `foundry-chronicle`, keine Sitzung, Runde oder Gruppe):
+`GET` liefert den Halter, `DELETE {"holder": ...}` gibt nur dessen Fenster frei,
+`DELETE` ohne Body bleibt der Operator-Notausgang. Das `model`-Feld jeder `/v1`-Antwort trägt den Alias
 des tatsächlich geladenen Modells — **Herkunft aus der Antwort, nie aus der
 Einstellung.**
 

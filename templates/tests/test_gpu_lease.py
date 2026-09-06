@@ -557,6 +557,31 @@ def test_the_broker_acquires_what_the_engine_asked_for(
     assert status["expires_at"] == lease["until"]
 
 
+def test_the_broker_files_the_window_under_the_service_that_asked(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """#1347: the Engine passes the caller's own name through, so the lease on
+    the box says who holds it and a stranger's `release` is refused here too."""
+    _request(
+        pd,
+        tmp_path,
+        op="acquire",
+        model="foundry",
+        ttl_s=900,
+        holder="foundry-chronicle",
+        requested_at=1.75,
+    )
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.read_lease(str(tmp_path))["holder"] == "foundry-chronicle"
+    status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
+    assert status["holder"] == "foundry-chronicle"
+    # An acquire without a holder stays what it has always been: the profile.
+    pathlib.Path(pd.lease_file(str(tmp_path))).unlink()
+    _request(pd, tmp_path, op="acquire", model="foundry", ttl_s=900, requested_at=1.85)
+    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.read_lease(str(tmp_path))["holder"] == "foundry"
+
+
 def test_the_broker_releases_and_says_which_model_is_back(
     pd, tmp_path, swap_box, systemctl_calls
 ):

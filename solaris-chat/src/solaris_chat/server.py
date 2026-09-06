@@ -3230,8 +3230,10 @@ def build_app(
     # what actually swaps llama-server's profile, driven by a host broker that
     # watches the request file this writes (the engine container cannot switch
     # systemd units). Loopback-only, no token, no shared secret, payload
-    # exactly {model, ttl_s} — contract mdopp/foundry-chronicle#321, state
-    # machine in solaris_chat.model_lease.
+    # exactly {model, ttl_s, holder} — contract mdopp/foundry-chronicle#321,
+    # state machine in solaris_chat.model_lease. `holder` (#1347) is optional
+    # and names the *service* asking, so a restarted neighbour releases its own
+    # window and not somebody else's; without it everything behaves as before.
 
     async def set_model_lease(request: web.Request) -> web.Response:
         if not model_lease_enabled:
@@ -3245,17 +3247,18 @@ def build_app(
                 {"ok": False, "reason": "invalid_json"}, status=400
             )
         try:
-            model, ttl = model_lease.parse_payload(body)
+            model, ttl, holder = model_lease.parse_payload(body)
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
         current = model_lease.state(solaris_db_path)
-        if current["state"] != "none" and current["model"] != model:
-            lease = gpu_lease.record(gpu_lease.lease_path(solaris_db_path))
+        if current["state"] != "none" and (
+            current["model"] != model or current["holder"] != holder
+        ):
             return web.json_response(
                 {
                     "ok": False,
                     "reason": "held",
-                    "holder": str(lease.get("holder") or current["model"]),
+                    "holder": current["holder"] or current["model"],
                     "expires_at": current["expires_at"],
                 },
                 status=409,
@@ -3263,8 +3266,8 @@ def build_app(
         # The same POST requests and renews; the broker turns a renewal into a
         # re-armed expiry timer rather than a second swap, so a held lease is
         # answered at once with the deadline it already has.
-        model_lease.write_request(solaris_db_path, "acquire", model, ttl)
-        log.info("chat.model_lease.request", model=model, ttl=ttl)
+        model_lease.write_request(solaris_db_path, "acquire", model, ttl, holder=holder)
+        log.info("chat.model_lease.request", model=model, ttl=ttl, holder=holder)
         if current["state"] == "ready":
             return web.json_response(
                 {
@@ -3307,9 +3310,35 @@ def build_app(
             return web.json_response({"ok": False, "reason": "disabled"}, status=503)
         if not is_loopback_caller(request):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
-        if model_lease.state(solaris_db_path)["state"] != "none":
-            model_lease.write_request(solaris_db_path, "release")
-            log.info("chat.model_lease.released")
+        raw = (await request.text()).strip()
+        body = None
+        if raw:
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                return web.json_response(
+                    {"ok": False, "reason": "invalid_json"}, status=400
+                )
+        try:
+            holder = model_lease.parse_release(body)
+        except ValueError as e:
+            return web.json_response({"ok": False, "reason": str(e)}, status=400)
+        current = model_lease.state(solaris_db_path)
+        if current["state"] != "none":
+            # A named holder releases only its own window; the bodyless call
+            # stays the operator's way out of a window nobody is renewing.
+            if holder and current["holder"] != holder:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "reason": "held",
+                        "holder": current["holder"],
+                        "expires_at": current["expires_at"],
+                    },
+                    status=409,
+                )
+            model_lease.write_request(solaris_db_path, "release", holder=holder)
+            log.info("chat.model_lease.released", holder=holder or current["holder"])
         return web.json_response({"ok": True, "state": "released"})
 
     # -- the household notice Home Assistant posts (#1276) ------------------

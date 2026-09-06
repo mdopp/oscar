@@ -32,7 +32,9 @@ Five responsibilities:
      `${DATA_DIR}/solarisbay/gpu_lease_request.json` and
      `solaris-gpu-lease-broker.path` runs this script's `broker` verb, which
      performs the same `acquire`/`release` and reports back in
-     `gpu_lease_status.json`.
+     `gpu_lease_status.json`. The request's `holder` (#1347) is passed straight
+     through as the `acquire <holder>` above, so a window on the box is filed
+     under the service that asked for it and not under the profile name.
 
 Idempotent: a second run finds the files on disk and skips the download; the
 Quadlet is re-activated only when it isn't the live unit source; the
@@ -1074,6 +1076,7 @@ def broker_run(data_dir: str, port: str) -> int:
         return 0
     op = request.get("op")
     requested_at = request.get("requested_at")
+    holder = str(request.get("holder") or "")
     if op == "release":
         rc = lease_release(data_dir, port)
         write_status(
@@ -1083,6 +1086,7 @@ def broker_run(data_dir: str, port: str) -> int:
                 "op": "release",
                 "state": "released",
                 "model": "",
+                "holder": holder,
                 "alias": household_profile(data_dir)["alias"],
                 "expires_at": None,
                 "error": "" if rc == 0 else "llama-server did not come back",
@@ -1099,6 +1103,7 @@ def broker_run(data_dir: str, port: str) -> int:
                 "op": op,
                 "state": "error",
                 "model": model,
+                "holder": holder,
                 "alias": household_profile(data_dir)["alias"],
                 "expires_at": None,
                 "error": "unknown request",
@@ -1106,7 +1111,8 @@ def broker_run(data_dir: str, port: str) -> int:
         )
         return 0
     ttl = int(request.get("ttl_s") or LEASE_DEFAULT_DURATION_SEC)
-    rc = lease_acquire(data_dir, model, port, model, ttl)
+    holder = holder or model
+    rc = lease_acquire(data_dir, holder, port, model, ttl)
     lease = read_lease(data_dir)
     ready = rc == 0 and bool(lease.get("ready"))
     write_status(
@@ -1116,6 +1122,7 @@ def broker_run(data_dir: str, port: str) -> int:
             "op": "acquire",
             "state": "ready" if ready else "error",
             "model": model,
+            "holder": holder,
             "alias": profile["alias"]
             if ready
             else household_profile(data_dir)["alias"],
