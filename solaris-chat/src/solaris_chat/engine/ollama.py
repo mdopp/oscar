@@ -134,15 +134,10 @@ class OllamaChat:
         tools: list[dict[str, Any]] | None = None,
         think: bool = False,
         options: dict[str, Any] | None = None,
-        tool_choice: str = "",
     ):
         """Yield `("delta", str)` / `("thinking", str)` per chunk, then one
         final `("done", ChatResult)`. Closing the generator aborts the HTTP
         request — that is what actually interrupts the model's generation.
-
-        `tool_choice` is accepted for signature parity with the llama-server
-        backend and ignored: `/api/chat` has no forced-tool field, so a routed
-        turn on this backend is carried by the code-enforced store instead.
         """
         body: dict[str, Any] = {
             "model": model,
