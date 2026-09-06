@@ -70,9 +70,9 @@ def _lease(tmp_path, pd) -> pathlib.Path:
     return tmp_path / "solarisbay" / pd.LEASE_FILE
 
 
-def test_leased_units_cover_voice_ollama_and_solaris_own_server(pd):
+def test_leased_units_cover_voice_embeddings_and_solaris_own_server(pd):
     assert set(pd.LEASED_UNITS) == {
-        "ollama.service",
+        "llama-embed.service",
         "solaris-whisper.service",
         "solaris-whisper-batch.service",
         "solaris-tts.service",
@@ -420,39 +420,47 @@ def test_foundry_acquire_swaps_only_llama_service(
     assert lease["ready"] is True
 
 
-def test_foundry_acquire_frees_ollamas_resident_model(
-    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
+def test_foundry_acquire_leaves_the_embeddings_server_alone(
+    pd, tmp_path, swap_box, systemctl_calls
 ):
-    """Ollama keeps serving embeddings, but its warm e4b costs 4 798 MiB and
-    the 12B has no room for it: 9 636 + 4 508 + 4 798 is over the 16 380 card."""
-    seen: list[tuple[str, object]] = []
-
-    def fake(url, payload=None, method="GET", timeout=10.0, extra_headers=None):
-        seen.append((url, payload))
-        if url.endswith("/api/ps"):
-            return 200, b'{"models": [{"model": "gemma4:e4b"}]}'
-        return 200, b"{}"
-
-    monkeypatch.setattr(pd, "http_request", fake)
+    """9 636 MiB for the 12B, 4 508 for the voice stack and 300 for the
+    embeddings server is 14 444 of a 16 380 card — so the household keeps its
+    semantic vault search for the whole evening (#1332)."""
     assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
-    assert (
-        f"{pd.OLLAMA_URL}/api/generate",
-        {"model": "gemma4:e4b", "keep_alive": 0},
-    ) in seen
+    assert [verb for verb, _ in systemctl_calls] == ["restart"]
+    assert not any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
 
 
-def test_foundry_release_restores_e4b_and_rewarms_ollama(
+def test_coding_acquire_stops_the_embeddings_server(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """The coding profile peaks at 15 700 of 16 380 MiB — the embeddings
+    server's 300 MB is the difference between the drafter loading and not."""
+    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
+    assert pd.EMBED_UNIT in pd.LEASE_GPU_UNITS
+
+
+def test_foundry_release_restores_e4b_without_touching_other_units(
     pd, tmp_path, swap_box, systemctl_calls
 ):
     pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
     systemctl_calls.clear()
     assert pd.lease_release(str(tmp_path), "11435") == 0
     assert "gemma-4-E4B-it-Q4_0.gguf" in swap_box.read_text()
-    assert ("restart", (pd.OLLAMA_WARM_UNIT,)) in systemctl_calls
     # Nothing was stopped, so nothing may be started behind the units' backs.
-    assert [verb for verb, _ in systemctl_calls] == ["restart", "restart"]
+    assert [verb for verb, _ in systemctl_calls] == ["restart"]
     assert not (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).exists()
     assert not _lease(tmp_path, pd).exists()
+
+
+def test_coding_release_starts_the_embeddings_server_again(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
+    systemctl_calls.clear()
+    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert ("start", pd.LEASE_GPU_UNITS) in systemctl_calls
 
 
 def test_a_foundry_lease_expires_back_to_the_household_model(

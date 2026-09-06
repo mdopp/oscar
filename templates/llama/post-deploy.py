@@ -2,7 +2,7 @@
 """
 post-deploy hook for the `llama` template.
 
-Five responsibilities:
+Six responsibilities:
 
   1. **Download the GGUFs.** llama-server serves a file, not a registry —
      nothing pulls on first start. The weights, Google's MTP drafter and the
@@ -13,12 +13,17 @@ Five responsibilities:
      `resources.limits.nvidia.com/gpu`, and on rootless FCoS the CDI device
      alone is not enough — without `SecurityLabelDisable=true` llama-server
      logs one passing "no usable GPU found" warning and answers from the CPU.
-     Same fixup the ollama template carries (#1026), same two lines.
+     Both lines are load-bearing; #1026 hit the same wall.
 
-  3. **Register an HTTP health check** against `/health`, which returns 200
+  3. **Run the embeddings server** (#1332). A second, small llama-server
+     instance serves `nomic-embed-text` on `--embeddings`, which is the last
+     job Ollama still had. Its own `llama-embed.container` Quadlet, loopback
+     bind, ~300 MB of VRAM.
+
+  4. **Register an HTTP health check** against `/health`, which returns 200
      only once both the model and the drafter are loaded.
 
-  4. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
+  5. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
      lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
      <holder>` it hands the whole card to another job, with `release` it gives
      it back. Self-copy, like ollama-warm (#1236), so the unit list cannot
@@ -27,7 +32,7 @@ Five responsibilities:
      profile's model instead of stopped, and Solaris answers the household
      from it.
 
-  5. **Install the lease broker** (#1333). A neighbour *container* cannot run
+  6. **Install the lease broker** (#1333). A neighbour *container* cannot run
      any of that, so it asks the Engine over HTTP instead; the Engine writes
      `${DATA_DIR}/solarisbay/gpu_lease_request.json` and
      `solaris-gpu-lease-broker.path` runs this script's `broker` verb, which
@@ -465,6 +470,202 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     return True
 
 
+# --- The embeddings server (#1332) ----------------------------------------
+#
+# The vault's semantic search and the OKF vector store need `nomic-embed-text`.
+# Ollama used to serve it, and that was the only reason the service was still
+# installed at all. A second, small llama-server does the same job on the same
+# card: `--embeddings` turns on OpenAI `/v1/embeddings`, and 274 MB of f16
+# weights cost about 300 MB of VRAM.
+#
+# Two settings are not tuning and must not be "simplified":
+#   * `--pooling mean` — nomic-embed-text is a mean-pooled model. Any other
+#     pooling produces valid-looking vectors that do not match the ~46k rows
+#     already in `okf_vectors`, and search would quietly get worse rather than
+#     fail.
+#   * `--ubatch-size` == the context length — an embedding model runs
+#     non-causal attention, and llama.cpp rejects a request longer than one
+#     micro-batch outright.
+EMBED_UNIT = "llama-embed.service"
+EMBED_CONTAINER = "llama-embed.container"
+
+
+def embed_profile() -> dict[str, str]:
+    """The embeddings server profile, as the template variables describe it."""
+    return {
+        # Read raw, not through env(): that helper folds an empty value back
+        # to the default, and an empty LLAMA_EMBED_PORT is how an operator
+        # turns the embeddings server off.
+        "port": os.environ.get("LLAMA_EMBED_PORT", "11436").strip(),
+        "model_repo": env("LLAMA_EMBED_REPO", "nomic-ai/nomic-embed-text-v1.5-GGUF"),
+        "model_file": env("LLAMA_EMBED_FILE", "nomic-embed-text-v1.5.f16.gguf"),
+        "alias": env("LLAMA_EMBED_ALIAS", "nomic-embed-text"),
+        "context_length": env("LLAMA_EMBED_CONTEXT_LENGTH", "2048"),
+    }
+
+
+def embed_server_args(
+    models_dir_in_container: str, profile: dict[str, str] | None = None
+) -> list[str]:
+    """The llama-server argv for the embeddings instance.
+
+    Loopback only: its one consumer is the Solaris Engine, which runs in this
+    host's network namespace. Unlike the chat server (#1344) no pod reaches it,
+    so there is nothing to open the LAN-facing bind for.
+    """
+    profile = profile or embed_profile()
+    return [
+        "--host",
+        "127.0.0.1",
+        "--port",
+        profile["port"],
+        "-m",
+        f"{models_dir_in_container}/{profile['model_file']}",
+        "-ngl",
+        "99",
+        "-c",
+        profile["context_length"],
+        "--batch-size",
+        profile["context_length"],
+        "--ubatch-size",
+        profile["context_length"],
+        "--pooling",
+        "mean",
+        "--embeddings",
+        "--alias",
+        profile["alias"],
+    ]
+
+
+def render_embed_container_unit(
+    data_dir: str, gpu: bool, profile: dict[str, str] | None = None
+) -> str:
+    """Render the `llama-embed.container` Quadlet text. Pure, so the
+    needs-rewrite comparison and the write share one source of truth."""
+    exec_args = " ".join(embed_server_args("/models", profile))
+    gpu_lines = (
+        "AddDevice=nvidia.com/gpu=all\n"
+        "# Same pair as llama.container: the device alone leaves NVML unable to\n"
+        "# init under SELinux and llama-server embeds from the CPU instead,\n"
+        "# with nothing in any log that reads as an error (#1318).\n"
+        "SecurityLabelDisable=true\n"
+        if gpu
+        else ""
+    )
+    return (
+        "[Unit]\n"
+        "Description=llama.cpp llama-server (embeddings, nomic-embed-text)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        "Image=ghcr.io/ggml-org/llama.cpp:server-cuda\n"
+        "ContainerName=llama-embed\n"
+        "Network=host\n"
+        f"Exec={exec_args}\n"
+        f"{gpu_lines}"
+        f"Volume={data_dir}/llama/models:/models:Z\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_embed_unit(data_dir: str, gpu: bool) -> bool:
+    """Install/refresh `llama-embed.container` and make sure it is running.
+
+    Idempotent: an unchanged unit file is only started, not rewritten. The
+    embeddings server is a Quadlet of its own rather than a second container in
+    the pod, because the GPU fixup replaces the pod's `.kube` unit outright and
+    a pod sibling would be dropped with it.
+    """
+    profile = embed_profile()
+    if not profile["port"]:
+        jlog(
+            "info",
+            "llama:embed",
+            "LLAMA_EMBED_PORT is empty; no embeddings server. The vault's semantic search falls back to keyword search.",
+        )
+        return False
+    systemd_dir = os.path.expanduser("~/.config/containers/systemd")
+    container_path = os.path.join(systemd_dir, EMBED_CONTAINER)
+    unit_text = render_embed_container_unit(data_dir, gpu, profile)
+    existing = ""
+    if os.path.exists(container_path):
+        try:
+            with open(container_path, encoding="utf-8") as f:
+                existing = f.read()
+        except OSError:
+            existing = ""
+    if existing != unit_text:
+        try:
+            os.makedirs(systemd_dir, exist_ok=True)
+            with open(container_path, "w", encoding="utf-8") as f:
+                f.write(unit_text)
+            os.chmod(container_path, 0o644)
+        except OSError as e:
+            jlog(
+                "error",
+                "llama:embed",
+                "could not write llama-embed.container",
+                path=container_path,
+                error=str(e),
+            )
+            return False
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+        )
+    started = subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "restart" if existing != unit_text else "start",
+            EMBED_UNIT,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if started.returncode != 0:
+        jlog(
+            "error",
+            "llama:embed",
+            "could not start the embeddings server",
+            unit=EMBED_UNIT,
+            stderr=started.stderr[:400],
+        )
+        return False
+    jlog(
+        "info",
+        "llama:embed",
+        "embeddings server running",
+        unit=EMBED_UNIT,
+        port=profile["port"],
+        model=profile["model_file"],
+    )
+    return True
+
+
+def embed_reachable(port: str) -> bool:
+    """True when the embeddings server answers a real `/v1/embeddings` call.
+
+    `/health` only says the model loaded; it does not say the server was
+    started with `--embeddings`, and without that flag every embed request
+    comes back 501 while the unit looks perfectly healthy.
+    """
+    status, _ = http_request(
+        f"http://127.0.0.1:{port}/v1/embeddings",
+        payload={"input": "ok"},
+        method="POST",
+        timeout=30,
+    )
+    return status == 200
+
+
 # --- The whole-card GPU lease (#1320) -------------------------------------
 #
 # Box-measured over the night of 04./05.09. (#1318): the coding run's Qwen 27B
@@ -494,16 +695,18 @@ LEASE_STATUS_FILE = "gpu_lease_status.json"
 BROKER_UNIT = "solaris-gpu-lease-broker"
 SYSTEMD_USER_DIR = "~/.config/systemd/user"
 
-# `ollama.service` also pulls `ollama-warm.service` back in on start (#1236),
-# which is what re-warms Ollama's own fast model; llama-server warms by
-# loading at startup, which is what `release` waits for.
+# The embeddings server (#1332) is listed here rather than left alone: the
+# coding profile peaks at 15 700 MiB of 16 380, so its 300 MB is the
+# difference between the drafter loading and not. A foundry lease leaves it
+# up — 9 636 MiB plus the voice stack still has room, and the household would
+# otherwise lose its semantic vault search for the whole window.
 #
 # The two voice units are listed apart because the coding lease (#1319) keeps
 # them RUNNING, on the CPU: the operator ruled on 2026-09-05 that the house can
 # still be spoken to during a coding window, slower rather than not at all. A
 # foundry lease (#1325) stops none of the five and leaves them all on the GPU.
 LEASE_GPU_UNITS = (
-    "ollama.service",
+    EMBED_UNIT,
     "solaris-whisper-batch.service",
     "solaris-wakeword-trainer.service",
 )
@@ -584,14 +787,6 @@ FOUNDRY_PROFILE = {
 # The profiles that swap llama-server instead of emptying the card. Without
 # `--model` the lease is exclusive: everything stops and nothing answers.
 LEASE_PROFILES = {"coding": CODING_PROFILE, "foundry": FOUNDRY_PROFILE}
-
-# Ollama stays up through a foundry lease — the household still needs its
-# embeddings and the vision ingest — but it must not go on holding a chat
-# model: its warm e4b costs 4 798 MiB (box idle 6 532 minus the voice stack's
-# 1 734), which is more than the 12B has to spare. `ollama-warm.service`
-# (#1236) puts it back at release.
-OLLAMA_URL = "http://127.0.0.1:11434"
-OLLAMA_WARM_UNIT = "ollama-warm.service"
 
 # How long `release` waits for the household model to answer /health again.
 # Cold e4b was ~38 s in the night measurements; this is the give-up point,
@@ -748,39 +943,6 @@ def set_voice_device(data_dir: str, device: str) -> None:
     )
 
 
-def unload_ollama_models() -> None:
-    """Ask Ollama to drop every model it holds resident, keeping the service.
-
-    `keep_alive: 0` on a bare generate call is Ollama's own unload path, so the
-    runner exits and gives the VRAM back without the unit going down with it.
-    """
-    status, body = http_request(f"{OLLAMA_URL}/api/ps", timeout=10)
-    if status != 200:
-        jlog("warn", "llama:lease", "could not ask Ollama what it holds", status=status)
-        return
-    try:
-        loaded = json.loads(body.decode("utf-8") or "{}").get("models") or []
-    except ValueError:
-        return
-    for entry in loaded:
-        name = (
-            entry.get("model") or entry.get("name") if isinstance(entry, dict) else ""
-        )
-        if not name:
-            continue
-        http_request(
-            f"{OLLAMA_URL}/api/generate",
-            payload={"model": name, "keep_alive": 0},
-            method="POST",
-            timeout=60,
-        )
-        jlog("info", "llama:lease", "asked Ollama to unload a model", model=name)
-
-
-def rewarm_ollama() -> None:
-    systemctl("restart", (OLLAMA_WARM_UNIT,))
-
-
 def apply_llama_profile(port: str, data_dir: str, profile: dict[str, str]) -> None:
     """Reload llama-server on `profile` — rewrite its Quadlet and restart it."""
     container_path = os.path.expanduser("~/.config/containers/systemd/llama.container")
@@ -860,10 +1022,11 @@ def lease_acquire(
     `model=coding` (#1319) and `model=foundry` (#1325) are the softer variants:
     llama-server is reloaded on that profile's model instead of stopped and
     Solaris answers the household from it for the window. A coding lease also
-    stops Ollama, the batch transcriber and the trainer and moves the voice
-    stack to the CPU; a foundry lease leaves all five units alone on the GPU,
-    because foundry transcribes through `solaris-whisper-batch` while it runs.
-    Without `--model` the card is emptied outright.
+    stops the embeddings server, the batch transcriber and the trainer and
+    moves the voice stack to the CPU; a foundry lease leaves all five units
+    alone on the GPU, because foundry transcribes through
+    `solaris-whisper-batch` while it runs and the household keeps its semantic
+    vault search. Without `--model` the card is emptied outright.
     """
     current = read_lease(data_dir)
     if current and current.get("holder") != holder:
@@ -956,7 +1119,7 @@ def lease_acquire(
         jlog(
             "info",
             "llama:lease",
-            "GPU leased — voice stack, Ollama and llama-server stopped",
+            "GPU leased — voice stack, embeddings server and llama-server stopped",
             holder=holder,
             units=list(LEASED_UNITS),
             until_sec=int(now + duration_sec),
@@ -965,8 +1128,6 @@ def lease_acquire(
     if model == "coding":
         systemctl("stop", LEASE_GPU_UNITS)
         set_voice_device(data_dir, "cpu")
-    else:
-        unload_ollama_models()
     apply_llama_profile(port, data_dir, profile)
     llama_url = f"http://127.0.0.1:{port}"
     if not wait_for_ready(llama_url, deadline_sec=LEASE_WARM_DEADLINE_SEC):
@@ -1011,7 +1172,6 @@ def lease_release(data_dir: str, port: str) -> int:
         apply_llama_profile(port, data_dir, household_profile(data_dir))
     elif mode == "foundry":
         apply_llama_profile(port, data_dir, household_profile(data_dir))
-        rewarm_ollama()
     else:
         systemctl("start", LEASED_UNITS)
     llama_url = f"http://127.0.0.1:{port}"
@@ -1250,7 +1410,13 @@ def install_lease_script(data_dir: str) -> str:
     return dst
 
 
-def register_http_check(sb_api: str, sb_token: str, llama_url: str) -> None:
+def register_http_check(
+    sb_api: str,
+    sb_token: str,
+    llama_url: str,
+    check_id: str = "llama-api",
+    name: str = "llama.cpp API",
+) -> None:
     """Best-effort: a non-200 here doesn't block the install."""
     headers = {}
     if sb_token:
@@ -1258,8 +1424,8 @@ def register_http_check(sb_api: str, sb_token: str, llama_url: str) -> None:
     status, body = http_request(
         f"{sb_api}/api/health/checks",
         payload={
-            "id": "llama-api",
-            "name": "llama.cpp API",
+            "id": check_id,
+            "name": name,
             "type": "http",
             "target": f"{llama_url}/health",
             "interval": 60,
@@ -1271,7 +1437,7 @@ def register_http_check(sb_api: str, sb_token: str, llama_url: str) -> None:
         extra_headers=headers,
     )
     if status == 200:
-        jlog("info", "llama:health", "registered http check llama-api")
+        jlog("info", "llama:health", f"registered http check {check_id}")
     else:
         jlog(
             "warn",
@@ -1342,6 +1508,18 @@ def main() -> int:
                 file=filename,
             )
 
+    embed = embed_profile()
+    if embed["port"] and not download_model(
+        embed["model_repo"], embed["model_file"], models_dir, stall_sec
+    ):
+        jlog(
+            "warn",
+            "llama:embed",
+            "the embedding weights are not on the box — the vault's semantic search stays on keyword hits until they are. Download %s from https://huggingface.co/%s into %s"
+            % (embed["model_file"], embed["model_repo"], models_dir),
+            file=embed["model_file"],
+        )
+
     # A deploy in the middle of a lease must not take the card back: rewriting
     # the Quadlet would restart llama-server into a card foundry or the coding
     # run is using, and then wait 15 minutes for a /health that cannot come.
@@ -1356,7 +1534,9 @@ def main() -> int:
         )
     elif gpu_requested:
         install_gpu_quadlet_fallback(port, data_dir)
+        install_embed_unit(data_dir, gpu=True)
     else:
+        install_embed_unit(data_dir, gpu=False)
         jlog(
             "info",
             "llama:bootstrap",
@@ -1401,9 +1581,37 @@ def main() -> int:
 
     register_http_check(sb_api, sb_token, llama_url)
 
+    if embed["port"]:
+        embed_url = f"http://127.0.0.1:{embed['port']}"
+        if wait_for_ready(embed_url, deadline_sec=180) and embed_reachable(
+            embed["port"]
+        ):
+            register_http_check(
+                sb_api, sb_token, embed_url, "llama-embed-api", "llama.cpp embeddings"
+            )
+            jlog(
+                "info",
+                "llama:embed",
+                "embeddings server answering /v1/embeddings",
+                url=embed_url,
+                model=embed["alias"],
+            )
+        else:
+            jlog(
+                "warn",
+                "llama:embed",
+                "the embeddings server did not answer /v1/embeddings — the vault's semantic search is degraded to keyword hits. Check `journalctl --user -u llama-embed.service`.",
+                url=embed_url,
+            )
+
     print(f"✅ llama-server is running on 127.0.0.1:{port}.")
     print(f"   Models in {models_dir} (from https://huggingface.co/{repo}).")
     print("   The Solaris Engine reaches it via LLAMA_SERVER_URL.")
+    if embed["port"]:
+        print(
+            f"   Embeddings on 127.0.0.1:{embed['port']} ({embed['alias']}), "
+            "reached via LLAMA_EMBED_URL."
+        )
     if lease_script:
         print(f"   GPU lease: python3 {lease_script} acquire <name> | release")
         print(

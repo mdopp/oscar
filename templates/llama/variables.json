@@ -30,6 +30,31 @@
     "description": "The multimodal projector (560 MB) that keeps Gemma 4's vision working, so photo attachments in the chat are still understood after the move off Ollama. Blank disables it: the server starts text-only and an attached photo reaches the model as text alone. Costs about 0.5 GB of VRAM.",
     "default": "mmproj-gemma-4-E4B-it-Q8_0.gguf"
   },
+  "LLAMA_EMBED_PORT": {
+    "type": "text",
+    "description": "Host loopback port the embeddings server binds on. Default `11436` — next to the chat server's 11435. This second llama-server instance runs `nomic-embed-text` with `--embeddings` and serves OpenAI `/v1/embeddings`; it replaces Ollama, which used to be the only reason that service was still installed (solarisbay#1332). It costs about 300 MB of VRAM and binds 127.0.0.1 only: its one consumer is the Solaris Engine, which shares this host's network namespace. Set to an empty string to skip the embeddings server entirely — the vault's semantic search then degrades to keyword search.",
+    "default": "11436"
+  },
+  "LLAMA_EMBED_REPO": {
+    "type": "text",
+    "description": "Hugging Face repo the embedding GGUF is downloaded from. Default `nomic-ai/nomic-embed-text-v1.5-GGUF` — nomic's own conversion of the model Ollama served under the tag `nomic-embed-text`, so vectors already in `okf_vectors` stay comparable with newly computed ones.",
+    "default": "nomic-ai/nomic-embed-text-v1.5-GGUF"
+  },
+  "LLAMA_EMBED_FILE": {
+    "type": "text",
+    "description": "The embedding weights. Default `nomic-embed-text-v1.5.f16.gguf` (274 MB) — the same quantisation Ollama's `nomic-embed-text` tag ships, deliberately: a smaller quant would move the vectors away from the ~46k already stored and semantic search would silently get worse. 768 dimensions, mean pooling, no query/document prefix — exactly what the Ollama path produced.",
+    "default": "nomic-embed-text-v1.5.f16.gguf"
+  },
+  "LLAMA_EMBED_ALIAS": {
+    "type": "text",
+    "description": "The name the embeddings server reports in the `model` field of its answers, and the name written into the `okf_vectors.model` column. Default `nomic-embed-text` — the tag the Ollama era used, kept so old and new rows read the same.",
+    "default": "nomic-embed-text"
+  },
+  "LLAMA_EMBED_CONTEXT_LENGTH": {
+    "type": "text",
+    "description": "Context window of the embeddings server (tokens). Default `2048` — nomic-embed-text v1.5's native window, and what Ollama loaded it at. The batch size is pinned to the same value: an embedding model runs non-causal attention, so llama.cpp requires a micro-batch at least as large as the window or it refuses the request.",
+    "default": "2048"
+  },
   "LLAMA_CONTEXT_LENGTH": {
     "type": "text",
     "description": "Context window the model is loaded at (tokens). Default `32768` — the same window the household prompt was measured against (7.7k of system prompt, tools and entity registry, leaving ~25k of conversation), and what the chat's auto-compaction assumes. Unlike Ollama this is a per-server setting, not a per-request hint: raising it costs KV-cache VRAM on every turn.",
