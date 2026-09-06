@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.58.0](https://github.com/mdopp/solarisbay/compare/v0.57.0...v0.58.0) (2026-09-06)
+
+
+### Features
+
+* **template:** run pi-web on the box with Qwen through the coding lease ([fe071dc](https://github.com/mdopp/solarisbay/commit/fe071dc8bc7d4d0877b5fcd51d01dd26e90722ad)), closes [#1357](https://github.com/mdopp/solarisbay/issues/1357)
+
+
+### Bug Fixes
+
+* **template:** open pi-web data perms for its non-root containers ([#1360](https://github.com/mdopp/solarisbay/issues/1360)) ([293d447](https://github.com/mdopp/solarisbay/commit/293d44723ae4e2e8402a89ec7d9f9bda4c4255a4))
+
 ## [0.57.0](https://github.com/mdopp/solarisbay/compare/v0.56.0...v0.57.0) (2026-09-06)
 
 
