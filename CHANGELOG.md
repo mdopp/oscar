@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.57.0](https://github.com/mdopp/solarisbay/compare/v0.56.0...v0.57.0) (2026-09-06)
+
+
+### Features
+
+* **chat:** embed and describe images through llama-server ([c9b2f49](https://github.com/mdopp/solarisbay/commit/c9b2f49c1d96b7756c8149da0a10b1e365f15022)), closes [#1332](https://github.com/mdopp/solarisbay/issues/1332)
+* **template:** serve embeddings from a second llama-server ([68be9be](https://github.com/mdopp/solarisbay/commit/68be9be98ea82a9d3b11c32e4b1f306a301d991d)), closes [#1332](https://github.com/mdopp/solarisbay/issues/1332)
+
 ## [0.56.0](https://github.com/mdopp/solarisbay/compare/v0.55.1...v0.56.0) (2026-09-06)
 
 
