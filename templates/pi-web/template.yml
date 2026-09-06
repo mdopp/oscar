@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pi-web
+  labels:
+    app: pi-web
+  annotations:
+    servicebay.label: "Coding Agent Web UI (PI WEB)"
+    servicebay.schema-version: "1"
+    servicebay.ports: "{{PI_WEB_PORT}}/tcp"
+    # nginx + auth for the proxy host and Authelia forward-auth; llama because
+    # the sessions have no model without llama-server; solaris because the
+    # coding lease that loads Qwen is an endpoint of the Solaris Engine.
+    servicebay.dependencies: "nginx,auth,llama,solaris"
+    # PI WEB answers /api/pi-web/runtime once the web process is up and has
+    # reached its session daemon. ServiceBay can't substitute a variable inside
+    # an annotation block scalar (#136), so the port is the literal default —
+    # an operator changing PI_WEB_PORT must change this line too.
+    servicebay.healthcheck: |
+      url: http://127.0.0.1:8504/api/pi-web/runtime
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 5m
+spec:
+  # NO hostNetwork. ADR 0007 Decision 2's carve-out list is closed and a new
+  # service does not join it by arguing its case; Decision 3 says needing a
+  # loopback-bound sibling is not a carve-out either. So this pod runs in its
+  # own netns, publishes 8504 as a hostPort, and reaches llama-server as
+  # `host.containers.internal` — the sibling half of that pattern already
+  # landed (#1344: llama binds 0.0.0.0 and LLAMA_PORT carries blockLanAccess),
+  # which is what makes the isolated path answer at all.
+  #
+  # The one thing this pod therefore CANNOT reach is the Solaris Engine's
+  # `/api/model-lease`: it is loopback-only by design (no token, reachability
+  # is the authorisation) and the engine binds 127.0.0.1 alone. The lease is
+  # held by a host-side systemd unit instead — see post-deploy.py.
+  restartPolicy: Always
+  containers:
+  # sessiond — the workspace authority: it owns the agent sessions, the
+  # terminals and the model runtime, and keeps them alive across browser
+  # disconnects. It talks to the web process over a unix socket on the shared
+  # /data volume, so it publishes no port of its own.
+  - name: sessiond
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    # `args`, not `command`: the image's ENTRYPOINT is tini, and a `command`
+    # here would replace it and leave the sessions' children unreaped.
+    args: ["pi-web-sessiond"]
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+    - mountPath: /workspace
+      name: pi-web-workspace
+
+  # web — the browser-facing HTTP/WebSocket surface. NPM proxies
+  # {{PI_WEB_SUBDOMAIN}}.{{PUBLIC_DOMAIN}} down to the host port below behind
+  # Authelia forward-auth; PI WEB itself has no login of its own (upstream is
+  # explicit that it assumes trusted users), which is why PI_WEB_PORT carries
+  # blockLanAccess and the proxy host is the only way in.
+  - name: web
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args: ["pi-web-server"]
+    env:
+    # 0.0.0.0 inside the pod's own netns — the pod is the boundary here, not
+    # the bind address, and a loopback bind would make the hostPort unreachable.
+    - name: PI_WEB_HOST
+      value: "0.0.0.0"
+    - name: PI_WEB_PORT
+      value: "8504"
+    # The host this is served under. Also the template's reference to
+    # {{PUBLIC_DOMAIN}}: without one anywhere in this YAML the manifest
+    # assembler never injects the global, and the subdomain's proxy host is
+    # dropped with nothing in the install log (assist
+    # footgun-subdomain-needs-public-domain).
+    - name: PI_WEB_ALLOWED_HOSTS
+      value: "{{PI_WEB_SUBDOMAIN}}.{{PUBLIC_DOMAIN}}"
+    ports:
+    - containerPort: 8504
+      hostPort: {{PI_WEB_PORT}}
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+    - mountPath: /workspace
+      name: pi-web-workspace
+
+  volumes:
+  # PI WEB + Pi agent state: the project and machine registries, session
+  # archives, the sessiond socket, and the Pi agent directory whose
+  # models.json points the sessions at llama-server (written by post-deploy).
+  - name: pi-web-data
+    hostPath:
+      path: {{DATA_DIR}}/pi-web/data
+      type: DirectoryOrCreate
+  # The repositories the agents work in. Separate from the state volume so a
+  # backup can treat checked-out code and durable app state differently.
+  - name: pi-web-workspace
+    hostPath:
+      path: {{DATA_DIR}}/pi-web/workspace
+      type: DirectoryOrCreate

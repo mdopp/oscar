@@ -1,0 +1,37 @@
+{
+  "PI_WEB_PORT": {
+    "type": "text",
+    "description": "Host port the PI WEB browser surface is published on. Default `8504` — upstream's own port, and free on this box (the engine holds 8787, llama 11435/11436, paperless 8000). PI WEB has no login of its own: upstream states plainly that it assumes trusted users and is not a sandbox or a permission system, so the only intended way in is the proxy host below, behind Authelia. `blockLanAccess` is what makes that true rather than merely intended — ServiceBay installs an nftables rule dropping this port on physical interfaces while leaving loopback alone, so nginx (host network, connecting over loopback) still reaches it and a laptop on the WLAN does not.",
+    "default": "8504",
+    "blockLanAccess": true
+  },
+  "PI_WEB_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for PI WEB. `pi` matches the DNS record the operator already created (`pi.<publicDomain>` resolves to the box); only the proxy host was missing. `exposure: internal` gives it a real Let's Encrypt certificate plus a LAN access list rather than an internet-facing host — the operator's decision of 2026-09-06: public certificates, no public reachability. Authelia forward-auth with `one_factor` gates every request, the same level as the chat surface; PI WEB runs agent sessions with a shell in your repositories, so anyone through that login has the box.",
+    "default": "pi",
+    "exposure": "internal",
+    "proxyPort": "PI_WEB_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__\n# PI WEB streams a running session over a WebSocket that stays open for as\n# long as the agent works; buffering it or timing it out at the default 60s\n# drops the transcript mid-answer.\nproxy_buffering off;\nproxy_read_timeout 600s;\nproxy_send_timeout 600s;"
+    }
+  },
+  "LLAMA_PORT": {
+    "type": "text",
+    "description": "Port llama-server listens on, i.e. the `llama` template's LLAMA_PORT. Default `11435`. The post-deploy writes it into the Pi agent's `models.json` as `http://host.containers.internal:11435/v1`: this pod runs in its own network namespace (ADR 0007 Decision 1), so it reaches an on-box sibling by that name and never by `127.0.0.1` or a LAN address. Never the `llama.<publicDomain>` domain either — that one is Authelia-gated and exists for a human with a browser, not for a service on the same box.",
+    "default": "11435"
+  },
+  "CHAT_PORT": {
+    "type": "text",
+    "description": "Loopback port the Solaris Engine listens on, i.e. the `solaris` template's CHAT_PORT. Default `8787`. Only the host-side lease unit uses it: it POSTs `/api/model-lease` to load Qwen for the duration of a PI WEB session. That endpoint carries no token — being able to reach it on loopback IS the authorisation — which is why the lease is held by a systemd unit on the host and not from inside this pod.",
+    "default": "8787"
+  },
+  "PI_WEB_LEASE_TTL_SECONDS": {
+    "type": "text",
+    "description": "How long a coding lease is asked for, in seconds, and therefore how long Qwen stays loaded after the last renewal is missed. Default `14400` (4 hours) — the maximum the engine accepts, and the box's own lease duration. This is a safety net, not the schedule: the unit renews after a third of the window while PI WEB runs and releases the lease when it stops. Lowering it means the household gets Gemma back sooner if the box loses the unit; raising it above 4 hours is refused by the engine.",
+    "default": "14400"
+  }
+}
