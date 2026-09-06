@@ -62,8 +62,10 @@ forward-auth.
 - `PAPERLESS_DB_PORT` — loopback port for the bundled postgres. Default `5442`
   (offset from stock 5432 to avoid colliding with another postgres on the box).
 - `PAPERLESS_DB_PASSWORD` — postgres `paperless` user password, shared between
-  the postgres + webserver containers. Loopback-only, so an intra-pod boundary;
-  change the default on a shared box.
+  the postgres + webserver containers. A generated **secret** (#1297); it used
+  to ship as the literal `paperless`. Postgres only applies `POSTGRES_PASSWORD`
+  at `initdb`, so on an existing data dir `post-deploy.py` converges the role
+  onto the deployed secret — see below.
 - `PAPERLESS_OCR_LANGUAGE` — Tesseract lang hint, default `deu+eng`. With OCR
   **skipped**, this only affects date parsing + the UI locale, not OCR.
 - `PAPERLESS_UID` / `PAPERLESS_GID` — host uid/gid paperless runs + owns its
@@ -71,6 +73,17 @@ forward-auth.
   so scans dropped into the shared consume dir are readable.
 - `PAPERLESS_SUBDOMAIN` — subdomain for the Web-UI + API. Default `paperless`.
   Internal exposure: cert + LAN-only access list + Authelia forward-auth.
+
+## Post-deploy — the database password
+
+`post-deploy.py` converges the postgres `paperless` role onto the deployed
+`PAPERLESS_DB_PASSWORD`. It waits for postgres, then connects over TCP as the
+role with that password; only when that is refused does it take the
+container-local socket (the entrypoint's `pg_hba.conf` trusts `local`
+connections) to `ALTER ROLE paperless PASSWORD` and restart the `webserver`
+container so it reconnects — roughly a 30 s pause on the first deploy after the
+password changes, and nothing at all on a converged install. No document data is
+touched, and the password is never printed.
 
 ## Volumes
 

@@ -15,9 +15,8 @@
     "default": "5442"
   },
   "PAPERLESS_DB_PASSWORD": {
-    "type": "text",
-    "description": "Password for the bundled postgres `paperless` user, shared between the postgres and webserver containers. Postgres binds loopback-only inside the shared host netns, so this is an intra-pod namespace boundary rather than an internet-facing secret — but change the default to your own value on a shared box.",
-    "default": "paperless"
+    "type": "secret",
+    "description": "Password for the bundled postgres `paperless` user, shared between the postgres and webserver containers. Auto-generated at install; it used to ship as the literal `paperless` (#1297). Postgres applies POSTGRES_PASSWORD only during initdb, so on an already-initialised data dir the role keeps its old password — post-deploy.py converges the role onto this value with ALTER ROLE and restarts the webserver."
   },
   "PAPERLESS_OCR_LANGUAGE": {
     "type": "text",
