@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.55.1](https://github.com/mdopp/solarisbay/compare/v0.55.0...v0.55.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **chat:** route merk-dir sentences to fact_store deterministically ([d987554](https://github.com/mdopp/solarisbay/commit/d987554c97c3fe197f53cf8c7a9a8e2ab11e3934)), closes [#1336](https://github.com/mdopp/solarisbay/issues/1336)
+* **chat:** route merk-dir sentences to fact_store on real turns ([9fce542](https://github.com/mdopp/solarisbay/commit/9fce54219fdcef6e703b90f13148167b96126098)), closes [#1336](https://github.com/mdopp/solarisbay/issues/1336)
+
 ## [0.55.0](https://github.com/mdopp/solarisbay/compare/v0.54.0...v0.55.0) (2026-09-06)
 
 
