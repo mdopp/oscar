@@ -124,7 +124,9 @@ class FakeOllama:
         self.results = list(results)
         self.calls: list[dict] = []
 
-    async def stream(self, model, messages, tools=None, think=False, options=None):
+    async def stream(
+        self, model, messages, tools=None, think=False, options=None, tool_choice=""
+    ):
         self.calls.append(
             {
                 "model": model,
@@ -132,6 +134,7 @@ class FakeOllama:
                 "tools": tools,
                 "think": think,
                 "options": options,
+                "tool_choice": tool_choice,
             }
         )
         result = self.results.pop(0)

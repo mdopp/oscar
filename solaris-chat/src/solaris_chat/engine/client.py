@@ -1198,7 +1198,14 @@ class EngineClient:
         final_content = ""
         final_thinking = ""
         model = model_override or self._model()
-        for _ in range(_MAX_PASSES):
+        # Deterministic memory routing (#1336): a "merk dir …" turn does not ask
+        # the model to reach for fact_store, it forces the call on the first
+        # pass. Every other turn goes out unchanged, with the full toolbox and
+        # no forced choice.
+        routed_tools, routed_choice = remember.routed_pass(
+            _last_user_text(messages), tools
+        )
+        for turn_pass in range(_MAX_PASSES):
             result = None
             # Trim the verbose tool args/results of PRIOR turns before the model
             # sees them (#623) — this turn's own tool results stay full. Recompute
@@ -1215,8 +1222,16 @@ class EngineClient:
             hold_deltas = grounding.context_from_turn(messages) is not None or (
                 bool(unacted) and not acted
             )
+            pass_tools, pass_choice = (
+                (routed_tools, routed_choice) if turn_pass == 0 else (tools, "")
+            )
             async for kind, payload in self._ollama.stream(
-                model, sent, tools=tools, think=think, options=options
+                model,
+                sent,
+                tools=pass_tools,
+                think=think,
+                options=options,
+                tool_choice=pass_choice,
             ):
                 if kind == "delta":
                     if not hold_deltas:
@@ -1229,7 +1244,7 @@ class EngineClient:
                 profile=self._profile.name,
                 model=model,
                 messages=sent,
-                tools=tools,
+                tools=pass_tools,
                 content=result.content,
                 thinking=result.thinking,
                 tool_calls=result.tool_calls,
