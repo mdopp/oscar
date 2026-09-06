@@ -6,10 +6,10 @@ The operator's decision of 2026-09-05 is that such a job takes it on request,
 with no time window and no presence check, and that Solaris says so instead of
 hanging.
 
-`gpu-lease.py acquire <holder>` on the box writes this file and then stops
-Ollama, the four voice units and `llama.service`; `release` starts them again,
-waits for llama-server's `/health` (the household model is warm) and only then
-removes it. Its presence is therefore exactly "the household model is not
+`gpu-lease.py acquire <holder>` on the box writes this file and then stops the
+voice stack, the embeddings server and `llama.service`; `release` starts them
+again, waits for llama-server's `/health` (the household model is warm) and only
+then removes it. Its presence is therefore exactly "the household model is not
 loaded", and reading it costs a stat instead of a request to a server that is
 not running.
 

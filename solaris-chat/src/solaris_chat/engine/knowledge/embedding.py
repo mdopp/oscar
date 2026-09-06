@@ -4,15 +4,13 @@ Policy: one vector per concept (title + description + body), model
 `nomic-embed-text`, stored keyed by `concepts.embedding_id`, (re-)embedded only
 when `content_hash` changed.
 
-There is **no vector/episodic store wired into the engine yet** — `engine/ollama.py`
-exposes only `/api/chat`, `/api/tags`, `/api/ps`, `/api/pull`, no `/api/embeddings`,
-and there is no holographic store to key into. Rather than fake a vector store,
-the writer enqueues the embedding work through this small interface. The default
-`PendingEmbeddingQueue` durably records the pending `(embedding_id, concept_id,
-text)` triples to a JSON sidecar next to `solaris.db`; the actual vectorization
-(call `nomic-embed-text`, persist the vector) is a TODO for the embedding worker
-once that store exists. `enqueue` returns the `embedding_id` to store on the
-`concepts` row.
+The writer does not embed inline — it enqueues the work through this small
+interface. The default `PendingEmbeddingQueue` durably records the pending
+`(embedding_id, concept_id, text)` triples to a JSONL sidecar next to
+`solaris.db`; `embed_worker.drain()` consumes it, calls `nomic-embed-text` on
+the embeddings llama-server and upserts one vector per `embedding_id` into
+`okf_vectors`. `enqueue` returns the `embedding_id` to store on the `concepts`
+row.
 """
 
 from __future__ import annotations

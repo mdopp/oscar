@@ -2,7 +2,7 @@
 
 Reads/writes the `session_traces` table (migration 0007) in solaris.db. Phase 2
 of the trace sidecar (#306): at turn time the server pulls the trace proxy's
-Ollama calls for that turn's window, assigns them a stable per-message
+llama-server calls for that turn's window, assigns them a stable per-message
 `trace_id`, and persists each step here in order — so reopening a chat shows the
 same trace, persistently. `detail_id` links a step back to the proxy's
 `/__traces__/<id>` exact-content record.
