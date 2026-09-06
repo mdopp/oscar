@@ -163,5 +163,8 @@ def fetch(
             continue
         if not isinstance(payload, dict):
             continue
-        notices.append({**payload, "id": row["id"], "ts": _wire(row["created_at"])})
+        # The payload's own `id` is the one the live SSE frame carried
+        # (#1346) — the row id only stands in for a notice stored before that
+        # id existed, which the retention window ages out within hours.
+        notices.append({"id": row["id"], **payload, "ts": _wire(row["created_at"])})
     return notices

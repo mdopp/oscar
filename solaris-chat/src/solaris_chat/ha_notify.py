@@ -103,6 +103,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 from solaris_chat import device_token_store, push_store
 
@@ -291,8 +292,14 @@ def event_data(
     place every producer passes through, so a lock or alarm action cannot reach
     a phone, and no cover can lose its `confirm`, even from a caller that never
     saw `parse_payload` (#1283). Without `device_classes` every cover confirms.
+
+    `id` is minted **here**, before the event is published and before it is
+    appended to the backlog, so the live SSE frame and the catch-up entry carry
+    one identity and a client can dedupe across the two (#1346). Minting it in
+    either producer step instead would give the same notice two ids.
     """
     return {
+        "id": uuid4().hex,
         "kind": kind,
         "target": target,
         "title": title,

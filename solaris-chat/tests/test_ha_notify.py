@@ -96,6 +96,15 @@ class _RecordingBus(EventBus):
         super().publish(uid, kind, data)
 
 
+def _shapes(bus: _RecordingBus) -> list[tuple[str, str, dict]]:
+    """What went out, minus the per-notice `id` — that one is minted per
+    publish (#1346) and is asserted by the tests that care about it."""
+    return [
+        (uid, kind, {k: v for k, v in data.items() if k != "id"})
+        for uid, kind, data in bus.published
+    ]
+
+
 def _app(
     tmp_path,
     monkeypatch,
@@ -482,7 +491,7 @@ async def test_a_notice_reaches_every_paired_device_of_that_resident(
     await _settle(sent, 2)
     # Both of Anna's phones, and nobody else's.
     assert sorted(sent) == ["https://push/a1", "https://push/a2"]
-    assert bus.published == [
+    assert _shapes(bus) == [
         (
             "anna",
             "ha",
@@ -756,7 +765,7 @@ async def test_a_fired_timer_reaches_a_device_on_the_ha_event_kind(
     # No HA configured, so the announce fails — the notice goes out regardless.
     sched = TimerScheduler(db, "", "", event_bus=bus)
     await sched._fire_due()
-    assert bus.published == [
+    assert _shapes(bus) == [
         (
             "anna",
             ha_notify.EVENT_KIND,
@@ -852,11 +861,58 @@ async def test_a_notice_emitted_while_nobody_listens_is_fetched_afterwards(
     assert body["delivery"] == ha_notify.NOT_AN_ALARM
     (notice,) = body["notifications"]
     # The payload replayed is the event AS EMITTED — same object the stream
-    # carried, plus only the two catch-up fields.
-    assert {k: v for k, v in notice.items() if k not in ("id", "ts")} == (
-        bus.published[0][2]
-    )
+    # carried, `id` included, plus only the catch-up `ts`.
+    assert {k: v for k, v in notice.items() if k != "ts"} == bus.published[0][2]
     assert notice["ts"].endswith("Z")
+
+
+async def test_the_live_frame_and_the_catch_up_carry_the_same_id(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The app dedupes across the two channels by id (#1346): a notice caught
+    # up after a gap must be recognisable as the one the stream already
+    # delivered, without comparing its wording.
+    app, db, bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    client = await aiohttp_client(app)
+    await client.post(
+        "/api/ha/notify", json={"target": "anna", "title": "Waschmaschine"}
+    )
+    await client.post(
+        "/api/ha/notify", json={"target": "anna", "title": "Waschmaschine"}
+    )
+
+    live = [data["id"] for _uid, _kind, data in bus.published]
+    caught = [
+        n["id"]
+        for n in (await (await _catch_up(client, token)).json())["notifications"]
+    ]
+    assert live == caught
+    # Same wording twice is still two notices — the id is what tells them apart.
+    assert len(set(live)) == 2
+
+
+async def test_a_timer_frame_carries_its_catch_up_id_too(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # Every producer mints through `event_data`, so the second one is not a
+    # separate code path that could forget the id.
+    app, db, bus, _sent = _app(tmp_path, monkeypatch)
+    _, token = device_token_store.create(db, "anna")
+    conn = sqlite3.connect(db)
+    conn.execute(_TIMERS_SCHEMA)
+    conn.execute(
+        "INSERT INTO engine_timers (id, owner_uid, kind, label, fire_at, status)"
+        " VALUES ('t1', 'anna', 'timer', 'Tee', '2000-01-01T00:00:00+00:00',"
+        " 'pending')"
+    )
+    conn.commit()
+    conn.close()
+    await TimerScheduler(db, "", "", event_bus=bus)._fire_due()
+
+    client = await aiohttp_client(app)
+    (notice,) = (await (await _catch_up(client, token)).json())["notifications"]
+    assert notice["id"] == bus.published[0][2]["id"]
 
 
 async def test_the_catch_up_returns_only_what_is_newer_than_the_cursor(
