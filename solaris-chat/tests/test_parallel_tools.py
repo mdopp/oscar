@@ -18,13 +18,13 @@ import pytest
 
 from solaris_chat.engine import client as client_mod
 from solaris_chat.engine.client import EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.trace import TraceRecorder
 
-from tests.test_engine import _SCHEMA, FakeOllama
+from tests.test_engine import _SCHEMA, FakeChat
 from tests.test_confirm_gate import _FakeRegistry, _stub_ha
 
 
@@ -55,7 +55,7 @@ def _client(db, soul, results, tools, classes: dict[str, str] | None = None):
             toolbox=Toolbox(tools),
         ),
         db_path=db,
-        ollama=FakeOllama(results),
+        chat=FakeChat(results),
         recorder=TraceRecorder(),
         context_window=32768,
     )
@@ -142,7 +142,7 @@ async def test_tool_results_appended_in_emitted_order(db, soul):
         ChatResult(content="ok"),
     ]
     client = _client(db, soul, results, [tool])
-    fake = client._ollama
+    fake = client._chat
     sid = await client.create_session("anna")
     _ = [e async for e in client.chat_stream(sid, "Status")]
 
@@ -180,7 +180,7 @@ async def test_failing_tool_isolates_others(db, soul):
         ChatResult(content="ok"),
     ]
     client = _client(db, soul, results, [tool])
-    fake = client._ollama
+    fake = client._chat
     sid = await client.create_session("anna")
     _ = [e async for e in client.chat_stream(sid, "Status")]
 
@@ -244,7 +244,7 @@ async def test_sensitive_call_still_gated_amid_parallel(db, soul, monkeypatch):
     qr = [e for e in events if e["type"] == "quick_replies"]
     assert qr and qr[0]["data"]["options"] == ["ja", "nein"]
     # The two non-sensitive reads still ran (their state hit HA's GET).
-    fake = client._ollama
+    fake = client._chat
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]
     assert len(tool_msgs) == 3  # read, held-confirmation, read — in order
     assert "needs_confirmation" in tool_msgs[1]["content"]
@@ -278,7 +278,7 @@ async def test_two_sensitive_calls_only_first_stashes(db, soul, monkeypatch):
     sid = await client.create_session("anna")
     _ = [e async for e in client.chat_stream(sid, "Garage auf und Schloss auf")]
 
-    fake = client._ollama
+    fake = client._chat
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]
     # Both were held (needs_confirmation), neither dispatched.
     assert len(tool_msgs) == 2

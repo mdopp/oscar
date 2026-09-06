@@ -356,7 +356,7 @@ def test_normalize_tool_completed_carries_wall_s():
 
 
 def test_normalize_llm_step():
-    # #347: each completed Ollama pass folds to a `step` event (model + wall_s).
+    # #347: each completed model pass folds to a `step` event (model + wall_s).
     assert _normalize(
         {"type": "llm.step", "data": {"model": "gemma4:e2b", "wall_s": 2.1}}
     ) == ("step", {"label": "gemma4:e2b", "wall_s": 2.1})

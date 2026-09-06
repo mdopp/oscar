@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.choices import build_choice_tools, choice_sink
 from solaris_chat.server import STATIC_DIR

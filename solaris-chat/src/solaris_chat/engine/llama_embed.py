@@ -5,9 +5,9 @@ the service existed. It is now a small `llama-server --embeddings` of its own
 (templates/llama, `llama-embed.service`, loopback 11436) speaking the OpenAI
 `POST /v1/embeddings` shape.
 
-`embed()` keeps `OllamaChat.embed()`'s signature — `(model, inputs) ->
-list[list[float]]`, one vector per input, in order — so the two call sites
-(the OKF drain worker and the vault's semantic search) only swapped clients.
+`embed(model, inputs) -> list[list[float]]` returns one vector per input, in
+order — the shape the two call sites want (the OKF drain worker and the vault's
+semantic search).
 
 **No prefix, deliberately.** nomic-embed-text v1.5's model card describes
 `search_document:` / `search_query:` prefixes, but Ollama never applied them,

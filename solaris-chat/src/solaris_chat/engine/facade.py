@@ -1,9 +1,11 @@
-"""Ollama-compatible facade — the engine as a Home Assistant conversation agent.
+"""Ollama-PROTOCOL facade — the engine as a Home Assistant conversation agent.
 
-HA 2026.6's core `openai_conversation` integration has no custom base_url, but
-its `ollama` integration takes a free URL + optional Bearer api_key and speaks
-exactly the protocol the engine already uses downstream. So the engine exposes
-a minimal Ollama surface under `/ollama` on the chat port:
+This is a wire protocol HA speaks, not a service Solaris runs: the Ollama
+*service* was retired in #1332, and this surface stays exactly as it is. HA
+2026.6's core `openai_conversation` integration has no custom base_url, but its
+`ollama` integration takes a free URL + optional Bearer api_key and speaks a
+protocol the engine can serve. So the engine exposes a minimal Ollama surface
+under `/ollama` on the chat port:
 
   GET  /ollama/api/tags     — the config-flow validation call (`client.list()`)
   GET  /ollama/api/version  — cheap liveness some ollama clients ping

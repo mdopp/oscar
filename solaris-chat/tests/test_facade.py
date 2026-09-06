@@ -17,12 +17,12 @@ import pytest
 from solaris_chat.engine import store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import NO_ANSWER, EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult, OllamaError
+from solaris_chat.engine.llama_server import ChatResult, LlamaServerError
 from solaris_chat.engine.tools import Tool, Toolbox, Visibility
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.server import build_app
 
-from tests.test_engine import _SCHEMA, FakeOllama
+from tests.test_engine import _SCHEMA, FakeChat
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def soul(tmp_path) -> str:
 
 
 def _engine(db, soul, results, tools=None, name="household", bus=None):
-    fake = FakeOllama(results)
+    fake = FakeChat(results)
     client = EngineClient(
         EngineProfile(
             name=name,
@@ -52,7 +52,7 @@ def _engine(db, soul, results, tools=None, name="household", bus=None):
             toolbox=Toolbox(tools or []),
         ),
         db_path=db,
-        ollama=fake,
+        chat=fake,
         recorder=TraceRecorder(),
         context_window=32768,
         bus=bus,
@@ -703,7 +703,7 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
         handler=handler,
     )
 
-    class FailingOllama:
+    class FailingChat:
         def __init__(self):
             self.n = 0
 
@@ -728,7 +728,7 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
                     ),
                 )
                 return
-            raise OllamaError("intent-failed")
+            raise LlamaServerError("intent-failed")
             yield  # pragma: no cover — makes this an async generator
 
     household = EngineClient(
@@ -739,7 +739,7 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
             toolbox=Toolbox([tool]),
         ),
         db_path=db,
-        ollama=FailingOllama(),
+        chat=FailingChat(),
         recorder=TraceRecorder(),
         context_window=32768,
     )
@@ -1717,7 +1717,7 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
     from solaris_chat.engine.notify import EventBus
 
     household, _ = _engine(db, soul, [])
-    guest_fake = FakeOllama(
+    guest_fake = FakeChat(
         [ChatResult(content="Hallo.", prompt_tokens=5, completion_tokens=1)]
     )
     guest = EngineClient(
@@ -1729,7 +1729,7 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
             ephemeral=True,
         ),
         db_path=db,
-        ollama=guest_fake,
+        chat=guest_fake,
         recorder=TraceRecorder(),
         context_window=32768,
     )

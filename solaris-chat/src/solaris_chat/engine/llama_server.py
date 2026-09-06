@@ -5,11 +5,11 @@ The household hot path's backend (#1318). Box-measured 2026-09-04: the same
 drafter answer in 0.30 s where Ollama takes 0.62 s — speculative decoding is
 the reason, and Ollama has no draft-model knob.
 
-`stream()` keeps `OllamaChat.stream()`'s signature and yields the same
-`("delta"|"thinking", str)` / `("done", ChatResult)` pairs, so `EngineClient`
-does not know which backend it is talking to.
+`stream()` yields `("delta"|"thinking", str)` pairs and one final
+`("done", ChatResult)`, so `EngineClient` never sees the wire shape.
 
-Two things this translation layer has to get right:
+Two things this translation layer has to get right (the engine's own history
+is still Ollama-shaped — it is what the store persists):
 
 * **`think` is not a request field here.** Ollama's `think: false` has no
   llama-server equivalent; the switch is `chat_template_kwargs`
@@ -29,12 +29,12 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 
 from solaris_chat import gpu_lease
-from solaris_chat.engine.ollama import ChatResult, OllamaError
 from solaris_chat.logging import log
 
 # Base64 magic prefixes, so an attachment carried as bare base64 (the Ollama
@@ -47,13 +47,21 @@ _B64_MEDIA_TYPES = (
 )
 
 
-class LlamaServerError(OllamaError):
-    """Non-2xx from llama-server.
+class LlamaServerError(Exception):
+    """Non-2xx from llama-server — the engine's one "model backend failed"."""
 
-    Subclasses `OllamaError` on purpose: every caller in the engine already
-    catches that as "the model backend failed", and which backend answered is
-    not something a turn's error handling should have to know.
-    """
+
+@dataclass
+class ChatResult:
+    """One completed model call, deltas folded together."""
+
+    content: str = ""
+    thinking: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    wall_s: float = 0.0
+    ttft_s: float = 0.0
 
 
 def _media_type(b64: str) -> str:

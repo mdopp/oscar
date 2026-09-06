@@ -271,7 +271,7 @@ def build_engine_clients(
         return EngineClient(
             profile,
             db_path=db_path,
-            ollama=chat,
+            chat=chat,
             recorder=recorder,
             context_window=context_window,
             bus=bus,

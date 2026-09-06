@@ -22,7 +22,7 @@ from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine import confirm, tasks
 from solaris_chat.engine import registry as registry_mod
 from solaris_chat.engine.client import EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools import ha as ha_mod
 from solaris_chat.engine.tools.choices import build_choice_tools
@@ -32,7 +32,7 @@ from solaris_chat.engine.trace import TraceRecorder
 
 from tests.test_engine import _SCHEMA, _client  # shared schema + client harness
 from tests.test_tasks import _SCHEMA as _TASK_SCHEMA
-from tests.test_engine import FakeOllama
+from tests.test_engine import FakeChat
 
 
 class _FakeRegistry:
@@ -55,7 +55,7 @@ class _FakeRegistry:
 
 
 def _client_with_registry(db, soul, results, classes: dict[str, str]) -> EngineClient:
-    fake = FakeOllama(results)
+    fake = FakeChat(results)
     return EngineClient(
         EngineProfile(
             name="household",
@@ -65,7 +65,7 @@ def _client_with_registry(db, soul, results, classes: dict[str, str]) -> EngineC
             toolbox=Toolbox(_tools()),
         ),
         db_path=db,
-        ollama=fake,
+        chat=fake,
         recorder=TraceRecorder(),
         context_window=32768,
     )

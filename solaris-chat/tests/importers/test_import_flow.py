@@ -196,7 +196,7 @@ def test_classify_llm_failopen():
     )
 
     def boom(folder):
-        raise RuntimeError("ollama down")
+        raise RuntimeError("model backend down")
 
     assert o.classify_archive(z, llm=boom)["claims"] == []  # error → unknown
 

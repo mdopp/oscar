@@ -1,6 +1,6 @@
 """Native LLM tracing — full parity with the retired trace proxy.
 
-The engine records every Ollama call at the call site into the same
+The engine records every model call at the call site into the same
 light-ring + detail-ring shapes the proxy served, so the trace panel, the
 per-turn waterfall and the persisted `session_traces` rows keep working
 unchanged. Improvement over the proxy: records carry the `session_id`
@@ -23,7 +23,7 @@ _OUTPUT_CAP = 2000
 
 def _toks(chars: int) -> int:
     """Rough token estimate (~4 chars/token), only for the per-block split;
-    totals come from Ollama's ground-truth counts."""
+    totals come from the server's ground-truth counts."""
     return round(chars / 4)
 
 

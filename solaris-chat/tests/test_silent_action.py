@@ -22,14 +22,14 @@ import sqlite3
 import pytest
 
 from solaris_chat.engine.client import EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.trace import TraceRecorder
 
 from tests.test_confirm_gate import _stub_ha
-from tests.test_engine import _SCHEMA, FakeOllama
+from tests.test_engine import _SCHEMA, FakeChat
 from tests.test_entity_resolution import _Registry
 
 # The real Wohnzimmer as Home Assistant files it — the dining-room devices sit
@@ -75,7 +75,7 @@ def _client(db, soul, results, registry: _Registry) -> EngineClient:
             toolbox=Toolbox(tools),
         ),
         db_path=db,
-        ollama=FakeOllama(results),
+        chat=FakeChat(results),
         recorder=TraceRecorder(),
         context_window=32768,
     )

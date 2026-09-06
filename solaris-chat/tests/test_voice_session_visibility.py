@@ -19,7 +19,7 @@ import sqlite3
 import pytest
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine import store
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.llama_server import ChatResult
 from solaris_chat.engine.tools import Tool
 
 from tests.test_engine import _SCHEMA

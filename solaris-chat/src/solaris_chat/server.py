@@ -2426,7 +2426,7 @@ def build_app(
         NOT checked, deliberately: Ollama, Home Assistant, Radicale, Paperless.
         A probe that folds in neighbours goes red whenever one of them coughs,
         which makes the tile worthless again, only in the other direction —
-        Solaris without Ollama is still a working chat server with its history.
+        Solaris without llama-server is still a working chat server with its history.
         An overview of the neighbours belongs in its own field, never in the
         status code ServiceBay's tile hangs on.
 
@@ -6144,7 +6144,7 @@ def build_app(
             # Only a missing session_id starts a fresh engine session; turn 2+
             # carry the same id back, so consecutive turns reuse one warm
             # engine session (and its KV prefix cache). A cold turn-2 TTFT is
-            # therefore Ollama model eviction, not a per-turn session (#268).
+            # therefore model eviction, not a per-turn session (#268).
             if not session_id or client.ephemeral:
                 session_id = await create_turn_session(
                     owner_uid,
@@ -6630,7 +6630,7 @@ def _stream_phases(
     What the proxy can genuinely time, in order: prefill (turn start → first
     token), reasoning (first token → `</thinking>`, only when a block streamed),
     answer (reasoning end / first token → turn end), and the summed tool
-    round-trips. The Ollama-internal prefill/eval token split is NOT here — it
+    round-trips. The server-internal prefill/eval token split is NOT here — it
     is invisible to the proxy (see _trace_from_phases).
     """
     if t_first is None:  # no tokens streamed (e.g. tool-only or empty turn)
@@ -6656,7 +6656,7 @@ def _trace_from_phases(
     honest, measurable breakdown is: time-to-first-token (prefill), reasoning
     generation (the `<thinking>` block, when one streamed), answer generation,
     and tool round-trips (`tool.started`→`tool.completed`). The fine-grained
-    Ollama prompt_eval/eval (prefill vs decode token) split happens *inside*
+    The prefill/decode token split happens *inside*
     the engine and is never streamed to this proxy, so it is deliberately absent —
     it would need the engine to expose per-pass timings to be shown.
 
@@ -6705,7 +6705,7 @@ async def _send_event(
     await resp.write(frame.encode("utf-8"))
 
 
-# A tool-invocation turn runs two sequential Ollama passes (tool-selection, then
+# A tool-invocation turn runs two sequential model passes (tool-selection, then
 # the answer) with a tool round-trip between them — the engine streams nothing for
 # the whole prefill of each pass, which on a busy GPU is well over a minute of
 # dead air. The browser's streaming fetch (and any reverse proxy in front) drops
