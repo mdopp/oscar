@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.55.0](https://github.com/mdopp/solarisbay/compare/v0.54.0...v0.55.0) (2026-09-06)
+
+
+### Features
+
+* **chat:** measure speech-end to answer-start latency for ten commands ([7b635f5](https://github.com/mdopp/solarisbay/commit/7b635f59a3cc61eba3f13ab245aa09adfb064c11)), closes [#1128](https://github.com/mdopp/solarisbay/issues/1128)
+
+
+### Bug Fixes
+
+* **chat:** let natural sentences reach fact_store and get_solaris_status ([d0ddc53](https://github.com/mdopp/solarisbay/commit/d0ddc537e1b558c9a7a596f98a8abc524721d5d2)), closes [#1336](https://github.com/mdopp/solarisbay/issues/1336)
+* **chat:** let the tool-decision bench run on the box ([d7d18a7](https://github.com/mdopp/solarisbay/commit/d7d18a745089198522b36e69fc44e6c4d3bb6b06))
+* **chat:** stop fact_store claiming a memory it never stored ([#1339](https://github.com/mdopp/solarisbay/issues/1339)) ([1356e0c](https://github.com/mdopp/solarisbay/commit/1356e0c5c5ad671f36b5824bf992bcf5b8ae933a))
+
 ## [0.54.0](https://github.com/mdopp/solarisbay/compare/v0.53.0...v0.54.0) (2026-09-06)
 
 
