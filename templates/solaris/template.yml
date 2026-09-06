@@ -6,25 +6,29 @@ metadata:
     app: solaris
   annotations:
     servicebay.label: "AI Assistant (Solaris)"
-    servicebay.schema-version: "1"
+    # v2 (#1332): the ollama service is retired. OLLAMA_URL is gone and
+    # LLAMA_EMBED_URL takes its place, so the pod has to be recreated on the new
+    # env. No data move.
+    servicebay.schema-version: "2"
     # Host ports on one tile: the chat server (the Solaris Engine + chat surface +
-    # the Ollama-compatible facade HA's conversation agent calls) and the
+    # the Ollama-PROTOCOL facade HA's conversation agent calls) and the
     # gatekeeper's Wyoming listener. ServiceBay can't substitute a variable
     # placeholder inside an annotation block scalar (#136) but DOES substitute in
     # this inline annotation, so the ports stay variable-driven.
     servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp,10203/tcp"
-    # External dependencies only (#271): ollama (the engine's LLM backend),
-    # home-assistant (device control + the Assist pipeline that fronts the
-    # Voice PE speaker), nginx (NPM proxies the chat), auth (Authelia
-    # forward-auth gates it). Solaris now owns its whole voice pipeline —
-    # Whisper STT, Kokoro-Martin TTS + bridge and the openWakeWord wake engine
-    # are companion Quadlets written by post-deploy, so the ServiceBay `voice`
-    # stack is no longer a dependency (#456).
-    servicebay.dependencies: "ollama,home-assistant,nginx,auth"
+    # External dependencies only (#271): llama (the model servers — chat, the
+    # vision projector and the embeddings instance), home-assistant (device
+    # control + the Assist pipeline that fronts the Voice PE speaker), nginx
+    # (NPM proxies the chat), auth (Authelia forward-auth gates it). Solaris
+    # now owns its whole voice pipeline — Whisper STT, Kokoro-Martin TTS +
+    # bridge and the openWakeWord wake engine are companion Quadlets written by
+    # post-deploy, so the ServiceBay `voice` stack is no longer a dependency
+    # (#456).
+    servicebay.dependencies: "llama,home-assistant,nginx,auth"
     # One health probe for the service: /health (no auth) is a READINESS check
     # (#1273) — it opens solaris.db read-only and answers 503 with the reason
     # when it can't, so the tile can no longer stay green through an outage the
-    # way it did for a day in #1271. Neighbours (ollama, HA, Radicale) are
+    # way it did for a day in #1271. Neighbours (llama, HA, Radicale) are
     # deliberately NOT folded in: cascading dependencies cascade false alarms.
     # ServiceBay can't substitute a variable placeholder
     # inside an annotation block scalar (#136), so the port is the literal
@@ -37,7 +41,8 @@ metadata:
 spec:
   # hostNetwork so the Pod's containers reach the external services over the
   # host loopback (every cooperating ServiceBay pod shares the host netns):
-  #   - chat ↔ ollama at 127.0.0.1:11434, HA at 127.0.0.1:8123
+  #   - chat ↔ llama-server at 127.0.0.1:11435 (+ embeddings on 11436),
+  #     HA at 127.0.0.1:8123
   #   - HA's Assist pipeline ↔ the chat facade at 127.0.0.1:{{CHAT_PORT}}/ollama
   #   - gatekeeper ↔ voice (Whisper/Piper) at 127.0.0.1:10300 / 10200
   #   - NPM (also hostNetwork) proxies the chat from the host loopback
@@ -81,13 +86,14 @@ spec:
       name: solaris-data
 
   containers:
-  # chat — the Solaris Engine: one process owns the agent loop (direct Ollama
-  # /api/chat with per-turn model + reasoning), the session store
+  # chat — the Solaris Engine: one process owns the agent loop (llama-server
+  # /v1/chat/completions with per-turn reasoning), the session store
   # (solaris.db), native LLM tracing, the timer scheduler with speaker
   # delivery via HA assist_satellite.announce, the night crons, the chat
-  # surface, and the Ollama-compatible facade (/ollama) that HA's `ollama`
-  # integration uses so Solaris is the Assist conversation agent. Behind Authelia
-  # forward-auth; the server reads the Remote-User header → resident uid so
+  # surface, and the Ollama-PROTOCOL facade (/ollama) that HA's `ollama`
+  # integration uses so Solaris is the Assist conversation agent. That facade
+  # is a wire protocol HA speaks, not the retired ollama service (#1332).
+  # Behind Authelia forward-auth; the server reads Remote-User → resident uid so
   # there's no second login (#134). The container is named `chat` so the
   # podman pod-container name is `solaris-chat`.
   - name: chat
@@ -103,7 +109,7 @@ spec:
     - name: CHAT_PORT
       value: "{{CHAT_PORT}}"
     # Server-side bearer: HA's conversation agent and the gatekeeper present
-    # it on the Ollama facade. Never in browser JS.
+    # it on the Ollama-protocol facade. Never in browser JS.
     - name: SOLARIS_API_KEY
       value: "{{SOLARIS_API_KEY}}"
     # Authelia forwards the authenticated identity on Remote-User via NPM;
@@ -174,19 +180,21 @@ spec:
     - name: SB_MINT_URL
       value: "{{SERVICEBAY_MINT_URL}}"
     # Context window (tokens) = the chat-compaction cap (#210) + /context.
-    # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
-    # (#235). A positive integer OVERRIDES the derivation (ops control).
+    # Empty/auto => AUTO-DERIVE from llama-server's /props at runtime (#235).
+    # A positive integer OVERRIDES the derivation (ops control).
     - name: CONTEXT_WINDOW
       value: "{{CONTEXT_WINDOW}}"
-    # Where Ollama's API lives (host loopback; hostNetwork pod) — embeddings,
-    # the vision ingest, /api/ps and the neighbour-service model lease.
-    - name: OLLAMA_URL
-      value: "{{OLLAMA_URL}}"
-    # Where llama.cpp's llama-server lives — the CHAT backend since #1318.
-    # The same weights with Google's MTP drafter answer in 0.30 s where
-    # Ollama takes 0.62 s; empty falls back to Ollama's /api/chat.
+    # Where llama.cpp's llama-server lives — the CHAT backend since #1318 and,
+    # through its multimodal projector, the vision ingest since #1332. The same
+    # weights with Google's MTP drafter answer in 0.30 s where Ollama took
+    # 0.62 s.
     - name: LLAMA_SERVER_URL
       value: "{{LLAMA_SERVER_URL}}"
+    # The second llama-server instance, serving nomic-embed-text on
+    # /v1/embeddings (#1332) — the OKF vector store and the vault's semantic
+    # search. Empty ⇒ no embeddings; search degrades to keyword hits.
+    - name: LLAMA_EMBED_URL
+      value: "{{LLAMA_EMBED_URL}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the
     # link (no dead link when unset).
     - name: LOGOUT_URL
@@ -324,7 +332,7 @@ spec:
     # #1010 / #1011, option A): the engine PUTs to `{base}/{resident_uid}/solaris/`,
     # under each RESIDENT's own principal, which the converged Radicale rights let
     # the `solaris` account write. The engine pod is host-networked (it reaches HA /
-    # ollama at 127.0.0.1 above), so Radicale is the box-local loopback root.
+    # llama-server at 127.0.0.1 above), so Radicale is the box-local loopback root.
     - name: DEADLINES_SYNC_URL_BASE
       value: "{{DEADLINES_SYNC_URL_BASE}}"
     # Household-wide dated items (shared document deadlines + household tasks) have
@@ -394,7 +402,7 @@ spec:
   # hardware (the Voice PE speaker rides HA's Assist pipeline instead, which
   # fronts the same engine via the chat facade). Resolves the speaking
   # resident (speaker-ID, #84) and the satellite's room, then runs the turn
-  # against the engine's Ollama facade.
+  # against the engine's Ollama-protocol facade.
   - name: gatekeeper
     image: "{{GATEKEEPER_IMAGE}}"
     env:
@@ -408,7 +416,7 @@ spec:
       value: "{{PIPER_URI}}"
     - name: OPENWAKEWORD_URI
       value: "{{OPENWAKEWORD_URI}}"
-    # Voice always talks to the engine's household profile via the Ollama
+    # Voice always talks to the engine's household profile via the Ollama-protocol
     # facade on the chat server (host loopback). There is deliberately no
     # admin URL here — a voice turn can never reach the admin persona.
     - name: SOLARIS_ENGINE_URL

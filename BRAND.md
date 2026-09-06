@@ -99,7 +99,7 @@ vars `SOLARIS_*`, data paths `solaris.db` / `/var/lib/solaris`, notes
 namespace, Wyoming/MCP program names). The chat pod is the one brand-prefixed
 *template* (`solaris-chat`), lining up with its `solaris-chat` image and
 `solaris-chat/` source dir, alongside the role-named source dirs
-(`voice-gatekeeper/`, `database/`). Unchanged: `ollama`; generic package
+(`voice-gatekeeper/`, `database/`). Unchanged: `llama`; generic package
 `gatekeeper`; `GATEKEEPER_*` / `DEFAULT_UID`.
 
 ---

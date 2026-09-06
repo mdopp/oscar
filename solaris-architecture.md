@@ -34,7 +34,7 @@ once:
 |---|---|---|
 | Household (default) | `gemma4:e4b` + MTP + mmproj | Solaris chat/voice — the default the box idles at |
 | `foundry` | `gemma4:12b` + MTP (`-c 32768`) | foundry-chronicle's evening runs; voice stack stays up, Solaris keeps answering from the 12b |
-| `coding` (exclusive) | Qwen 3.8 27B UD-IQ3_XXS + MTP (`-c 81920`, reasoning off) | the coding assistant; stops the voice stack and Ollama/12b while held |
+| `coding` (exclusive) | Qwen 3.8 27B UD-IQ3_XXS + MTP (`-c 81920`, reasoning off) | the coding assistant; moves the voice stack to the CPU and stops the embeddings server while held |
 
 A neighbour asks for a profile over HTTP, never by running the lease script
 itself: `POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback,
@@ -94,13 +94,18 @@ Speculative decoding / MTP was judged unattainable on the CUDA/GGUF stack in
 `--spec-type draft-mtp` does it, box-measured above, and it is what runs
 today.
 
-Embeddings and vision ingest are **not yet moved off Ollama** — that is
-tracked as its own unit (solarisbay#1332). Until it lands, `nomic-embed-text`
-still runs on Ollama's own runner (never competing for llama-server's
-generation slot) and drives the OKF semantic search — the drain worker fills
-`okf_vectors`, and `notes_search` does numpy cosine top-k over it. See
-[`docs/features/knowledge-system.md`](docs/features/knowledge-system.md). Once
-#1332 lands, Ollama is decommissioned on the box entirely.
+**Embeddings and vision ingest moved too, in solarisbay#1332 — Ollama is gone
+from this box.** `nomic-embed-text` runs on a second, small `llama-server
+--embeddings` instance (`:11436`, ~300 MB, its own `llama-embed.service`), so
+it never competes for the chat server's generation slot; it drives the OKF
+semantic search — the drain worker fills `okf_vectors`, and `notes_search`
+does numpy cosine top-k over it. The stored vectors survived the move
+unchanged: same v1.5 f16 weights, same mean pooling, same **raw** text (Ollama
+never applied nomic's `search_document:`/`search_query:` prefixes, and neither
+does this), so nothing had to be re-embedded. Photo and document descriptions
+go through the household model's multimodal projector, which is already
+loaded. See
+[`docs/features/knowledge-system.md`](docs/features/knowledge-system.md).
 
 ---
 
@@ -118,8 +123,8 @@ The engine is a module inside `solaris-chat`
 (`src/solaris_chat/engine/`): one process owns turn, loop and capture.
 
 - **Agent loop** directly on llama-server `/v1/chat/completions` (streaming,
-  tool dispatch, ≤6 passes; falls back to Ollama's `/api/chat` only on an
-  install with no `llama` template). Model + thinking are **per turn**; a
+  tool dispatch, ≤6 passes — the only backend since #1332). Model + thinking
+  are **per turn**; a
   "profile" is a constructor call (`household` = `gemma4:e4b`/no-think +
   registry, `solaris-deep` = `gemma4:e4b`/think + registry, `admin` =
   `gemma4:e4b` + operator prompt + `servicebay_admin` MCP) — what used to be
@@ -181,7 +186,7 @@ flowchart LR
         end
         NPM["NPM + Authelia"]
         Llama["llama-server :11435 (GPU)<br/>gemma4:e4b + MTP drafter"]
-        Ollama["ollama :11434 (GPU)<br/>nomic-embed-text · vision — leaving, #1332"]
+        Embed["llama-server :11436 (GPU)<br/>nomic-embed-text"]
         DB[("solaris.db")]
         Notes[("notes vault<br/>Syncthing")]
         SBMCP["ServiceBay MCP :5888"]
@@ -193,8 +198,8 @@ flowchart LR
     Pipeline -- "answer text" --> Martin
     Browser -- "chat.<domain>" --> NPM --> Chat
     Sat -. "Wyoming" .-> GK -- "/ollama-protocol facade" --> Chat
-    Chat -- "/v1/chat/completions per turn<br/>model+think per request" --> Llama
-    Chat -- "embeddings · vision ingest" --> Ollama
+    Chat -- "/v1/chat/completions per turn<br/>think per request · images via mmproj" --> Llama
+    Chat -- "embeddings" --> Embed
     Chat -- "tools + entity registry<br/>+ announce" --> HA
     Chat --- DB
     Chat --- Notes
@@ -263,9 +268,9 @@ llama-server + MTP run in
 
 Whisper runs as the `voice-whisper.container` Quadlet on the GPU
 (servicebay#1809: kube play drops CDI devices, so the STT container left
-the pod — same `.container` fixup as ollama, which still needs it while it
-serves embeddings/vision). gemma4 advertises an `audio` capability but
-neither Ollama nor llama-server's chat API accepts audio today
+the pod — the same `.container` fixup both llama-server instances need).
+gemma4 advertises an `audio` capability but llama-server's chat API does not
+accept audio today
 (solarisbay#337), so the dedicated STT stage stays — it is also what makes
 mishearings visible in traces. The one-pass audio design (audio + "return a
 transcript field") is parked on the gatekeeper path until a backend wires

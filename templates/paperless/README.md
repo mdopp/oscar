@@ -43,7 +43,7 @@ Resource budget observed in the PoC: ~0.8 GB RAM idle + ~2.5 GB image disk.
 ## SSO
 
 NPM proxies `paperless.<publicDomain>` behind Authelia forward-auth (the same
-pattern as `ollama` and the chat surface). Authelia forwards the authenticated
+pattern as `llama` and the chat surface). Authelia forwards the authenticated
 identity as `Remote-User`; paperless trusts it via
 `PAPERLESS_ENABLE_HTTP_REMOTE_USER=true` /
 `PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME=HTTP_REMOTE_USER` and auto-provisions +

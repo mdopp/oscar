@@ -77,17 +77,18 @@ Diese fünf Sätze entscheiden im Zweifel jede Detailfrage.
 
 1. **Zeitbudget bestimmt den Ort.** Alles unter 1,3 s läuft lokal in der Solaris Engine.
    Alles darüber ist ein Auftrag, kein Dialogturn.
-2. **Die GPU gehört der Sprache.** Kein anderer Prozess belegt sie synchron. Der
-   Batch-Vision-Pfad (ZA-03) ist die einzige Ausnahme — und sein Preis ist ein
-   **Zeitraum, kein Zeitpunkt**: `OLLAMA_MAX_LOADED_MODELS=2` hält `e4b` und das
-   Embedding-Modell resident, 12b verdrängt beim Laden `e4b`. Während eines
-   Dokumentenlaufs zahlt **jeder** Sprachbefehl den Reload (~6,8 s box-gemessen),
-   und der Lauf zahlt ihn danach zurück — die beiden Modelle verdrängen sich
-   wechselseitig, solange der Lauf dauert. Ollama kennt keine Preemption: fällt ein
-   Sprachbefehl in eine laufende 12b-Generierung, **wartet er, bis sie fertig ist**,
-   und zahlt den Reload obendrauf. Deshalb ist das Wartungsfenster als **Zeitspanne**
-   zu definieren, in der niemand spricht — nicht als Zeitpunkt, nach dem es einmal
-   ruckelt.
+2. **Die GPU gehört der Sprache.** Kein anderer Prozess belegt sie synchron. Seit
+   #1332 gilt das ohne den alten Verdrängungspreis: llama-server hält **ein**
+   Dialogmodell (e4b + MTP-Drafter, mit mmproj für Bilder) und daneben eine
+   kleine Embedding-Instanz (~300 MB). Der Batch-Vision-Pfad (ZA-03) läuft am
+   selben residenten Modell — kein Modellwechsel, kein Reload pro Sprachbefehl.
+   Wer die ganze Karte braucht, nimmt sie über das Lease (#1319/#1325) und
+   Solaris sagt für die Dauer ehrlich, dass es rechnet.
+
+   > **Historie:** vor #1318/#1332 hielt `OLLAMA_MAX_LOADED_MODELS=2` `e4b` und
+   > das Embedding-Modell resident; 12b verdrängte beim Laden `e4b`, und während
+   > eines Dokumentenlaufs zahlte jeder Sprachbefehl den Reload (~6,8 s
+   > box-gemessen). Ollama kannte keine Preemption.
 3. **Harte Fakten werden nicht generiert, sondern eingesetzt.** Ein 4B-Modell wählt aus,
    es formuliert keine Zahlen und keine Daten.
 4. **Ein Datum, ein Besitzer.** Jede Information hat genau ein System, das sie schreibt.

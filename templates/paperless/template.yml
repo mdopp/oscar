@@ -13,7 +13,7 @@ metadata:
     # variable-driven.
     servicebay.ports: "{{PAPERLESS_PORT}}/tcp"
     # nginx proxies the Web-UI + API and Authelia forward-auth gates it (like
-    # ollama / the chat surface — see PAPERLESS_SUBDOMAIN in variables.json).
+    # llama / the chat surface — see PAPERLESS_SUBDOMAIN in variables.json).
     # file-share is depended on because the consume dir defaults under the
     # Syncthing share so scans can be dropped in from any device (#930).
     servicebay.dependencies: "nginx,auth,file-share"
