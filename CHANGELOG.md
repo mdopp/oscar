@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.54.0](https://github.com/mdopp/solarisbay/compare/v0.53.0...v0.54.0) (2026-09-06)
+
+
+### Features
+
+* **skill:** give residents music, notes, memory and status as tools ([188b11f](https://github.com/mdopp/solarisbay/commit/188b11f0849c3b42e55d9276b06e40d22830efd6)), closes [#1291](https://github.com/mdopp/solarisbay/issues/1291)
+* **template:** declare what a paperless backup must contain ([9093634](https://github.com/mdopp/solarisbay/commit/909363400a3215b719e677c9610fb118ae2d645e))
+* **template:** let a neighbour service take the GPU over HTTP ([d1c64b8](https://github.com/mdopp/solarisbay/commit/d1c64b87811a7d69290b6c724c61b5d297b9db1d)), closes [#1333](https://github.com/mdopp/solarisbay/issues/1333)
+
+
+### Bug Fixes
+
+* **template:** give the coding lease its 80k window and switch its thinking off ([8228101](https://github.com/mdopp/solarisbay/commit/822810182d502cd73a0cc3d4f717341a967d21fa)), closes [#1321](https://github.com/mdopp/solarisbay/issues/1321)
+* **template:** stop shipping paperless with a known database password ([c1ea2e1](https://github.com/mdopp/solarisbay/commit/c1ea2e11e23c3c649085eb73336c15211980050c)), closes [#1297](https://github.com/mdopp/solarisbay/issues/1297)
+
 ## [0.53.0](https://github.com/mdopp/solarisbay/compare/v0.52.0...v0.53.0) (2026-09-05)
 
 
