@@ -158,3 +158,171 @@ async def test_ordinary_turn_stores_nothing(db, soul, tmp_path):
     sid = await client.create_session("anna")
     _ = [e async for e in client.chat_stream(sid, "Wo steht mein Auto?")]
     assert _stored_facts(notes_dir, "anna") == []
+
+
+# -- deterministic routing (#1336) ----------------------------------------
+
+
+def test_detects_the_wider_memory_intents():
+    assert (
+        remember.wants_remember("Denk daran, dass der Müll dienstags kommt")
+        == "der Müll dienstags kommt"
+    )
+    assert remember.wants_remember("denk dran: Öl nachfüllen") == "Öl nachfüllen"
+    assert (
+        remember.wants_remember("Vergiss nicht, dass Oma Montag kommt")
+        == "Oma Montag kommt"
+    )
+    assert (
+        remember.wants_remember("Kannst du dir merken, dass der Code 1234 ist")
+        == "der Code 1234 ist"
+    )
+
+
+def test_a_trigger_word_inside_another_word_is_not_a_directive():
+    # A trigger must end on whitespace — these are ordinary sentences.
+    assert remember.wants_remember("merkwürdig, dass das Licht an ist") is None
+    assert remember.wants_remember("Notizen von gestern zeigen") is None
+    assert remember.wants_remember("Denk daran!") is None
+    assert remember.wants_remember("Vergiss nicht") is None
+
+
+_FACT_STORE_DEF = {"type": "function", "function": {"name": "fact_store"}}
+_RADIO_DEF = {"type": "function", "function": {"name": "play_radio"}}
+
+
+def test_routed_pass_forces_fact_store_alone():
+    tools, choice = remember.routed_pass(
+        "merk dir, dass der Müll dienstags kommt", [_RADIO_DEF, _FACT_STORE_DEF]
+    )
+    assert tools == [_FACT_STORE_DEF]
+    assert choice == "required"
+
+
+def test_routed_pass_leaves_other_turns_alone():
+    toolbox = [_RADIO_DEF, _FACT_STORE_DEF]
+    assert remember.routed_pass("spiel Radio Bayern 3", toolbox) == (toolbox, "")
+    # nothing to force when the profile has no fact_store
+    assert remember.routed_pass("merk dir das Auto", [_RADIO_DEF]) == ([_RADIO_DEF], "")
+    assert remember.routed_pass("merk dir das Auto", None) == (None, "")
+
+
+@pytest.mark.asyncio
+async def test_merk_dir_turn_forces_the_tool_call_on_the_first_pass(db, soul, tmp_path):
+    notes_dir = str(tmp_path / "notes")
+    client, fake = _client(
+        db,
+        soul,
+        [
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "fact_store",
+                            "arguments": {"fact": "der Müll kommt dienstags"},
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Gemerkt."),
+        ],
+        tools=_notes_tools(notes_dir),
+    )
+    sid = await client.create_session("anna")
+    _ = [
+        e
+        async for e in client.chat_stream(
+            sid, "Merk dir, dass der Müll dienstags kommt"
+        )
+    ]
+
+    first, second = fake.calls[0], fake.calls[1]
+    assert first["tool_choice"] == "required"
+    assert [t["function"]["name"] for t in first["tools"]] == ["fact_store"]
+    # the follow-up pass writes the sentence with the whole toolbox back
+    assert second["tool_choice"] == ""
+    assert len(second["tools"]) > 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_turn_is_not_routed(db, soul, tmp_path):
+    notes_dir = str(tmp_path / "notes")
+    client, fake = _client(
+        db,
+        soul,
+        [ChatResult(content="Dein Auto steht in der Tiefgarage.")],
+        tools=_notes_tools(notes_dir),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Wo steht mein Auto?")]
+
+    assert fake.calls[0]["tool_choice"] == ""
+    assert len(fake.calls[0]["tools"]) > 1
+
+
+# -- the real turn shape (#1336 attempt 3) ---------------------------------
+
+# What `/api/chat` actually sends: `server.topic_turn_text()` puts the
+# wall-clock block in front of every turn, and the voice gatekeeper adds the
+# room. Attempt 2 of the routing measured 5/5 on the bench and 0/5 on the box
+# because it only ever saw the bare sentence.
+_REAL_TURN = (
+    "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n\n"
+    "Merk dir, dass der Müll dienstags kommt"
+)
+
+
+def test_the_time_hint_does_not_hide_the_directive():
+    assert remember.wants_remember(_REAL_TURN) == "der Müll dienstags kommt"
+    assert (
+        remember.wants_remember(
+            "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n"
+            "[room: Küche]\n"
+            "denk dran: Öl nachfüllen"
+        )
+        == "Öl nachfüllen"
+    )
+
+
+def test_a_prefixed_ordinary_turn_is_still_not_a_directive():
+    assert (
+        remember.wants_remember(
+            "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n\ndas ist merkwürdig"
+        )
+        is None
+    )
+
+
+def test_routed_pass_routes_the_real_turn_shape():
+    tools, choice = remember.routed_pass(_REAL_TURN, [_RADIO_DEF, _FACT_STORE_DEF])
+    assert tools == [_FACT_STORE_DEF]
+    assert choice == "required"
+
+
+@pytest.mark.asyncio
+async def test_prefixed_merk_dir_turn_forces_the_tool_call(db, soul, tmp_path):
+    notes_dir = str(tmp_path / "notes")
+    client, fake = _client(
+        db,
+        soul,
+        [
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "fact_store",
+                            "arguments": {"fact": "der Müll kommt dienstags"},
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Gemerkt."),
+        ],
+        tools=_notes_tools(notes_dir),
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, _REAL_TURN)]
+
+    first = fake.calls[0]
+    assert first["tool_choice"] == "required"
+    assert [t["function"]["name"] for t in first["tools"]] == ["fact_store"]

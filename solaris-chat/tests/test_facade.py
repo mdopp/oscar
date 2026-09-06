@@ -707,7 +707,9 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
         def __init__(self):
             self.n = 0
 
-        async def stream(self, model, messages, tools=None, think=False, options=None):
+        async def stream(
+            self, model, messages, tools=None, think=False, options=None, tool_choice=""
+        ):
             self.n += 1
             if self.n == 1:
                 yield (

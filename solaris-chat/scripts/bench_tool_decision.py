@@ -8,7 +8,13 @@ its own way. This bench measures exactly that, and nothing else:
 * the prompt is the production one — `build_engine_clients()`'s household
   toolbox, the shipped SOUL.md and the real registry block, borrowed from
   `bench_models.py` so a second copy cannot drift;
-* the call goes straight to `LlamaServerChat`, the chat backend the engine uses;
+* every sentence is prepared the way `/api/chat` prepares it — `server._now_hint()`
+  in front, which is what `topic_turn_text()` prepends to a household turn — so
+  the text measured here is the text a resident's turn actually carries;
+* the call goes straight to `LlamaServerChat`, the chat backend the engine uses,
+  through the engine's own `remember.routed_pass()` — so a sentence the engine
+  routes deterministically is measured routed here too, not as a bench-only
+  free choice;
 * **nothing is executed.** Only `tool_calls` is read. No fact is stored, no
   radio plays, no note is written — the box is asked to decide, not to act.
 
@@ -16,8 +22,15 @@ The four sentences and the ≥4/5 target come from the #1336 measurement on the
 box (gemma4:e4b + MTP, 2026-09-06): `play_radio` 5/5 and `notes_search` 5/5 were
 already good, `fact_store` was 1/9 and `get_solaris_status` 0/9 because the SOUL
 pointer and the tool descriptions named an example sentence instead of the
-intent. A run is a pass when every sentence hits its tool at least 4 of 5 times
-and the reported prefill stays inside the budget.
+intent. `get_solaris_status` reached 5/5 after #1337; `fact_store` stayed at 0/5
+however its description was worded, which is why that intent is now routed in
+code (#1336). A run is a pass when every sentence hits its tool at least 4 of 5
+times and the reported prefill stays inside the budget.
+
+Attempt 2 of that routing passed here 5/5 and failed on the box, because the
+bench sent the bare sentence while a real turn arrives behind `[Aktuelle Zeit: …]`
+and the trigger is anchored at the start. Preparing the turn the same way is the
+whole reason this bench is trustworthy — keep it.
 
 Needs `solaris_chat` importable (the container, or `pip install -e solaris-chat`)
 — a dev script, not shipped in the runtime image.
@@ -37,7 +50,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from solaris_chat.engine import remember
 from solaris_chat.engine.llama_server import LlamaServerChat
+from solaris_chat.server import _now_hint
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -66,7 +81,18 @@ def _bench_models():
     return module
 
 
-async def _decide(chat, model, system, tools, text, temperature):
+def _turn_text(sentence: str) -> str:
+    """The sentence as `/api/chat` hands it to the engine.
+
+    `server.topic_turn_text()` is a closure over the request app, so the bench
+    reuses the piece it always prepends — `server._now_hint()` — joined the same
+    way. A household chat with no active topic adds nothing else, which is the
+    shape this bench measures.
+    """
+    return f"{_now_hint()}\n\n{sentence}"
+
+
+async def _decide(chat, model, system, tools, tool_choice, text, temperature):
     """One turn, generation only — the result is never dispatched."""
     options = {"temperature": temperature} if temperature is not None else None
     messages = [
@@ -75,7 +101,12 @@ async def _decide(chat, model, system, tools, text, temperature):
     ]
     result = None
     async for kind, payload in chat.stream(
-        model, messages, tools=tools, think=False, options=options
+        model,
+        messages,
+        tools=tools,
+        think=False,
+        options=options,
+        tool_choice=tool_choice,
     ):
         if kind == "done":
             result = payload
@@ -102,9 +133,20 @@ async def _run(url, runs, system, tools, model, temperature) -> int:
     for text, want in SENTENCES:
         hits = 0
         got: list[str] = []
+        tool_choice = ""
         for _ in range(runs):
-            result = await _decide(chat, model, system, tools, text, temperature)
-            if result.prompt_tokens:
+            # The turn as /api/chat builds it, and the engine's own routing
+            # (#1336) — not bench-local copies of either. A memory intent goes
+            # out with fact_store alone under a forced tool_choice, so what is
+            # measured here is the path a resident actually gets.
+            turn = _turn_text(text)
+            turn_tools, tool_choice = remember.routed_pass(turn, tools)
+            result = await _decide(
+                chat, model, system, turn_tools, tool_choice, turn, temperature
+            )
+            # A routed turn ships one tool schema, so its prefill is not the
+            # household one the budget is about.
+            if result.prompt_tokens and not tool_choice:
                 prefills.append(result.prompt_tokens)
             names = [c["function"]["name"] for c in result.tool_calls]
             if want in names:
@@ -115,7 +157,11 @@ async def _run(url, runs, system, tools, model, temperature) -> int:
         ok = hits >= target
         failed += not ok
         miss = f"   miss: {'; '.join(got)}" if got else ""
-        print(f"  {'ok  ' if ok else 'FAIL'} {hits}/{runs} {want:<20} {text!r}{miss}")
+        route = " routed" if tool_choice else ""
+        print(
+            f"  {'ok  ' if ok else 'FAIL'} {hits}/{runs} {want:<20} {text!r}"
+            f"{route}{miss}"
+        )
 
     prefill = min(prefills) if prefills else 0
     over = prefill > PREFILL_BUDGET

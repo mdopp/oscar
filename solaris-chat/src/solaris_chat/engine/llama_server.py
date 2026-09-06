@@ -158,10 +158,14 @@ class LlamaServerChat:
         tools: list[dict[str, Any]] | None = None,
         think: bool = False,
         options: dict[str, Any] | None = None,
+        tool_choice: str = "",
     ):
         """Yield `("delta", str)` / `("thinking", str)` per chunk, then one
         final `("done", ChatResult)`. Closing the generator aborts the HTTP
-        request — that is what actually interrupts the model's generation."""
+        request — that is what actually interrupts the model's generation.
+
+        `tool_choice` is llama.cpp's string form ("auto"/"none"/"required");
+        empty leaves the field off and the server defaults to "auto"."""
         if gpu_lease.mutes_chat(self._lease_path):
             # foundry holds the card, so llama.service is stopped and no model
             # can answer this turn (#1320) — or a coding lease is still loading
@@ -183,6 +187,8 @@ class LlamaServerChat:
         }
         if tools:
             body["tools"] = tools
+        if tool_choice:
+            body["tool_choice"] = tool_choice
         body.update(to_openai_options(options))
         result = ChatResult()
         calls: dict[int, dict[str, str]] = {}
@@ -192,6 +198,18 @@ class LlamaServerChat:
                 f"{self._base_url}/v1/chat/completions", json=body
             ) as resp:
                 if resp.status >= 400:
+                    if tool_choice:
+                        # A llama-server built without `--jinja` refuses the
+                        # field outright. Drop the routing and let the turn run
+                        # as an ordinary auto pass rather than fail it.
+                        log.warn(
+                            "engine.llama.tool_choice_rejected", status=resp.status
+                        )
+                        async for item in self.stream(
+                            model, messages, tools, think, options
+                        ):
+                            yield item
+                        return
                     detail = (await resp.text())[:500]
                     raise LlamaServerError(
                         f"llama-server /v1/chat/completions {resp.status}: {detail}"
