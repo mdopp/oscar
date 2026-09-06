@@ -279,8 +279,11 @@ def server_args(
     context_length = profile["context_length"]
     draft_n_max = profile["draft_n_max"]
     args = [
+        # 0.0.0.0, not loopback (#1344): pasta maps `host.containers.internal`
+        # to the host's LAN address, so an isolated sibling pod cannot reach a
+        # loopback bind. LLAMA_PORT's `blockLanAccess` flag keeps the LAN out.
         "--host",
-        "127.0.0.1",
+        "0.0.0.0",
         "--port",
         port,
         "-m",
