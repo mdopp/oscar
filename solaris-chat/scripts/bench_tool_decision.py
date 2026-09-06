@@ -24,7 +24,7 @@ Needs `solaris_chat` importable (the container, or `pip install -e solaris-chat`
 
 One command, on the box:
 
-    python3 solaris-chat/scripts/bench_tool_decision.py --url http://127.0.0.1:8080
+    python3 solaris-chat/scripts/bench_tool_decision.py --url http://127.0.0.1:11435
 
 Exits non-zero if a sentence misses the target or the prefill busts the budget.
 """
@@ -82,14 +82,19 @@ async def _decide(chat, model, system, tools, text, temperature):
     return result
 
 
-async def _run(url: str, model: str, runs: int) -> int:
+def _prepare(model: str) -> tuple:
+    """Prompt assembly, outside any event loop: `bench_models.build_system()`
+    drives its own `asyncio.run`, which raises inside a running one."""
     bench = _bench_models()
     household = bench.build_household("http://127.0.0.1:11434")
     system = bench.build_system(household)
     tools = household._profile.toolbox.definitions()
+    profile = household._profile
+    return system, tools, model or profile.model, profile.temperature
+
+
+async def _run(url, runs, system, tools, model, temperature) -> int:
     chat = LlamaServerChat(url)
-    model = model or household._profile.model
-    temperature = household._profile.temperature
 
     print(f"model {model}, {len(tools)} tools, {runs} runs per sentence")
     prefills: list[int] = []
@@ -123,11 +128,11 @@ async def _run(url: str, model: str, runs: int) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default="http://127.0.0.1:8080", help="llama-server")
+    ap.add_argument("--url", default="http://127.0.0.1:11435", help="llama-server")
     ap.add_argument("--model", default="", help="default: the household profile's")
     ap.add_argument("--runs", type=int, default=RUNS)
     args = ap.parse_args()
-    sys.exit(asyncio.run(_run(args.url, args.model, args.runs)))
+    sys.exit(asyncio.run(_run(args.url, args.runs, *_prepare(args.model))))
 
 
 if __name__ == "__main__":
