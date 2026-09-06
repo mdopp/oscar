@@ -56,8 +56,8 @@ def probe(db_path: str) -> str | None:
     SQLite doesn't touch the file header until something needs the schema — a
     file of pure garbage answers `SELECT 1` quite happily.
 
-    Deliberately checks only this service's own database. Ollama, Home Assistant
-    and Radicale stay out of it: a probe that folds in neighbours goes red
+    Deliberately checks only this service's own database. Home Assistant and
+    Radicale stay out of it: a probe that folds in neighbours goes red
     whenever one of them coughs, which makes the tile worthless again, only in
     the other direction.
     """

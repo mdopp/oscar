@@ -2423,7 +2423,7 @@ def build_app(
         without — `solaris.db` — read-only and reads its schema. That is exactly
         the fault that broke: `Path.exists()` raised `PermissionError`.
 
-        NOT checked, deliberately: Ollama, Home Assistant, Radicale, Paperless.
+        NOT checked, deliberately: llama-server, Home Assistant, Radicale, Paperless.
         A probe that folds in neighbours goes red whenever one of them coughs,
         which makes the tile worthless again, only in the other direction —
         Solaris without llama-server is still a working chat server with its history.
@@ -6309,8 +6309,9 @@ def build_app(
             )
             async for event in _heartbeat(stream, resp):
                 if cancel.is_set():
-                    # Closing the upstream generator aborts the engine/Ollama
-                    # run (#192) — stops generation, not just our forwarding.
+                    # Closing the upstream generator aborts the engine's
+                    # llama-server run (#192) — stops generation, not just our
+                    # forwarding.
                     await stream.aclose()
                     await _send_event(resp, "cancelled", {})
                     cancelled = True

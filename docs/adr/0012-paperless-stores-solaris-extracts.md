@@ -52,8 +52,9 @@ resident, and runs only in crons/ingest — never inside a turn.
 - The GPU plan keeps a bursty second consumer. Evicting `e4b` costs a ~6.8 s reload
   on the first turn after a document batch, so the extraction cron belongs in a
   maintenance window, not in the evening.
-- `templates/ollama/` must keep pulling a vision-capable 12b tag. Its
-  `OLLAMA_DEFAULT_MODEL` moving to `e4b` (backlog E2) must not remove the 12b pull.
+- The extractor needs a vision-capable model on the box. Since the Ollama retirement
+  (#1332) that is llama-server's projector — `templates/llama`'s `LLAMA_MMPROJ_FILE`,
+  not a model pull — and a profile shipped without it leaves the extractor text-only.
 - Document text quality is now a Solaris concern, not a vendor concern. If the
   extractor regresses, no fallback OCR catches it — that is the accepted price for
   not projecting garble.
