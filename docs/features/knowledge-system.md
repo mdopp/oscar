@@ -88,7 +88,7 @@ restart). The other crons slot around it: `daily-chronicle` 23:59,
 |---|---|
 | `NOTES_DIR` | Obsidian vault (Syncthing-synced); OKF subtree at `notes/okf/` |
 | `SOLARIS_DB_PATH` | the `solaris.db` projection + vectors + cron stamps |
-| `OLLAMA_URL` | embedding + generation backend (`nomic-embed-text` managed) |
+| `OLLAMA_URL` | embedding backend (`nomic-embed-text` managed) — chat generation moved to llama-server in #1318; embeddings move too once #1332 lands |
 
 The `solaris.db` knowledge tables are created by Alembic migrations in
 `database/` — `0016_okf_knowledge_index` (entities/facts/events/concepts) and

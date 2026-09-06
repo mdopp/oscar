@@ -382,23 +382,25 @@ ZA-03, nicht in einer Einstellung. Das Batch-Vision-Modell (`gemma4:12b`, ZA-03)
 davon unberührt — es ist ein Betriebsparameter des Ingest-Pfads, keine Dialogauswahl,
 und taucht in keiner Nutzer-Einstellung auf.
 
-**Was der Batchpfad kostet, gemessen statt geschätzt.** `OLLAMA_MAX_LOADED_MODELS=2`
-(box-gemessen, `templates/ollama/variables.json`): `e4b` und `nomic-embed-text` sind
-resident, 12b passt nicht dazu und verdrängt beim Laden `e4b`. Ollama fährt zwar je
-Modell einen eigenen Runner — deshalb läuft ein Embedding-Request parallel zu einer
-Generierung —, aber der Deckel greift trotzdem. Folge während eines Dokumentenlaufs:
-
-- Ein Sprachbefehl, der in eine **laufende** 12b-Generierung fällt, wartet auf deren
-  Ende. Ollama kann eine Generierung nicht unterbrechen.
-- Danach lädt `e4b` neu: ~6,8 s. Der Lauf zahlt beim nächsten Dokument denselben Preis
-  in die Gegenrichtung.
-- Über einen längeren Lauf wechseln sich die beiden Modelle also im Verdrängen ab.
-
-**Der Batchpfad ist damit nicht unterbrechbar, sondern nur planbar.** Das
-Wartungsfenster ist eine Zeitspanne, in der niemand spricht. Wer das ändern will,
-braucht entweder ein VRAM-Budget für drei Modelle (dann muss `OLLAMA_CONTEXT_LENGTH`
-sinken) oder das Verschieben der Vision-Transkription auf die Zone-2-Hardware — beides
-ist eine eigene Entscheidung, keine Einstellung.
+> **Historie — die folgenden drei Absätze beschreiben den Ollama-Betrieb vor #1318/#1332.**
+> Zone 1 läuft heute auf llama.cpp `llama-server` (Port 11435, ein residentes
+> Dialogmodell + MTP-Drafter), nicht mehr auf Ollama mit mehreren residenten Modellen.
+> §8.6 "Modell-Serving" beschreibt den aktuellen Stand.
+>
+> **Was der Batchpfad kostete, gemessen statt geschätzt.** `OLLAMA_MAX_LOADED_MODELS=2`
+> (box-gemessen, `templates/ollama/variables.json`): `e4b` und `nomic-embed-text` waren
+> resident, 12b passte nicht dazu und verdrängte beim Laden `e4b`. Ollama fuhr zwar je
+> Modell einen eigenen Runner — deshalb lief ein Embedding-Request parallel zu einer
+> Generierung —, aber der Deckel griff trotzdem. Folge während eines Dokumentenlaufs:
+>
+> - Ein Sprachbefehl, der in eine **laufende** 12b-Generierung fiel, wartete auf deren
+>   Ende. Ollama konnte eine Generierung nicht unterbrechen.
+> - Danach lud `e4b` neu: ~6,8 s. Der Lauf zahlte beim nächsten Dokument denselben Preis
+>   in die Gegenrichtung.
+> - Über einen längeren Lauf wechselten sich die beiden Modelle also im Verdrängen ab.
+>
+> **Der Batchpfad war damit nicht unterbrechbar, sondern nur planbar.** Das
+> Wartungsfenster war eine Zeitspanne, in der niemand spricht.
 
 Damit entfällt auch der Per-Turn-Schalter `think`:
 sein Zweck war das Umschalten zwischen schnell und gründlich, und diese Entscheidung ist
@@ -409,8 +411,8 @@ Zone 2 wählt Hermes über seine eigene Provider- und Modellkonfiguration. Die w
 unbequeme.
 
 Was von der bisherigen Konfiguration bleibt, sind Betriebsparameter, keine Modellnamen:
-Ollama-Endpunkt, Kontextgröße, `keep_alive = -1` (damit e4b nie entladen wird) und das
-Embedding-Modell für den Indexer.
+der llama-server-Endpunkt (vormals Ollama-Endpunkt), Kontextgröße und das
+Embedding-Modell für den Indexer (noch auf Ollama, siehe §8.6).
 
 #### Wer darf was einstellen
 
@@ -422,7 +424,7 @@ Die Trennlinie ist nicht Schwierigkeit, sondern **Blast Radius**.
 | Ansprache und Ton (Fortsetzung von `SOUL.md`) | Toolsets und MCP-Ziele |
 | Sichtbarkeitsklassen des eigenen Kanals | Skills, Curator-Zyklus |
 | Aufträge: ansehen, abbrechen, wiederholen | Messaging-Bridges einrichten |
-| Erinnerungen ansehen und korrigieren | Ollama-Betriebsparameter |
+| Erinnerungen ansehen und korrigieren | llama-server-/GPU-Lease-Betriebsparameter (vormals Ollama) |
 
 Wer den Ton ändert, kann nichts kaputtmachen. Wer Toolsets ändert, verschiebt Prefill
 und Kosten.
@@ -430,6 +432,63 @@ und Kosten.
 **Umfang in V1:** nur Benachrichtigungs-Routing und Korrekturkanal. Jede weitere
 gespiegelte Einstellung ist ein Schema, das bei Hermes-Updates brechen kann. Der Rest
 kommt erst, wenn die Abnahmewoche zeigt, dass er fehlt.
+
+### 8.6 Modell-Serving
+
+*Konzeptnachtrag, Operator-Auftrag „ollama ganz weg, auch foundry umstellen" (6.9.2026,
+solarisbay#1345); gilt projektübergreifend auf dem atHome-Server.*
+
+**Ein Modell-Server: llama.cpp `llama-server`** (ServiceBay-Template `llama`), im
+Host-Netz, Port **11435**, OpenAI-kompatibel (`POST /v1/chat/completions`,
+`/v1/embeddings` ab #1332, `/props`, `/slots`). Modelle sind GGUF-Dateien unter
+`${DATA_DIR}/llama/models/` (Hugging Face `ggml-org`) — keine Registry, kein
+`ollama pull`.
+
+**Haushaltsmodell:** `gemma-4-e4b` (Q4_0) + MTP-Drafter + mmproj, Alias `gemma-4-e4b`.
+Speculative Decoding halbiert die Antwortzeit (0,30 s statt 0,62 s je Antwort,
+box-gemessen #1317/#1318) — das kann nur llama.cpp, nicht Ollama. Solaris' Engine
+spricht diesen Server (`LLAMA_SERVER_URL`), Denken ist per
+`chat_template_kwargs {enable_thinking:false}` aus.
+
+**Ein Server, mehrere Profile, umgeschaltet über die GPU-Lease**
+(`${DATA_DIR}/solarisbay/gpu-lease.py`, Solaris-Internum):
+
+| Profil | Modell | Alias | Sprachstack | Solaris-Chat |
+| :--- | :--- | :--- | :--- | :--- |
+| Haushalt (Standard) | gemma-4 e4b + MTP + mmproj | `gemma-4-e4b` | GPU | normal |
+| `foundry` | gemma-4 12b + MTP (`-c 32768`) | `gemma-4-12b` | bleibt auf der GPU | antwortet weiter, vom 12b |
+| `coding` (exklusiv) | Qwen 3.8 27B UD-IQ3_XXS + MTP, `-c 81920`, `--reasoning off` | `qwen3.8-27b` | CPU (`voice-device.env`) | stumm, ehrlicher Hinweis + Banner |
+
+Der 26B-Plan ist gestrichen (passt nicht neben den Sprachstack). Eine Coding-Lease und
+ein foundry-Spielabend schließen einander aus (exklusiver Modus stoppt Sprachstack und
+Ollama/12b) — akzeptierte Folge, vom Operator bestätigt.
+
+**Nachbardienste holen sich das Modell über HTTP, nie über das Skript:**
+`POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback, kein Token;
+Vertrag foundry-chronicle#321). `POST {"model":"foundry","ttl_s":900}` → `200 ready`
+mit `alias` oder `202 preparing` mit `retry_after` (dann `GET` pollen), `409 held`
+bei fremdem Halter; `DELETE` gibt frei; ohne `DELETE` läuft die Frist ab und das
+Haushaltsmodell kommt zurück. Das `model`-Feld jeder `/v1`-Antwort trägt den Alias
+des tatsächlich geladenen Modells — **Herkunft aus der Antwort, nie aus der
+Einstellung.**
+
+**Erreichbarkeit für Nachbar-Pods** (Nachtrag 6.9., solarisbay#1344): llama-server
+bindet auf `0.0.0.0`, nicht nur Loopback, damit isolierte Pods ohne Host-Netz
+(z. B. claude-dev) es über `host.containers.internal` erreichen — die LAN-Freigabe
+bleibt zu (ADR-0007-Carve-out, nftables `blockLanAccess` auf dem Port). Regel für
+Verbraucher: Host-Netz-Dienste → `127.0.0.1:11435`, isolierte Pods →
+`host.containers.internal:11435`, niemand die LAN-IP.
+
+**Ollama wird abgeschaltet** (solarisbay#1332): Embeddings (`nomic-embed-text`) und
+Vision-Ingest wandern auf llama.cpp; das `ollama`-Template wird stillgelegt (Tombstone,
+nicht gelöscht — siehe `CLAUDE.md` "Retiring a delivered artifact"); der Dienst auf der
+Box wird deinstalliert, sobald foundry seinen echten `/v1`-Aufruf bestätigt hat. Bis
+dahin läuft Ollama nur noch als Übergang auf 11434 für Embeddings/Vision — **nichts
+Neues darf mehr dagegen gebaut werden.**
+
+Die HA-Conversation-Integration spricht weiterhin die Ollama-**kompatible** Facade der
+Engine (`/ollama/api/chat` auf 8787) — das ist ein Protokoll, kein Dienst, und bleibt
+auch nach der Ollama-Abschaltung bestehen (siehe `voice-gatekeeper/README.md`).
 
 ### 8.2 Benachrichtigung
 
