@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.1](https://github.com/mdopp/solarisbay/compare/v0.59.0...v0.59.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **chat:** report a lease as releasing until the broker has let go ([30fca1d](https://github.com/mdopp/solarisbay/commit/30fca1d84588a4bd170bb144fabaa6ab636ad174)), closes [#1364](https://github.com/mdopp/solarisbay/issues/1364)
+
 ## [0.59.0](https://github.com/mdopp/solarisbay/compare/v0.58.0...v0.59.0) (2026-09-07)
 
 
