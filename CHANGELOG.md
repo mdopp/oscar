@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.0](https://github.com/mdopp/solarisbay/compare/v0.59.1...v0.60.0) (2026-09-07)
+
+
+### Features
+
+* **template:** declare the paperless backup with the pg-dump collector ([6995857](https://github.com/mdopp/solarisbay/commit/699585745d2aabb42ae772c0c067f564a21f99e9)), closes [#1133](https://github.com/mdopp/solarisbay/issues/1133)
+
 ## [0.59.1](https://github.com/mdopp/solarisbay/compare/v0.59.0...v0.59.1) (2026-09-07)
 
 
