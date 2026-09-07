@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.0](https://github.com/mdopp/solarisbay/compare/v0.58.0...v0.59.0) (2026-09-07)
+
+
+### Features
+
+* **chat:** release a GPU lease whose holder stopped renewing ([efae0b5](https://github.com/mdopp/solarisbay/commit/efae0b5b9b94927a4f086c595af35aaa4692e842)), closes [#1361](https://github.com/mdopp/solarisbay/issues/1361)
+
 ## [0.58.0](https://github.com/mdopp/solarisbay/compare/v0.57.0...v0.58.0) (2026-09-06)
 
 
