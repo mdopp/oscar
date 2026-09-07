@@ -3190,6 +3190,9 @@ def build_app(
     # state machine in solaris_chat.model_lease. `holder` (#1347) is optional
     # and names the *service* asking, so a restarted neighbour releases its own
     # window and not somebody else's; without it everything behaves as before.
+    # Since #1361 the window also ends a grace of two missed renewals after the
+    # last POST, so a holder that dies without a DELETE does not hold the card
+    # to the TTL; GET reports `last_renewed_at` and `renew_after` for it.
 
     async def set_model_lease(request: web.Request) -> web.Response:
         if not model_lease_enabled:

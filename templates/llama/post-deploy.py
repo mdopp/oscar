@@ -800,6 +800,20 @@ LEASE_WARM_DEADLINE_SEC = 300
 LEASE_DEFAULT_DURATION_SEC = 4 * 3600
 LEASE_EXPIRY_UNIT = "solaris-gpu-lease-expiry"
 
+# The deadline alone was too coarse a net (#1361). A holder is expected to
+# POST again every `renew_after` seconds; the timer is therefore armed at the
+# **grace** — two missed renewals — instead of at the deadline, and every
+# renewal re-arms it. So a holder that dies without a DELETE loses the card
+# after two missed renewals (10 minutes on a 15-minute window) rather than
+# after the full TTL, which for pi-web's 4-hour coding window would have kept
+# Qwen loaded and the household on the wrong model for hours.
+#
+# The timer firing *is* the check: a live holder has cancelled and re-armed it
+# at its last renewal, so nothing that reaches `release` here has renewed
+# inside the grace. The deadline stays the outer net — `expiry_wake` never
+# arms past it.
+LEASE_GRACE_FACTOR = 2
+
 
 def lease_file(data_dir: str) -> str:
     """The lease file, on the volume the chat pod mounts at /var/lib/solaris."""
@@ -972,15 +986,29 @@ def apply_llama_profile(port: str, data_dir: str, profile: dict[str, str]) -> No
     )
 
 
+def renew_after(ttl: int) -> int:
+    """When the holder is expected to POST again — a third of the window, so a
+    missed renewal has two more chances. The same arithmetic the Engine
+    answers in `renew_after` (`solaris_chat.model_lease`)."""
+    return max(ttl // 3, 60)
+
+
+def expiry_wake(ttl: int) -> int:
+    """When the expiry timer wakes: after the grace of two missed renewals, or
+    at the deadline when that comes first (#1361)."""
+    return min(LEASE_GRACE_FACTOR * renew_after(ttl), ttl)
+
+
 def schedule_expiry(data_dir: str, port: str, seconds: int) -> None:
-    """Arm the transient timer that releases the card at the deadline."""
+    """Arm the transient timer that gives the card back once the holder has
+    stopped renewing (or the window has run out, whichever is first)."""
     cancel_expiry()
     out = subprocess.run(
         [
             "systemd-run",
             "--user",
             f"--unit={LEASE_EXPIRY_UNIT}",
-            f"--on-active={seconds}",
+            f"--on-active={expiry_wake(seconds)}",
             "--description=Solaris GPU lease expiry (#1319)",
             f"--setenv=DATA_DIR={data_dir}",
             f"--setenv=LLAMA_PORT={port}",
@@ -999,7 +1027,14 @@ def schedule_expiry(data_dir: str, port: str, seconds: int) -> None:
             stderr=out.stderr[:400],
         )
         return
-    jlog("info", "llama:lease", "expiry armed", seconds=seconds)
+    jlog(
+        "info",
+        "llama:lease",
+        "expiry armed",
+        seconds=expiry_wake(seconds),
+        ttl_s=seconds,
+        renew_after_s=renew_after(seconds),
+    )
 
 
 def cancel_expiry() -> None:
@@ -1053,6 +1088,8 @@ def lease_acquire(
     # exists to prevent.
     if profile and current.get("mode") == model and current.get("ready"):
         current["until"] = time.time() + duration_sec
+        current["last_renewed_at"] = time.time()
+        current["renew_after"] = renew_after(duration_sec)
         write_lease(data_dir, current)
         schedule_expiry(data_dir, port, duration_sec)
         jlog(
@@ -1100,6 +1137,11 @@ def lease_acquire(
             "holder": holder,
             "since": now,
             "until": now + duration_sec,
+            # The heartbeat the expiry timer is armed against (#1361): moved
+            # by every renewal, reported by `GET /api/model-lease` so a holder
+            # can see how long its window survives its own silence.
+            "last_renewed_at": now,
+            "renew_after": renew_after(duration_sec),
             "mode": model or "exclusive",
             "model": profile["label"] if profile else "",
             # What llama-server answers as for the window — solaris-chat hands

@@ -39,23 +39,33 @@ def _app(tmp_path, *, enabled: bool = True):
     )
 
 
-def _hold(tmp_path, model="foundry", *, ready=True, until=9e9, holder=""):
-    """Write the lease file the box's `gpu-lease.py` writes."""
+def _hold(
+    tmp_path,
+    model="foundry",
+    *,
+    ready=True,
+    until=9e9,
+    holder="",
+    last_renewed_at=1000.0,
+    renew_after=300,
+):
+    """Write the lease file the box's `gpu-lease.py` writes. `None` for either
+    heartbeat field leaves it out — that is a lease taken before #1361."""
     path = gpu_lease.lease_path(_db(tmp_path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "holder": holder or model,
-                "mode": model,
-                "model": "Gemma 4 12B",
-                "alias": model_lease.ALIASES[model],
-                "until": until,
-                "ready": ready,
-            }
-        ),
-        "utf-8",
-    )
+    record = {
+        "holder": holder or model,
+        "mode": model,
+        "model": "Gemma 4 12B",
+        "alias": model_lease.ALIASES[model],
+        "until": until,
+        "ready": ready,
+    }
+    if last_renewed_at is not None:
+        record["last_renewed_at"] = last_renewed_at
+    if renew_after is not None:
+        record["renew_after"] = renew_after
+    path.write_text(json.dumps(record), "utf-8")
 
 
 def _request(tmp_path) -> dict:
@@ -155,6 +165,8 @@ def test_no_lease_reads_as_the_household_model(tmp_path):
         "alias": "gemma-4-e4b",
         "expires_at": None,
         "holder": "",
+        "last_renewed_at": None,
+        "renew_after": None,
     }
 
 
@@ -180,6 +192,8 @@ def test_a_lease_still_loading_is_preparing_and_still_answers_as_the_household(
         "alias": "gemma-4-e4b",
         "expires_at": None,
         "holder": "foundry",
+        "last_renewed_at": 1000.0,
+        "renew_after": 300,
     }
 
 
@@ -191,6 +205,8 @@ def test_a_ready_lease_reports_its_alias_and_deadline(tmp_path):
         "alias": "qwen3.8-27b",
         "expires_at": 1234.0,
         "holder": "foundry-chronicle",
+        "last_renewed_at": 1000.0,
+        "renew_after": 300,
     }
 
 
@@ -210,6 +226,35 @@ def test_a_request_the_broker_has_not_picked_up_yet_is_preparing(tmp_path):
         json.dumps({"requested_at": 7.0, "state": "error"}), "utf-8"
     )
     assert model_lease.state(db)["state"] == "none"
+
+
+def test_the_heartbeat_is_reported_so_a_holder_can_see_its_own_grace(tmp_path):
+    """#1361: the window ends a grace of two missed renewals after the last
+    POST, so the holder is told when it last renewed and how often it should."""
+    _hold(tmp_path, "coding", last_renewed_at=1700.0, renew_after=4800)
+    seen = model_lease.state(_db(tmp_path))
+    assert seen["last_renewed_at"] == 1700.0
+    assert seen["renew_after"] == 4800
+
+
+def test_a_lease_taken_before_the_heartbeat_reports_no_heartbeat(tmp_path):
+    """A window still standing across the deploy that introduced #1361 was
+    written without those fields; reporting a zero would read as "long
+    overdue" to a holder that is renewing perfectly well."""
+    _hold(tmp_path, "coding", last_renewed_at=None, renew_after=None)
+    seen = model_lease.state(_db(tmp_path))
+    assert seen["last_renewed_at"] is None
+    assert seen["renew_after"] is None
+
+
+def test_a_pending_request_reports_the_post_as_its_last_renewal(tmp_path):
+    """Between the POST and the broker's first write there is no lease file, but
+    the POST *is* the heartbeat — the holder must not read that gap as one."""
+    db = _db(tmp_path)
+    model_lease.write_request(db, "acquire", "foundry", 900, holder="x", now=7.0)
+    seen = model_lease.state(db)
+    assert seen["last_renewed_at"] == 7.0
+    assert seen["renew_after"] == model_lease.renew_after(900)
 
 
 def test_an_unreadable_or_exclusive_lease_reads_as_no_lease(tmp_path):
@@ -378,7 +423,14 @@ async def test_get_answers_what_is_loaded_right_now(aiohttp_client, tmp_path):
     assert body["alias"] == "gemma-4-e4b"
     assert body["retry_after"] == model_lease.RETRY_AFTER_SECONDS
     assert body["holder"] == ""
-    _hold(tmp_path, "foundry", until=99.0, holder="foundry-chronicle")
+    _hold(
+        tmp_path,
+        "foundry",
+        until=99.0,
+        holder="foundry-chronicle",
+        last_renewed_at=42.0,
+        renew_after=300,
+    )
     body = await (await client.get("/api/model-lease")).json()
     assert body == {
         "state": "ready",
@@ -386,6 +438,10 @@ async def test_get_answers_what_is_loaded_right_now(aiohttp_client, tmp_path):
         "alias": "gemma-4-12b",
         "expires_at": 99.0,
         "holder": "foundry-chronicle",
+        # The heartbeat (#1361): a consumer reads its own grace off these two
+        # instead of having to know the box's arithmetic.
+        "last_renewed_at": 42.0,
+        "renew_after": 300,
         "retry_after": model_lease.RETRY_AFTER_SECONDS,
     }
 
