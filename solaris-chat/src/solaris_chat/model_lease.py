@@ -50,6 +50,23 @@ the deadline. Two rules, one on each side:
   no-op: there is no window to find. This is the rule
   `mdopp/foundry-chronicle#333` was waiting for, and `templates/pi-web`
   follows it in its host lease unit.
+
+Since #1364 the giving back is as asynchronous as the taking, and says so.
+`DELETE` only writes the request; the broker starts the units back up and
+waits for the household model before it removes the lease file, which is
+seconds during which the window is neither held nor gone. That in-between is
+`releasing` — reported by `GET` and answered by `DELETE` itself — and the
+contract addendum on `mdopp/foundry-chronicle#321` is:
+
+* `releasing` always carries `retry_after`, from the same source `preparing`
+  takes it from.
+* After a `DELETE` a consumer waits for `none`. It never sends a second
+  `DELETE` for a window that reads `releasing` or `preparing`.
+* Giving up on waiting is harmless: the release runs on the host whether
+  anyone polls or not. Nothing is left half-done by walking away.
+* The start-cleanup above applies only to a window that is `ready` **and**
+  carries the consumer's own holder — never to one that is already going
+  away.
 """
 
 from __future__ import annotations
@@ -177,6 +194,23 @@ def read_status(db_path: str) -> dict:
     return _read(status_path(db_path))
 
 
+def release_pending(db_path: str) -> bool:
+    """True while a `release` request stands that the broker has not run yet.
+
+    Newer *than the lease file* is the whole test: a release that has been
+    executed took the lease file with it, and a lease file written after the
+    request belongs to a new window rather than to the one being given back.
+    """
+    try:
+        newer = (
+            request_path(db_path).stat().st_mtime
+            > gpu_lease.lease_path(db_path).stat().st_mtime
+        )
+    except OSError:
+        return False
+    return newer and read_request(db_path).get("op") == "release"
+
+
 def household_alias(db_path: str) -> str:
     """The alias llama-server answers with when no lease is held.
 
@@ -259,11 +293,27 @@ def state(db_path: str) -> dict:
             "last_renewed_at": _number(lease.get("last_renewed_at")),
             "renew_after": _number(lease.get("renew_after")),
         }
+        alias = (
+            str(lease.get("alias") or ALIASES[mode])
+            if lease.get("ready")
+            else household_alias(db_path)
+        )
+        if release_pending(db_path):
+            # The window is on its way out: no deadline to plan against, and
+            # `none` is what says it is really gone.
+            return {
+                "state": "releasing",
+                "model": mode,
+                "alias": alias,
+                "expires_at": None,
+                "holder": held_by,
+                **beat,
+            }
         if not lease.get("ready"):
             return {
                 "state": "preparing",
                 "model": mode,
-                "alias": household_alias(db_path),
+                "alias": alias,
                 "expires_at": None,
                 "holder": held_by,
                 **beat,
@@ -272,7 +322,7 @@ def state(db_path: str) -> dict:
         return {
             "state": "ready",
             "model": mode,
-            "alias": str(lease.get("alias") or ALIASES[mode]),
+            "alias": alias,
             "expires_at": until if isinstance(until, (int, float)) else None,
             "holder": held_by,
             **beat,

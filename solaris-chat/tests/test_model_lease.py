@@ -4,8 +4,10 @@ mdopp/foundry-chronicle#321).
 The endpoint keeps the shape foundry built against in #1260 and now fronts the
 box's GPU lease. What is pinned here is the state machine they poll — 200
 `ready` / 202 `preparing` / 409 `held` / 400 / 503 — the request file the host
-broker acts on, the alias every surface reports the loaded model by, and the
-holder (#1347) that decides whose window a `DELETE` may close.
+broker acts on, the alias every surface reports the loaded model by, the
+holder (#1347) that decides whose window a `DELETE` may close, and the
+`releasing` (#1364) a window reads as while the broker has the request but has
+not yet given the card back.
 """
 
 from __future__ import annotations
@@ -267,6 +269,59 @@ def test_an_unreadable_or_exclusive_lease_reads_as_no_lease(tmp_path):
         assert model_lease.state(_db(tmp_path))["state"] == "none"
 
 
+# ---- the window on its way out (#1364) ------------------------------------
+
+
+def test_a_release_the_broker_has_not_run_yet_is_releasing(tmp_path):
+    """The DELETE only writes the request; the box starts the units back up and
+    waits for the household model before it drops the lease file. Reporting
+    `ready` for those seconds sends the holder after a window that is going."""
+    db = _db(tmp_path)
+    _hold(tmp_path, "foundry", until=777.0, holder="foundry-chronicle")
+    model_lease.write_request(db, "release", holder="foundry-chronicle")
+    seen = model_lease.state(db)
+    assert seen["state"] == "releasing"
+    assert seen["model"] == "foundry"
+    assert seen["holder"] == "foundry-chronicle"
+    # No deadline to plan against — the window ends when the broker says so.
+    assert seen["expires_at"] is None
+    # The leased model is still the one llama-server has loaded until then.
+    assert seen["alias"] == "gemma-4-12b"
+
+
+def test_a_release_of_a_window_still_loading_keeps_the_household_alias(tmp_path):
+    db = _db(tmp_path)
+    _hold(tmp_path, "foundry", ready=False, holder="foundry-chronicle")
+    model_lease.write_request(db, "release", holder="foundry-chronicle")
+    seen = model_lease.state(db)
+    assert seen["state"] == "releasing"
+    assert seen["alias"] == "gemma-4-e4b"
+
+
+def test_a_lease_written_after_the_release_is_a_new_window_not_a_releasing_one(
+    tmp_path,
+):
+    """Newer than the lease file is the whole test: an operator who took the
+    card by hand after a release holds a window that stands."""
+    db = _db(tmp_path)
+    model_lease.write_request(db, "release", holder="foundry-chronicle")
+    _hold(tmp_path, "foundry", until=777.0, holder="foundry-chronicle")
+    assert model_lease.state(db)["state"] == "ready"
+
+
+def test_the_window_is_gone_once_the_broker_removed_the_lease(tmp_path):
+    """`none` is what "really released" looks like — the release request stays
+    on disk after the broker has run it."""
+    db = _db(tmp_path)
+    _hold(tmp_path, "foundry", holder="foundry-chronicle")
+    model_lease.write_request(db, "release", holder="foundry-chronicle")
+    gpu_lease.lease_path(db).unlink()
+    seen = model_lease.state(db)
+    assert seen["state"] == "none"
+    assert seen["holder"] == ""
+    assert seen["alias"] == "gemma-4-e4b"
+
+
 # ---- the endpoint ----------------------------------------------------------
 
 
@@ -382,7 +437,11 @@ async def test_delete_releases_only_the_callers_own_window(aiohttp_client, tmp_p
     assert not model_lease.request_path(_db(tmp_path)).exists()
     r = await client.delete("/api/model-lease", json={"holder": "foundry-chronicle"})
     assert r.status == 200
-    assert await r.json() == {"ok": True, "state": "released"}
+    assert await r.json() == {
+        "ok": True,
+        "state": "releasing",
+        "retry_after": model_lease.RETRY_AFTER_SECONDS,
+    }
     assert _request(tmp_path)["op"] == "release"
 
 
@@ -454,7 +513,11 @@ async def test_delete_without_a_body_ends_the_window_and_is_idempotent(
     client = await aiohttp_client(_app(tmp_path))
     r = await client.delete("/api/model-lease")
     assert r.status == 200
-    assert await r.json() == {"ok": True, "state": "released"}
+    assert await r.json() == {
+        "ok": True,
+        "state": "releasing",
+        "retry_after": model_lease.RETRY_AFTER_SECONDS,
+    }
     assert _request(tmp_path)["op"] == "release"
     # Nothing held: still a 200, and no work handed to the broker — a release
     # of nothing would restart the units behind their backs.
@@ -463,6 +526,36 @@ async def test_delete_without_a_body_ends_the_window_and_is_idempotent(
     r = await client.delete("/api/model-lease")
     assert r.status == 200
     assert not model_lease.request_path(_db(tmp_path)).exists()
+
+
+async def test_delete_answers_releasing_until_the_card_is_really_back(
+    aiohttp_client, tmp_path
+):
+    """What the caller is told after a DELETE, and what it is told when it
+    polls: the same word, and a `retry_after` to poll on. `released` is
+    reserved for a window that is demonstrably gone (#1364)."""
+    _hold(tmp_path, "foundry", until=777.0, holder="foundry-chronicle")
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.delete("/api/model-lease", json={"holder": "foundry-chronicle"})
+    assert r.status == 200
+    assert await r.json() == {
+        "ok": True,
+        "state": "releasing",
+        "retry_after": model_lease.RETRY_AFTER_SECONDS,
+    }
+    body = await (await client.get("/api/model-lease")).json()
+    assert body["state"] == "releasing"
+    assert body["holder"] == "foundry-chronicle"
+    assert body["expires_at"] is None
+    assert body["retry_after"] == model_lease.RETRY_AFTER_SECONDS
+    # The broker gets there: the lease file goes, and the answer is `none` —
+    # which is what a consumer waits for instead of sending a second DELETE.
+    gpu_lease.lease_path(_db(tmp_path)).unlink()
+    body = await (await client.get("/api/model-lease")).json()
+    assert body["state"] == "none"
+    # And a DELETE on nothing is still the idempotent `released`.
+    r = await client.delete("/api/model-lease", json={"holder": "foundry-chronicle"})
+    assert await r.json() == {"ok": True, "state": "released"}
 
 
 async def test_disabled_setting_refuses_the_endpoint(aiohttp_client, tmp_path):

@@ -3283,21 +3283,34 @@ def build_app(
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
         current = model_lease.state(solaris_db_path)
-        if current["state"] != "none":
-            # A named holder releases only its own window; the bodyless call
-            # stays the operator's way out of a window nobody is renewing.
-            if holder and current["holder"] != holder:
-                return web.json_response(
-                    {
-                        "ok": False,
-                        "reason": "held",
-                        "holder": current["holder"],
-                        "expires_at": current["expires_at"],
-                    },
-                    status=409,
-                )
-            model_lease.write_request(solaris_db_path, "release", holder=holder)
-            log.info("chat.model_lease.released", holder=holder or current["holder"])
+        if current["state"] == "none":
+            return web.json_response({"ok": True, "state": "released"})
+        # A named holder releases only its own window; the bodyless call
+        # stays the operator's way out of a window nobody is renewing.
+        if holder and current["holder"] != holder:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "reason": "held",
+                    "holder": current["holder"],
+                    "expires_at": current["expires_at"],
+                },
+                status=409,
+            )
+        model_lease.write_request(solaris_db_path, "release", holder=holder)
+        log.info("chat.model_lease.released", holder=holder or current["holder"])
+        # The host broker does the releasing, and it takes seconds (#1364), so
+        # the answer is what the next GET will say rather than a `released`
+        # the card has not heard about yet.
+        after = model_lease.state(solaris_db_path)
+        if after["state"] == "releasing":
+            return web.json_response(
+                {
+                    "ok": True,
+                    "state": "releasing",
+                    "retry_after": model_lease.RETRY_AFTER_SECONDS,
+                }
+            )
         return web.json_response({"ok": True, "state": "released"})
 
     # -- the household notice Home Assistant posts (#1276) ------------------
