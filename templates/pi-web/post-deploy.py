@@ -31,6 +31,13 @@ Two responsibilities:
      as the llama template's `gpu-lease.py` (#1320): one file, so the unit and
      the code it runs cannot drift apart.
 
+     A kill leaves that stop out, so the unit follows the consumer-side rule of
+     solarisbay#1361: **on start it asks `GET` first and closes a window that
+     is already filed under its own holder** before asking for a new one. The
+     box gives the card back on its own a grace of two missed renewals after
+     the last POST, which is the net when the whole host went down; this is the
+     faster path for the ordinary case where PI WEB simply comes back.
+
 Idempotent: identical `models.json` is left alone, and the unit is rewritten
 with the same text and re-enabled.
 
@@ -183,6 +190,23 @@ def hinted(value: object, fallback: int) -> int:
         value
         if isinstance(value, int) and not isinstance(value, bool) and value > 0
         else fallback
+    )
+
+
+def is_own_stale_window(status: int, body: dict) -> bool:
+    """True when the window standing at start is this service's own leftover.
+
+    A process that was killed rather than stopped never ran `ExecStopPost`, and
+    nothing in a fresh process remembers that it still holds the card — that
+    state died with the old one. The `holder` from #1347 is what makes "mine"
+    distinguishable from "somebody else's", so the unit closes its own and
+    never a stranger's. On a clean start there is no window and this is a
+    no-op (contract solarisbay#1361).
+    """
+    return (
+        status == 200
+        and body.get("state") in ("preparing", "ready")
+        and body.get("holder") == LEASE_HOLDER
     )
 
 
@@ -391,8 +415,18 @@ def install_lease_unit(script: str, chat_port: str, ttl: int) -> bool:
 
 
 def hold(chat_port: str, ttl: int) -> int:
-    """Acquire, wait out a swap, then renew for as long as PI WEB runs."""
+    """Clean up after a previous run, acquire, wait out a swap, then renew for
+    as long as PI WEB runs."""
     url = lease_url(chat_port)
+    status, body = http_request(url, None, "GET")
+    if is_own_stale_window(status, body):
+        jlog(
+            "info",
+            "pi-web:lease",
+            "a window from an earlier PI WEB is still open; closing it before asking again",
+            state=body.get("state", ""),
+        )
+        release(chat_port)
     while True:
         status, body = http_request(url, acquire_payload(ttl), "POST")
         action, delay = next_step(status, body, ttl)

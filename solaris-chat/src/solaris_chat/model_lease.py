@@ -30,6 +30,26 @@ whatever it finds: `POST` takes an optional `holder`, `GET` reports it, and
 identity of the *service* — one permanent name, the same for every window it
 ever takes — never a session, round, group or person, which is why the shape is
 pinned to a short token rather than left as free text.
+
+Since #1361 a window also **ends when its holder stops renewing**, not only at
+the deadline. Two rules, one on each side:
+
+* **Broker side.** Every `POST` stamps `last_renewed_at` on the window, and the
+  box arms its release for the **grace** — `2 x renew_after`, i.e. two missed
+  renewals — instead of for the full TTL. A holder that keeps renewing never
+  notices; a holder that dies without a `DELETE` loses the card after the grace
+  (10 minutes on a 900 s window) rather than after the TTL, which for a 4-hour
+  coding window would have kept the household on the wrong model all afternoon.
+  The TTL stays the outer net: the release is never armed past it. `GET`
+  reports both `last_renewed_at` and `renew_after` so a holder can see this
+  arithmetic instead of having to know it.
+* **Consumer side.** A service that died with a window open cannot tell from
+  its own memory that it still holds one — that state died with the process.
+  So **on start it does a `GET`, and if `holder` is its own name it `DELETE`s
+  with that holder first.** The call is idempotent and, on a clean start, a
+  no-op: there is no window to find. This is the rule
+  `mdopp/foundry-chronicle#333` was waiting for, and `templates/pi-web`
+  follows it in its host lease unit.
 """
 
 from __future__ import annotations
@@ -199,12 +219,25 @@ def write_request(
     )
 
 
+def _number(value: Any) -> float | None:
+    """A clock or interval the box wrote, or `None` when it wrote none — a
+    lease taken before #1361 carries neither field."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if value > 0 else None
+
+
 def state(db_path: str) -> dict:
-    """`{state, model, alias, expires_at, holder}` — what `GET` answers.
+    """`{state, model, alias, expires_at, holder, last_renewed_at,
+    renew_after}` — what `GET` answers.
 
     `alias` is always the model llama-server has loaded *now*, which is what
     the `/v1` responses carry: the leased one only once the swap is through,
     the household one before and after.
+
+    `last_renewed_at`/`renew_after` are the heartbeat (#1361): the window ends
+    a grace of `2 x renew_after` after the last renewal, or at `expires_at`,
+    whichever comes first.
     """
     path = gpu_lease.lease_path(db_path)
     idle = {
@@ -213,6 +246,8 @@ def state(db_path: str) -> dict:
         "alias": household_alias(db_path),
         "expires_at": None,
         "holder": "",
+        "last_renewed_at": None,
+        "renew_after": None,
     }
     if gpu_lease.is_leased(path):
         lease = gpu_lease.record(path)
@@ -220,6 +255,10 @@ def state(db_path: str) -> dict:
         if mode not in MODELS:
             return idle
         held_by = str(lease.get("holder") or mode)
+        beat = {
+            "last_renewed_at": _number(lease.get("last_renewed_at")),
+            "renew_after": _number(lease.get("renew_after")),
+        }
         if not lease.get("ready"):
             return {
                 "state": "preparing",
@@ -227,6 +266,7 @@ def state(db_path: str) -> dict:
                 "alias": household_alias(db_path),
                 "expires_at": None,
                 "holder": held_by,
+                **beat,
             }
         until = lease.get("until")
         return {
@@ -235,6 +275,7 @@ def state(db_path: str) -> dict:
             "alias": str(lease.get("alias") or ALIASES[mode]),
             "expires_at": until if isinstance(until, (int, float)) else None,
             "holder": held_by,
+            **beat,
         }
     request = read_request(db_path)
     handled = read_status(db_path).get("requested_at")
@@ -243,11 +284,14 @@ def state(db_path: str) -> dict:
         and request.get("model") in MODELS
         and request.get("requested_at") != handled
     ):
+        ttl = _number(request.get("ttl_s"))
         return {
             "state": "preparing",
             "model": request["model"],
             "alias": household_alias(db_path),
             "expires_at": None,
             "holder": str(request.get("holder") or request["model"]),
+            "last_renewed_at": _number(request.get("requested_at")),
+            "renew_after": renew_after(int(ttl)) if ttl else None,
         }
     return idle

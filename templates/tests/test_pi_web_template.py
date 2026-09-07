@@ -255,6 +255,26 @@ def test_renew_leaves_two_more_chances(pd):
     assert pd.renew_after(60) == 60
 
 
+def test_start_closes_a_window_left_open_by_an_earlier_pi_web(pd):
+    """#1361's consumer-side rule: a killed process leaves its window standing
+    and nothing in the new one remembers it — the holder is what makes it
+    recognisable as ours."""
+    for state in ("ready", "preparing"):
+        assert pd.is_own_stale_window(200, {"state": state, "holder": "pi-web"})
+
+
+def test_start_never_closes_a_window_that_is_not_ours(pd):
+    """Closing a stranger's window would take the card off a running job —
+    exactly what naming a holder exists to prevent."""
+    assert not pd.is_own_stale_window(200, {"state": "ready", "holder": "foundry"})
+    assert not pd.is_own_stale_window(200, {"state": "ready", "holder": ""})
+    # A clean start finds nothing, and an engine that is not answering yet is
+    # not evidence of a window either.
+    assert not pd.is_own_stale_window(200, {"state": "none", "holder": ""})
+    assert not pd.is_own_stale_window(0, {})
+    assert not pd.is_own_stale_window(503, {"state": "ready", "holder": "pi-web"})
+
+
 def test_ready_answer_renews_on_the_engines_own_interval(pd):
     action, delay = pd.next_step(
         200, {"state": "ready", "holder": "pi-web", "renew_after": 4800}, 14400

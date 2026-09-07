@@ -268,8 +268,50 @@ def test_every_lease_carries_a_deadline_and_arms_the_expiry(
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
     assert armed, "no expiry timer was armed"
     assert f"--unit={pd.LEASE_EXPIRY_UNIT}" in armed[0]
-    assert "--on-active=3600" in armed[0]
+    # Not at the deadline but at the grace of two missed renewals (#1361).
+    assert "--on-active=2400" in armed[0]
     assert armed[0][-1] == "release"
+
+
+def test_the_grace_is_two_missed_renewals_and_never_past_the_deadline(pd):
+    """#1361: a holder that dies without a DELETE must lose the card in
+    minutes, not hours — but a window can still never outlive its own TTL."""
+    assert pd.renew_after(900) == 300
+    assert pd.expiry_wake(900) == 600
+    assert pd.renew_after(14400) == 4800
+    assert pd.expiry_wake(14400) == 9600
+    # Windows too short for the third to clear the 60 s floor: the deadline
+    # itself is the wake, so nothing is armed past it.
+    assert pd.expiry_wake(120) == 120
+    assert pd.expiry_wake(180) == 120
+
+
+def test_a_holder_that_keeps_renewing_keeps_its_window(
+    pd, tmp_path, swap_box, systemctl_calls, no_box
+):
+    """The re-arm is the heartbeat: every renewal cancels the pending release
+    and arms the next grace, so a live holder is never released underneath."""
+    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    first = pd.read_lease(str(tmp_path))["last_renewed_at"]
+    no_box.clear()
+    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["last_renewed_at"] >= first
+    assert lease["renew_after"] == 300
+    armed = [c for c in no_box if c and c[0] == "systemd-run"]
+    assert armed and "--on-active=600" in armed[0]
+
+
+def test_the_lease_records_the_heartbeat_the_engine_reports(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """`GET /api/model-lease` answers these two straight out of the file, so
+    the holder can see how long its window survives its own silence."""
+    before = pd.time.time()
+    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    lease = pd.read_lease(str(tmp_path))
+    assert before <= lease["last_renewed_at"] <= pd.time.time()
+    assert lease["renew_after"] == pd.renew_after(900)
 
 
 def test_coding_release_puts_the_household_model_and_the_gpu_voice_back(
@@ -468,7 +510,7 @@ def test_a_foundry_lease_expires_back_to_the_household_model(
 ):
     assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
-    assert armed and "--on-active=3600" in armed[0] and armed[0][-1] == "release"
+    assert armed and "--on-active=2400" in armed[0] and armed[0][-1] == "release"
 
 
 def test_the_cli_knows_the_foundry_model(pd, monkeypatch):
@@ -532,7 +574,7 @@ def test_a_renewal_moves_the_deadline_without_swapping_again(
     assert systemctl_calls == []
     assert pd.read_lease(str(tmp_path))["until"] > first_until
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
-    assert armed and "--on-active=7200" in armed[0]
+    assert armed and "--on-active=4800" in armed[0]
 
 
 def _request(pd, tmp_path, **fields) -> None:
