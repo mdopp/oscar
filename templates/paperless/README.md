@@ -97,34 +97,62 @@ Under `{{DATA_DIR}}`:
 
 ## Backup — what must be preserved
 
-The `solaris.backup-contract` annotation in `template.yml` classifies every pod
-volume, one line each, with the reason:
+`template.yml` carries a `servicebay.backup` declaration (ServiceBay 5.32.0,
+mdopp/servicebay#2858) — the platform reads it and does the backing up. Paperless
+is the first user of the `pg-dump` collector anywhere, built-in templates
+included.
 
-- `paperless/media` — **the scanned originals.** Nothing else holds them.
-- `paperless/data` — search index, classifier model, app data.
-- `paperless/pgdata` — correspondents, document types, custom fields and the
-  confirmed classifications the #931 ingest adapter reads back. Captured with
-  `pg_dump` against the `postgres` container, **never** as a file copy: a copy of
-  a live cluster is torn, and the data dir is credential-coupled the same way
-  ServiceBay treats `immich/pgdata`.
-- `file-share/data/paperless-consume` — scans that arrived but are not ingested
-  yet. It sits inside the file-share tree, which the platform holds as bulk
-  (ADR 0002 Tier B), so it is kept where it lies rather than duplicated here.
-- `paperless/redis` — Celery broker state; rebuilt by the next task run, not
-  backed up.
+```yaml
+collector: {kind: pg-dump, container: paperless-postgres,
+            user: paperless, database: paperless}
+include: [media, data]
+exclude: [pgdata, redis]
+```
 
-The OKF projection in `solaris.db` is deliberately **not** in the contract: it is
-re-ingested from paperless (ADR 0002), so paperless is its backup.
+- `media` — **the scanned originals.** Nothing else holds them; losing this is
+  losing the paperwork.
+- `data` — search index, classifier model, app data. Rebuildable, but only by
+  re-indexing every document.
+- The database — correspondents, document types, custom fields and the confirmed
+  classifications the #931 ingest adapter reads back — is captured by the
+  collector: `pg_dump --format=custom` runs *inside* `paperless-postgres` over
+  its local socket (no password on a command line), and the dump is staged in the
+  tarball as `paperless.dump`.
+- `pgdata` — the live cluster dir. Excluded: a copy taken while the server runs is
+  torn, and it is credential-coupled the way ServiceBay treats `immich/pgdata`.
+  The dump replaces it. (The collector excludes it unconditionally too; it is
+  listed so the template says so out loud.)
+- `redis` — Celery broker state; rebuilt by the next task run.
 
-**ServiceBay does not read this annotation.** Per-service backup manifests are
-code in the platform (`packages/backup-manifest`) and its coverage gate only
-scans templates shipped from the servicebay repo, so a template from the
-solarisbay registry cannot register itself and there is no `pg_dump` collector to
-register. That gap is filed as mdopp/servicebay#2849; until it lands, what
-actually copies the vault on the box is the nightly host timer
-(`paperless-vault-backup.timer`, 02:30 UTC). The template test
-`test_paperless_backup_contract.py` keeps this contract in step with the pod, so
-the manifest can be lifted across unchanged once the platform can hold it.
+`consume` is **not** in the declaration, and cannot be: it lives at
+`{{DATA_DIR}}/file-share/data/paperless-consume`, outside this service's data
+dir, and every declared path must resolve inside it (ADR 0002, enforced at parse
+time *and* producer-side). ServiceBay already covers that tree as bulk —
+`file-share/data` is an `EXCLUDED_BULK_VOLUMES` root — so the scans waiting there
+are accounted for by the file-share service, not duplicated into a paperless
+tarball. They are also the most replaceable thing here: an unconsumed scan still
+exists wherever it was scanned from.
+
+The OKF projection in `solaris.db` is deliberately absent: it is re-ingested from
+paperless (ADR 0002), so paperless is its backup, not the other way round.
+
+The host-side nightly timer on the box (`paperless-vault-backup.timer`, 02:30 UTC)
+predates this declaration and still runs: it copies media/data/consume plus a
+validated dump onto the second NVMe. It is a second copy in the same chassis, not
+a substitute for the off-box backup this declaration feeds (#1133).
+
+**Restore** is two commands against the fresh container — the tools ship inside
+the Postgres image, so ServiceBay does not wrap them:
+
+```bash
+podman cp <DATA_DIR>/paperless/paperless.dump paperless-postgres:/tmp/restore.dump
+podman exec paperless-postgres pg_restore --username paperless \
+  --dbname paperless --clean --if-exists /tmp/restore.dump
+```
+
+`templates/tests/test_paperless_backup_contract.py` keeps the declaration in step
+with the pod: a volume added without a place in it fails there instead of quietly
+falling out of the backup.
 
 ## Verify
 
