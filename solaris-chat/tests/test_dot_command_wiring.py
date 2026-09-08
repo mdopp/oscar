@@ -31,7 +31,7 @@ def test_all_dot_commands_registered_and_dispatched():
     # schema-driven card, so a `.tool` shipped after this build still opens.
     assert "var build = toolBuilders[cmd]" in _HTML
     assert "(def ? function (el) { buildGenericToolCard(el, def); } : null)" in _HTML
-    for cmd in ("task", "note", "doc", "contacts", "photo", "home", "energy"):
+    for cmd in ("task", "note", "doc", "contacts", "photo", "home", "energy", "model"):
         assert _has(r'\["\.' + cmd + r'",'), f".{cmd} missing from DOT_COMMANDS"
         assert _has(r"\b" + cmd + r": (?:build|function)"), (
             f".{cmd} not registered in toolBuilders"
@@ -69,6 +69,39 @@ def test_migrated_tools_carry_declarative_kind_tool_defs():
     assert by_id["contacts"]["tool-actions"] == ["contact.add", "person.update"]
     assert by_id["home"]["tool-actions"] == []
     assert _has(r'def && def\["tool-label"\]')
+
+
+def test_the_model_tile_declares_a_window_per_action_id():
+    # #1374: a `tool-action-params` value is a flat literal or a `$field` (ADR
+    # 0014) and a RemoteViews row has no chooser, so each offered duration is
+    # its OWN action id with the window wired in. `model.lease` keeps the free
+    # `until` for chat/PWA and never renders as a tile button, because the row
+    # carries no `until` field for its `$until` source to read.
+    from pathlib import Path
+
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    model = {d["tool-id"]: d for d in list_tool_defs(pack)}["model"]
+    assert model["tool-label"] == "Modell"
+    assert model["command"] == ".model"
+    assert model["scope"] == "household"
+    assert model["tool-api-path"] == "/api/portal/models"
+    # A view+act tool: no create path, so no "Erfassen" tile is offered.
+    assert model["tool-compose-path"] == ""
+    assert model["tool-item-id-field"] == "id"
+    assert model["tool-cell-schema"]["actions"] == [
+        "model.lease.1h",
+        "model.lease.4h",
+        "model.lease.until_morning",
+        "model.release",
+    ]
+    for action_id, params in model["tool-action-params"].items():
+        assert action_id in model["tool-actions"], action_id
+        assert params["model"] == "$id", action_id
+    assert model["tool-action-params"]["model.lease"]["until"] == "$until"
+    for action_id in model["tool-cell-schema"]["actions"]:
+        assert "until" not in model["tool-action-params"][action_id]
 
 
 def test_shipped_tool_cell_schemas_are_renderer_agnostic():

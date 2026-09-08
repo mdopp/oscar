@@ -146,9 +146,13 @@ def test_payload_rejects_bad_values_and_clamps_the_ttl():
     for bad in (0, -1, "600", True):
         with pytest.raises(ValueError, match="invalid_ttl"):
             model_lease.parse_payload({"model": "foundry", "ttl_s": bad})
-    # The window is OUR safety net: outside 300…14400 it is clamped, not refused.
-    assert model_lease.parse_payload({"model": "foundry", "ttl_s": 86400})[1] == 14400
+    # The window is OUR safety net: outside 300…86400 it is clamped, not
+    # refused. The ceiling is a day since #1374 — "bis morgen 07:00" from the
+    # Modell tile is longer than the box's own 4-hour default.
+    assert model_lease.parse_payload({"model": "foundry", "ttl_s": 86400})[1] == 86400
+    assert model_lease.parse_payload({"model": "foundry", "ttl_s": 999999})[1] == 86400
     assert model_lease.parse_payload({"model": "foundry", "ttl_s": 30})[1] == 300
+    # A payload that names no window keeps the 4 hours it always got.
     assert model_lease.parse_payload({"model": "foundry"})[1] == 14400
 
 

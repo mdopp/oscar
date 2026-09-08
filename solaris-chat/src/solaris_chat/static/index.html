@@ -4616,7 +4616,8 @@
         [".contacts", "Person (Kontakt) anlegen + suchen — .contacts <Name|@Mail|Tel>"],
         [".photo", "Foto hochladen + suchen — .photo <Person|Text>"],
         [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"],
-        [".energy", "Energie / Stromfluss anzeigen — .energy"]
+        [".energy", "Energie / Stromfluss anzeigen — .energy"],
+        [".model", "Welches Modell läuft — umschalten für eine gewählte Zeit"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4954,7 +4955,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche", energy: "Energie & Stromfluss" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche", energy: "Energie & Stromfluss", model: "Modell" };
         // Client tool-registry dispatch (#1006, ADR 0011): each `.tool` maps its
         // tool-id to the builder that renders its card. `.task` is the reference —
         // it runs through the fully generic schema-driven card off its
@@ -4972,6 +4973,7 @@
           photo: buildPhotoCard,
           home: buildHomeCard,
           energy: buildEnergyCard,
+          model: buildModelCard,
         };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
@@ -5208,6 +5210,67 @@
               renderEnergyPage(listEl, j.energy);
             })
             .catch(function () { if (card === el) { listEl.textContent = ""; var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); } });
+        }
+        // .model (#1374): one row per model profile, with the window a tap takes.
+        // Display+act, no create — so it keeps its own small builder rather than
+        // the generic create/list card, like .home/.energy do.
+        var MODEL_WINDOWS = [["model.lease.1h", "1 Std"], ["model.lease.4h", "4 Std"], ["model.lease.until_morning", "bis morgen 07:00"]];
+        function buildModelCard(el) {
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list;
+          var hint = document.createElement("div"); hint.className = "dc-hint";
+          hint.textContent = "Der Wechsel dauert etwa eine Minute. Die Karte kommt zur gewählten Zeit von selbst zurück.";
+          el.appendChild(hint);
+          renderModelView(el);
+        }
+        function modelAction(el, actionId, id) {
+          fetch("/api/action-callback", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action_id: actionId, params: { model: id } })
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (card === el) renderModelView(el, j && j.detail); })
+            .catch(function () { if (card === el) renderModelView(el, "Das hat gerade nicht geklappt."); });
+        }
+        function renderModelView(el, note) {
+          var listEl = el._list; if (!listEl) return;
+          fetch("/api/portal/models")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (card !== el) return;
+              listEl.textContent = "";
+              var h = document.createElement("div"); h.className = "dc-list-head";
+              h.textContent = "Welches Modell läuft"; listEl.appendChild(h);
+              if (!j || !j.ok) { var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Konnte den Modellzustand nicht laden."; listEl.appendChild(n); return; }
+              if (note) { var m = document.createElement("div"); m.className = "task-meta"; m.textContent = note; listEl.appendChild(m); }
+              var busy = false;
+              (j.models || []).forEach(function (row) {
+                if (row.state === "preparing" || row.state === "releasing") busy = true;
+                var r = document.createElement("div"); r.className = "task-row";
+                var main = document.createElement("div"); main.className = "task-main";
+                var t = document.createElement("div"); t.className = "task-title";
+                t.textContent = row.title + (row.state === "active" ? " ✓" : "");
+                var meta = document.createElement("div"); meta.className = "task-meta"; meta.textContent = row.meta;
+                main.appendChild(t); main.appendChild(meta); r.appendChild(main);
+                var acts = document.createElement("div"); acts.className = "task-acts";
+                if (row.state === "active" && row.id !== "household") {
+                  acts.appendChild(modelBtn(el, "model.release", "Freigeben", row.id, true));
+                } else if (row.state === "available" && row.id !== "household") {
+                  MODEL_WINDOWS.forEach(function (w) { acts.appendChild(modelBtn(el, w[0], w[1], row.id, false)); });
+                }
+                r.appendChild(acts); listEl.appendChild(r);
+              });
+              // A swap in flight resolves on its own; look again instead of
+              // leaving "wird geladen" on screen until the resident reopens.
+              if (busy) setTimeout(function () { if (card === el) renderModelView(el); }, 10000);
+            })
+            .catch(function () { if (card === el) { listEl.textContent = ""; var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Konnte den Modellzustand nicht laden."; listEl.appendChild(n); } });
+        }
+        function modelBtn(el, actionId, label, id, primary) {
+          var b = document.createElement("button"); b.type = "button";
+          b.className = "ac-btn" + (primary ? " ac-primary" : ""); b.textContent = label;
+          b.addEventListener("click", function () { b.disabled = true; modelAction(el, actionId, id); });
+          return b;
         }
         function buildPhotoCard(el) {
           // Same shape as buildDocCard (#961): a dropzone that uploads to Immich +

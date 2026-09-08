@@ -42,6 +42,7 @@ from solaris_chat import (
     ha_notify,
     mentions_store,
     model_lease,
+    model_widget,
     notes_portal_db,
     notes_search,
     notice_backlog,
@@ -3313,6 +3314,173 @@ def build_app(
             )
         return web.json_response({"ok": True, "state": "released"})
 
+    # -- the Modell tile: the same window, taken by a tap (#1374) -----------
+    #
+    # foundry and pi-web hold their own windows and renew them from their own
+    # process. A phone cannot: it is back in a pocket seconds after the tap. So
+    # the ENGINE is the holder (`widget`) and the loop below renews until the
+    # end the resident chose, then gives the card back — which is what makes
+    # "die Karte kommt von selbst zurück" true rather than hopeful. The tile
+    # reads its rows from `portal_models`; everything else here is that one
+    # window's lifecycle.
+    _widget_window: dict[str, Any] = {"task": None, "model": "", "until": 0.0}
+
+    async def _widget_acquire(model: str, ttl: int) -> None:
+        model_lease.write_request(
+            solaris_db_path, "acquire", model, ttl, holder=model_widget.HOLDER
+        )
+        log.info("chat.model_widget.hold", model=model, ttl=ttl)
+
+    async def _widget_give_back() -> None:
+        model_lease.write_request(
+            solaris_db_path, "release", holder=model_widget.HOLDER
+        )
+        log.info("chat.model_widget.release", model=_widget_window["model"])
+
+    async def _widget_wait_free() -> None:
+        """Wait for the card to come back before taking it for another profile.
+
+        A `DELETE` is answered while the broker is still restarting units
+        (#1364); asking for the next profile inside that window would be
+        refused as `held`. Walking away is harmless — the release runs on the
+        host either way — so this gives up rather than looping forever.
+        """
+        for _ in range(model_widget.SWITCH_TRIES):
+            if model_lease.state(solaris_db_path)["state"] == "none":
+                return
+            await asyncio.sleep(model_lease.RETRY_AFTER_SECONDS)
+
+    async def _widget_stop() -> None:
+        """End the renewal loop without touching the window itself — the caller
+        decides whether the card goes back or straight to the next profile."""
+        task = _widget_window["task"]
+        _widget_window["task"] = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _widget_start(model: str, until: float, *, wait_free: bool) -> None:
+        _widget_window.update(model=model, until=until)
+        _widget_window["task"] = asyncio.ensure_future(
+            model_widget.hold(
+                until=until,
+                acquire=functools.partial(_widget_acquire, model),
+                release=_widget_give_back,
+                wait_free=_widget_wait_free if wait_free else None,
+            )
+        )
+
+    async def _resume_widget_window(_app: web.Application) -> None:
+        """Re-adopt a window this engine still holds after a restart.
+
+        The renewal loop died with the process, so without this the box's grace
+        would take a window the resident asked for until 07:00 back ten minutes
+        after a deploy. A window held by anyone else is left alone.
+        """
+        current = model_lease.state(solaris_db_path)
+        expires_at = current.get("expires_at")
+        if (
+            current["holder"] == model_widget.HOLDER
+            and current["model"] in model_lease.MODELS
+            and isinstance(expires_at, (int, float))
+            and expires_at > time.time()
+        ):
+            _widget_start(current["model"], float(expires_at), wait_free=False)
+            log.info("chat.model_widget.resumed", model=current["model"])
+
+    async def portal_models(request: web.Request) -> web.Response:
+        """One row per model profile for the Modell tile (#1374).
+
+        `GET /api/model-lease` answers with one state; a `.tool` needs rows, and
+        this is that state spread over the three profiles the box knows —
+        household included, because "give the card back" is a row here rather
+        than a stray button.
+        """
+        return web.json_response(
+            {
+                "ok": True,
+                "models": model_widget.rows(
+                    model_lease.state(solaris_db_path),
+                    household_alias=model_lease.household_alias(solaris_db_path),
+                ),
+                "retry_after": model_lease.RETRY_AFTER_SECONDS,
+            }
+        )
+
+    def _held_elsewhere(current: dict) -> str:
+        """The plain sentence for a window somebody else is using, or ""."""
+        if current["state"] == "none" or current["holder"] == model_widget.HOLDER:
+            return ""
+        when = model_widget.when_text(current.get("expires_at"))
+        who = current["holder"] or current["model"]
+        return f"„{who}“ arbeitet gerade damit{' — ' + when if when else ''}."
+
+    async def _model_release(body: dict[str, Any]) -> dict[str, Any]:
+        """Tile callback: give the card back to the household."""
+        current = model_lease.state(solaris_db_path)
+        busy = _held_elsewhere(current)
+        if busy:
+            return {"ok": False, "reason": "held", "detail": busy}
+        await _widget_stop()
+        if current["state"] == "none":
+            return {"ok": True, "detail": "Der Haushalt hat die Grafikkarte schon."}
+        await _widget_give_back()
+        return {
+            "ok": True,
+            "detail": "Ich gebe die Grafikkarte frei — in ein paar Sekunden ist "
+            "Gemma wieder da.",
+        }
+
+    async def _model_lease_action(body: dict[str, Any]) -> dict[str, Any]:
+        """Tile callback: run a profile until a chosen end.
+
+        `until` is a duration (`1h`) or a target time (`morgen 07:00`); an
+        enumerated action id (`model.lease.4h`) carries its own, because a
+        RemoteViews row has no chooser to render (ADR 0014).
+        """
+        params = body.get("params") or {}
+        try:
+            model = model_widget.lease_model(params.get("model"))
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Dieses Modell kenne ich nicht.",
+            }
+        if model == model_widget.HOUSEHOLD:
+            return await _model_release(body)
+        until_text = params.get("until") or model_widget.UNTIL_CHOICES.get(
+            str(body.get("action_id") or ""), model_widget.DEFAULT_UNTIL
+        )
+        try:
+            ttl = model_widget.parse_until(until_text)
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Diese Zeitangabe verstehe ich nicht. Sag mir eine Dauer "
+                "wie „2h“ oder eine Uhrzeit wie „morgen 07:00“.",
+            }
+        current = model_lease.state(solaris_db_path)
+        busy = _held_elsewhere(current)
+        if busy:
+            return {"ok": False, "reason": "held", "detail": busy}
+        switching = current["state"] != "none" and current["model"] != model
+        await _widget_stop()
+        if switching:
+            await _widget_give_back()
+        until = time.time() + ttl
+        _widget_start(model, until, wait_free=switching)
+        title = dict(model_widget.PROFILES).get(model, model)
+        return {
+            "ok": True,
+            "state": "switching" if switching else "preparing",
+            "expires_at": until,
+            "detail": f"{title} läuft {model_widget.when_text(until)}. "
+            "Das Umschalten dauert etwa eine Minute.",
+        }
+
     # -- the household notice Home Assistant posts (#1276) ------------------
     #
     # THIS IS NOT AN ALARM CHANNEL, and that holds for every `category` on it —
@@ -5498,6 +5666,16 @@ def build_app(
         "doc.classify": _doc_classify,
         "contact.add": _contact_add,
         "person.update": _person_update,
+        # The Modell tile (#1374). The enumerated durations are separate ids
+        # because a `tool-action-params` value is a flat literal or a `$field`
+        # (ADR 0014) — a RemoteViews row has no chooser to render — so "4
+        # Stunden" is an action, not a parameter a widget could fill.
+        "model.lease": _model_lease_action,
+        "model.lease.1h": _model_lease_action,
+        "model.lease.2h": _model_lease_action,
+        "model.lease.4h": _model_lease_action,
+        "model.lease.until_morning": _model_lease_action,
+        "model.release": _model_release,
     }
 
     # Auto-register the actions each tool def declares, from the pool above.
@@ -6424,6 +6602,9 @@ def build_app(
         middlewares=[csp, widget_usage],
         client_max_size=_ARCHIVE_MAX_BYTES + 8 * 1024 * 1024,
     )
+    # A window this engine still holds after a restart is re-adopted, not
+    # orphaned — the renewal loop died with the process (#1374).
+    app.on_startup.append(_resume_widget_window)
     app.router.add_get("/", index)
     app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/.well-known/assetlinks.json", assetlinks)
@@ -6504,6 +6685,7 @@ def build_app(
     app.router.add_get("/api/portal/documents", portal_documents)
     app.router.add_get("/api/portal/contacts", portal_contacts)
     app.router.add_get("/api/portal/tasks", portal_tasks)
+    app.router.add_get("/api/portal/models", portal_models)
     app.router.add_get("/api/portal/persons", portal_persons)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
     app.router.add_get("/api/portal/documents/search", portal_documents_search)
@@ -6581,6 +6763,7 @@ def build_app(
     # already have their `/napi/portal/*` twins above; these add the rest.
     app.router.add_get("/napi/defs/tool", native(napi_tool_defs))
     app.router.add_get("/napi/portal/tasks", native(portal_tasks))
+    app.router.add_get("/napi/portal/models", native(portal_models))
     app.router.add_get("/napi/portal/persons", native(portal_persons))
     app.router.add_get("/napi/portal/documents/search", native(portal_documents_search))
     app.router.add_get("/napi/photo", native(photo_search))
