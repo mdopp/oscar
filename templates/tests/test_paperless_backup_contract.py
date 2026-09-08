@@ -98,12 +98,24 @@ def test_declared_paths_stay_inside_the_service_data_dir(backup):
             assert "{{" not in path, path
 
 
-def test_the_originals_and_the_app_data_are_kept(backup):
-    assert set(backup["include"]) == {"media", "data"}
+def test_the_app_data_is_kept(backup):
+    assert set(backup["include"]) == {"data"}
 
 
-def test_the_cluster_dir_and_the_broker_are_dropped(backup):
-    assert set(backup["exclude"]) == {"pgdata", "redis"}
+def test_the_cluster_dir_the_broker_and_media_are_dropped(backup):
+    assert set(backup["exclude"]) == {"pgdata", "redis", "media"}
+
+
+def test_media_exclusion_carries_the_operator_decision(raw):
+    # #1369: media (scanned originals) is deliberately off the NAS-config
+    # backup — a volume excluded without a stated reason reads as an
+    # oversight, not a decision. This checks the comment survives, not just
+    # the YAML key.
+    exclude_section = raw.split("exclude:", 1)[1]
+    media_line = next(
+        line for line in exclude_section.splitlines() if line.strip() == "- media"
+    )
+    assert "#1369" in exclude_section.split(media_line)[0].rsplit("- redis", 1)[-1]
 
 
 def test_the_database_is_dumped_not_file_copied(backup, raw):

@@ -105,12 +105,10 @@ included.
 ```yaml
 collector: {kind: pg-dump, container: paperless-postgres,
             user: paperless, database: paperless}
-include: [media, data]
-exclude: [pgdata, redis]
+include: [data]
+exclude: [pgdata, redis, media]
 ```
 
-- `media` — **the scanned originals.** Nothing else holds them; losing this is
-  losing the paperwork.
 - `data` — search index, classifier model, app data. Rebuildable, but only by
   re-indexing every document.
 - The database — correspondents, document types, custom fields and the confirmed
@@ -123,6 +121,13 @@ exclude: [pgdata, redis]
   The dump replaces it. (The collector excludes it unconditionally too; it is
   listed so the template says so out loud.)
 - `redis` — Celery broker state; rebuilt by the next task run.
+- `media` — **the scanned originals** (~105 of ~107 MB per run) — is excluded as
+  of the 2026-09-07 operator decision (#1369): the NAS-config backup (FritzBox
+  stick) is for parameters, not data. Five runs on 2026-09-07 wrote ~530 MB each
+  and forced the platform to prune 27 old generations to keep up
+  (mdopp/servicebay#2873). Originals now live only on the box's RAID
+  (content-sync is off) — a knowing trade, not an oversight. Expected tarball
+  size after this change: ~2 MB (pg-dump + `data`).
 
 `consume` is **not** in the declaration, and cannot be: it lives at
 `{{DATA_DIR}}/file-share/data/paperless-consume`, outside this service's data
