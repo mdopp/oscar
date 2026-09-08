@@ -106,11 +106,18 @@ included.
 collector: {kind: pg-dump, container: paperless-postgres,
             user: paperless, database: paperless}
 include: [data]
-exclude: [pgdata, redis, media]
+exclude: [pgdata, redis, media, data/log, data/celerybeat-schedule.db]
 ```
 
 - `data` — search index, classifier model, app data. Rebuildable, but only by
-  re-indexing every document.
+  re-indexing every document. Two subpaths of it are excluded (the platform
+  contract allows excludes under an included dir — see `staging.ts`'s
+  `collectDirFiles`, which walks `data` and drops anything matching an
+  `exclude` entry or living under one): `data/log` (rotated celery worker
+  logs, `celery.log.1` … `.13` at ~1 MB each — rebuilt by rotation, not a
+  parameter) and `data/celerybeat-schedule.db` (celery beat's runtime
+  schedule state, rebuilt on the next task run). Together these were ~20 of a
+  22 MB tar (#1389).
 - The database — correspondents, document types, custom fields and the confirmed
   classifications the #931 ingest adapter reads back — is captured by the
   collector: `pg_dump --format=custom` runs *inside* `paperless-postgres` over
@@ -126,8 +133,10 @@ exclude: [pgdata, redis, media]
   stick) is for parameters, not data. Five runs on 2026-09-07 wrote ~530 MB each
   and forced the platform to prune 27 old generations to keep up
   (mdopp/servicebay#2873). Originals now live only on the box's RAID
-  (content-sync is off) — a knowing trade, not an oversight. Expected tarball
-  size after this change: ~2 MB (pg-dump + `data`).
+  (content-sync is off) — a knowing trade, not an oversight. Dropping `media`
+  alone still left `data/log`'s rotated celery logs in the tar (22 MB, #1389);
+  with those excluded too, expected tarball size: ~2 MB (pg-dump + `data`
+  minus its log/schedule subpaths).
 
 `consume` is **not** in the declaration, and cannot be: it lives at
 `{{DATA_DIR}}/file-share/data/paperless-consume`, outside this service's data
