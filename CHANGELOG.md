@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.62.0](https://github.com/mdopp/solarisbay/compare/v0.61.0...v0.62.0) (2026-09-08)
+
+
+### Features
+
+* **chat:** let tool actions carry a title in the tool contract ([384b7d1](https://github.com/mdopp/solarisbay/commit/384b7d1b030b4eb0cc4754e429bfc3c883ae3530)), closes [#1382](https://github.com/mdopp/solarisbay/issues/1382)
+
+
+### Bug Fixes
+
+* **skill:** make each model tile row its own choice with one action ([9632240](https://github.com/mdopp/solarisbay/commit/96322409a23a45275cdaaaa38e30f8838ef9f523)), closes [#1381](https://github.com/mdopp/solarisbay/issues/1381)
+
 ## [0.61.0](https://github.com/mdopp/solarisbay/compare/v0.60.2...v0.61.0) (2026-09-08)
 
 
