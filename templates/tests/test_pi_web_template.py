@@ -516,32 +516,73 @@ def test_keep_off_at_boot_rewrites_the_unit_and_reloads_the_generator(
 
 def test_restore_stops_a_pi_web_that_was_not_running_before(pd, monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(pd, "pod_is_active", lambda: True)
+    monkeypatch.setattr(pd, "wait_until_settled", lambda: None)
     monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
     pd.restore_run_state("")
     assert calls == [["systemctl", "--user", "stop", "pi-web.service"]]
 
 
-def test_restore_stops_even_when_the_deploys_own_start_is_still_in_flight(
-    pd, monkeypatch
-):
-    """`pod_is_active()` can read `False` while ServiceBay's own start for
-    this deploy is still mid-flight (`Type=notify`, `TimeoutStartSec=600`) —
-    box-verified against #1375, where that stale read skipped the stop and
-    left PI WEB (and the coding lease) running. The stop must not be gated on
-    it."""
-    calls: list[list[str]] = []
-    monkeypatch.setattr(pd, "pod_is_active", lambda: False)
-    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+def test_restore_waits_for_the_pod_to_settle_before_stopping(pd, monkeypatch):
+    """A stop issued while ServiceBay's own deploy-time start (`podman kube
+    play`, `Type=notify`) is still running kills that process instead of
+    queuing behind it, landing the unit `failed` rather than `inactive`
+    (box-verified against #1377). The wait must happen before the stop."""
+    order: list[str] = []
+    monkeypatch.setattr(pd, "wait_until_settled", lambda: order.append("waited"))
+    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: order.append("stopped"))
     pd.restore_run_state("")
-    assert calls == [["systemctl", "--user", "stop", "pi-web.service"]]
+    assert order == ["waited", "stopped"]
 
 
 def test_restore_leaves_a_pi_web_that_was_running_alone(pd, monkeypatch):
     """Stopping it would kill the agent sessions the operator had open — the
     whole reason the run state is recorded rather than assumed."""
     calls: list[list[str]] = []
-    monkeypatch.setattr(pd, "pod_is_active", lambda: True)
+    monkeypatch.setattr(pd, "wait_until_settled", lambda: calls.append("waited"))
     monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
     pd.restore_run_state("running")
     assert calls == []
+
+
+def test_wait_until_settled_returns_immediately_when_not_activating(pd, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        pd.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or type("R", (), {"stdout": "inactive"})(),
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(pd.time, "sleep", lambda s: slept.append(s))
+    pd.wait_until_settled()
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_wait_until_settled_polls_while_activating_then_returns(pd, monkeypatch):
+    states = iter(["activating", "activating", "active"])
+    monkeypatch.setattr(
+        pd.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"stdout": next(states)})(),
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(pd.time, "sleep", lambda s: slept.append(s))
+    pd.wait_until_settled()
+    assert slept == [pd.SETTLE_POLL_SECONDS, pd.SETTLE_POLL_SECONDS]
+
+
+def test_wait_until_settled_gives_up_at_the_deadline_rather_than_hanging(
+    pd, monkeypatch
+):
+    """A pod that never leaves `activating` (a genuinely stuck deploy) must
+    not wedge post-deploy forever."""
+    clock = [0.0]
+    monkeypatch.setattr(pd.time, "time", lambda: clock[0])
+    monkeypatch.setattr(pd.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(
+        pd.subprocess,
+        "run",
+        lambda cmd, **kw: type("R", (), {"stdout": "activating"})(),
+    )
+    pd.wait_until_settled()
+    assert clock[0] >= pd.SETTLE_DEADLINE_SECONDS
