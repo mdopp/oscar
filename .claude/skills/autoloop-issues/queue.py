@@ -61,6 +61,19 @@ PARK_LABELS = {
     "upstream-wait": L_UPSTREAM,
 }
 
+# Work-state labels that only ever belong on an open issue — a closed issue
+# wearing one is stale (#1370: the planner reads autoloop:building on a closed
+# issue as a dead claim). Verify labels are excluded: those ride the release PR.
+ISSUE_STATE_LABELS = [
+    L_QUEUED,
+    L_BUILDING,
+    L_BLOCKED,
+    L_REFINE,
+    L_REVIEW,
+    L_DEVICE,
+    L_UPSTREAM,
+]
+
 
 # --------------------------------------------------------------------------- gh
 def gh(args: list[str], check: bool = True) -> str:
@@ -330,6 +343,22 @@ def v_batch(c: Cache, a) -> None:
     elif a.action == "seal":
         if d.get("batch"):
             d["batch"]["sealed"] = True
+            if not a.offline:
+                # The merge is about to close these issues; strip the work-state
+                # labels now rather than waiting for the next mirror to catch them.
+                for uid in d["batch"].get("unit_ids", []):
+                    for n in d["units"].get(str(uid), {}).get("issues", []):
+                        gh(
+                            _repo_args(a.repo)
+                            + [
+                                "issue",
+                                "edit",
+                                str(n),
+                                "--remove-label",
+                                ",".join(ISSUE_STATE_LABELS),
+                            ],
+                            check=False,
+                        )
     c.save(d)
     print(json.dumps(d.get("batch"), ensure_ascii=False))
 
@@ -435,10 +464,43 @@ def v_park(c: Cache, a) -> None:
     print(f"parked #{a.issue} -> {label}{units}")
 
 
+def _drop_stale_issue_labels(repo: str | None) -> int:
+    """Strip ISSUE_STATE_LABELS off closed issues. One list call per label, skip when empty."""
+    dropped = 0
+    for label in ISSUE_STATE_LABELS:
+        issues = gh_json(
+            _repo_args(repo)
+            + [
+                "issue",
+                "list",
+                "--state",
+                "closed",
+                "--label",
+                label,
+                "--json",
+                "number",
+                "--limit",
+                "200",
+            ],
+            [],
+        )
+        for it in issues:
+            gh(
+                _repo_args(repo)
+                + ["issue", "edit", str(it["number"]), "--remove-label", label],
+                check=False,
+            )
+            dropped += 1
+    return dropped
+
+
 def v_mirror(c: Cache, a) -> None:
-    """Prune the cache and (re)project the verify label onto the release PR. One-way."""
+    """Prune the cache, drop stale autoloop:* labels off closed issues, and
+    (re)project the verify label onto the release PR. One-way."""
     d = c.load()
     c.save(d)  # save() prunes
+    if not a.offline:
+        _drop_stale_issue_labels(a.repo)
     if a.pr and d.get("verify") and not a.offline:
         add, rm = _verify_labels(d["verify"]["status"])
         for lbl in rm:
@@ -514,6 +576,25 @@ def v_selftest(c: Cache, a) -> None:
     import tempfile
     import unittest
 
+    class _FakeGh:
+        """Records gh calls and serves canned `issue list --state closed` results,
+        so the label-cleanup logic can be exercised without a real gh/network."""
+
+        def __init__(self, closed_by_label=None):
+            self.calls = []
+            self.closed_by_label = closed_by_label or {}
+
+        def gh(self, args, check=True):
+            self.calls.append(list(args))
+            return ""
+
+        def gh_json(self, args, default):
+            self.calls.append(list(args))
+            if "closed" in args and "--label" in args:
+                label = args[args.index("--label") + 1]
+                return [{"number": n} for n in self.closed_by_label.get(label, [])]
+            return default
+
     class T(unittest.TestCase):
         def setUp(self):
             self.d = tempfile.mkdtemp()
@@ -530,6 +611,18 @@ def v_selftest(c: Cache, a) -> None:
 
         def _next(self):
             return json.loads(self._run(v_next))
+
+        @contextlib.contextmanager
+        def _fake_gh(self, closed_by_label=None):
+            """Swap the module's gh/gh_json for a fake for the `with` block's duration."""
+            fake = _FakeGh(closed_by_label)
+            g = globals()
+            real_gh, real_gh_json = g["gh"], g["gh_json"]
+            g["gh"], g["gh_json"] = fake.gh, fake.gh_json
+            try:
+                yield fake
+            finally:
+                g["gh"], g["gh_json"] = real_gh, real_gh_json
 
         def test_fresh_and_roundtrip(self):
             d = self.c.load()
@@ -666,6 +759,51 @@ def v_selftest(c: Cache, a) -> None:
             self.assertEqual(
                 _verify_labels("green"), ([], [L_VERIFY_PENDING, L_VERIFY_FAILED])
             )
+
+        def test_mirror_drops_stale_labels_from_closed_issues(self):
+            with self._fake_gh({L_BUILDING: [123], L_QUEUED: [456]}) as fake:
+                self._run(v_mirror, pr=None, offline=False)
+            edits = [c for c in fake.calls if c[:2] == ["issue", "edit"]]
+            touched = {(c[2], c[-1]) for c in edits}
+            self.assertEqual(touched, {("123", L_BUILDING), ("456", L_QUEUED)})
+
+        def test_mirror_skips_labels_with_no_closed_issues(self):
+            with self._fake_gh({}) as fake:
+                self._run(v_mirror, pr=None, offline=False)
+            edits = [c for c in fake.calls if c[:2] == ["issue", "edit"]]
+            self.assertEqual(edits, [])
+            lists = [c for c in fake.calls if c[:2] == ["issue", "list"]]
+            self.assertEqual(len(lists), len(ISSUE_STATE_LABELS))
+
+        def test_mirror_respects_offline(self):
+            with self._fake_gh({L_BUILDING: [123]}) as fake:
+                self._run(v_mirror, pr=None, offline=True)
+            self.assertEqual(fake.calls, [])
+
+        def test_batch_seal_drops_labels_of_sealed_units_issues(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[111],"gate":"normal"}',
+            )
+            self._run(v_batch, action="new", branch="batch/x")
+            self._run(v_built, unit="z1", pr=None)
+            with self._fake_gh() as fake:
+                self._run(v_batch, action="seal", offline=False)
+            edits = [c for c in fake.calls if c[:2] == ["issue", "edit"]]
+            self.assertEqual(len(edits), 1)
+            self.assertEqual(edits[0][2], "111")
+            self.assertEqual(edits[0][-1], ",".join(ISSUE_STATE_LABELS))
+
+        def test_batch_seal_respects_offline(self):
+            self._run(
+                v_plan,
+                unit='{"id":"z1","kind":"issue","issues":[111],"gate":"normal"}',
+            )
+            self._run(v_batch, action="new", branch="batch/x")
+            self._run(v_built, unit="z1", pr=None)
+            with self._fake_gh() as fake:
+                self._run(v_batch, action="seal", offline=True)
+            self.assertEqual(fake.calls, [])
 
     res = unittest.TextTestRunner(verbosity=2).run(
         unittest.TestLoader().loadTestsFromTestCase(T)

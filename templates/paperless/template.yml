@@ -48,9 +48,6 @@ metadata:
         user: paperless
         database: paperless
       include:
-        # The scanned originals. Nothing else holds them; losing this is losing
-        # the paperwork.
-        - media
         # Search index, classifier model, app data — rebuildable only by
         # re-indexing every document.
         - data
@@ -60,6 +57,13 @@ metadata:
         - pgdata
         # Celery broker state, rebuilt by the next task run.
         - redis
+        # Operator decision, 2026-09-07: the NAS-config backup (FritzBox stick)
+        # is for parameters, not data. media (scanned originals, ~105 of ~107 MB
+        # per run) blew the stick's capacity — five runs on 2026-09-07 wrote
+        # ~530 MB each, forcing the platform to prune 27 old generations
+        # (mdopp/servicebay#2873). Originals stay only on the box's RAID
+        # (content-sync is off); accepted knowingly. See #1369.
+        - media
 spec:
   # hostNetwork so NPM (also hostNetwork) proxies the webserver from the host
   # loopback, and so the #931 PaperlessIngest adapter running in the solaris
