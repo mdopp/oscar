@@ -2891,8 +2891,8 @@ def build_app(
 
         Same payload `GET /api/defs/tool` serves — `tool-id`, `tool-label`,
         `tool-api-path`, `tool-search-path`, `tool-compose-path`,
-        `tool-item-id-field`, `tool-actions`, `tool-cell-schema`,
-        `tool-action-params` —
+        `tool-item-id-field`, `tool-actions`, `tool-actions-titled`,
+        `tool-cell-schema`, `tool-action-params` —
         but on the proxy-bypassed `/napi/` surface (device-token-ONLY, wrapped in
         `native(...)`), so an Android home-screen widget can consume a new `.tool`
         with zero native code. Only the tool kind is mirrored here: the native
@@ -3390,12 +3390,12 @@ def build_app(
             log.info("chat.model_widget.resumed", model=current["model"])
 
     async def portal_models(request: web.Request) -> web.Response:
-        """One row per model profile for the Modell tile (#1374).
+        """One row per profile AND window for the Modell tile (#1374, #1381).
 
         `GET /api/model-lease` answers with one state; a `.tool` needs rows, and
-        this is that state spread over the three profiles the box knows —
-        household included, because "give the card back" is a row here rather
-        than a stray button.
+        this is that state spread over every choice the box offers — giving the
+        card back included, because a release is a row here rather than a stray
+        button.
         """
         return web.json_response(
             {
@@ -3432,36 +3432,8 @@ def build_app(
             "Gemma wieder da.",
         }
 
-    async def _model_lease_action(body: dict[str, Any]) -> dict[str, Any]:
-        """Tile callback: run a profile until a chosen end.
-
-        `until` is a duration (`1h`) or a target time (`morgen 07:00`); an
-        enumerated action id (`model.lease.4h`) carries its own, because a
-        RemoteViews row has no chooser to render (ADR 0014).
-        """
-        params = body.get("params") or {}
-        try:
-            model = model_widget.lease_model(params.get("model"))
-        except ValueError:
-            return {
-                "ok": False,
-                "reason": "bad_params",
-                "detail": "Dieses Modell kenne ich nicht.",
-            }
-        if model == model_widget.HOUSEHOLD:
-            return await _model_release(body)
-        until_text = params.get("until") or model_widget.UNTIL_CHOICES.get(
-            str(body.get("action_id") or ""), model_widget.DEFAULT_UNTIL
-        )
-        try:
-            ttl = model_widget.parse_until(until_text)
-        except ValueError:
-            return {
-                "ok": False,
-                "reason": "bad_params",
-                "detail": "Diese Zeitangabe verstehe ich nicht. Sag mir eine Dauer "
-                "wie „2h“ oder eine Uhrzeit wie „morgen 07:00“.",
-            }
+    async def _take_window(model: str, ttl: int) -> dict[str, Any]:
+        """Run `model` for `ttl` seconds, swapping the card first if needed."""
         current = model_lease.state(solaris_db_path)
         busy = _held_elsewhere(current)
         if busy:
@@ -3472,7 +3444,7 @@ def build_app(
             await _widget_give_back()
         until = time.time() + ttl
         _widget_start(model, until, wait_free=switching)
-        title = dict(model_widget.PROFILES).get(model, model)
+        title = model_widget.PROFILE_TITLES.get(model, model)
         return {
             "ok": True,
             "state": "switching" if switching else "preparing",
@@ -3480,6 +3452,66 @@ def build_app(
             "detail": f"{title} läuft {model_widget.when_text(until)}. "
             "Das Umschalten dauert etwa eine Minute.",
         }
+
+    async def _model_set(body: dict[str, Any]) -> dict[str, Any]:
+        """Tile callback: the row IS the choice — the tile's ONLY action (#1381).
+
+        The app resolves one action per tool and fills its params from the row,
+        so the profile and the window both live on the row: `hours` is a number
+        (fractions included — "bis morgen 07:00" is recomputed on every fetch)
+        and `0` means give the card back.
+        """
+        params = body.get("params") or {}
+        try:
+            profile = model_widget.lease_profile(params.get("profile"))
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Dieses Modell kenne ich nicht.",
+            }
+        try:
+            ttl = model_widget.lease_seconds(params.get("hours"))
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Diese Zeitangabe verstehe ich nicht.",
+            }
+        if profile == model_widget.HOUSEHOLD or ttl == 0:
+            return await _model_release(body)
+        return await _take_window(profile, ttl)
+
+    async def _model_lease_action(body: dict[str, Any]) -> dict[str, Any]:
+        """Chat + PWA callback: run a profile until a freely named end.
+
+        `until` is a duration (`1h`) or a target time (`morgen 07:00`). The tile
+        never calls this one — its rows carry `hours`, not a phrase — but a
+        sentence in the chat does.
+        """
+        params = body.get("params") or {}
+        try:
+            model = model_widget.lease_profile(params.get("model"))
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Dieses Modell kenne ich nicht.",
+            }
+        if model == model_widget.HOUSEHOLD:
+            return await _model_release(body)
+        try:
+            ttl = model_widget.parse_until(
+                params.get("until") or model_widget.DEFAULT_UNTIL
+            )
+        except ValueError:
+            return {
+                "ok": False,
+                "reason": "bad_params",
+                "detail": "Diese Zeitangabe verstehe ich nicht. Sag mir eine Dauer "
+                "wie „2h“ oder eine Uhrzeit wie „morgen 07:00“.",
+            }
+        return await _take_window(model, ttl)
 
     # -- the household notice Home Assistant posts (#1276) ------------------
     #
@@ -5670,11 +5702,8 @@ def build_app(
         # because a `tool-action-params` value is a flat literal or a `$field`
         # (ADR 0014) — a RemoteViews row has no chooser to render — so "4
         # Stunden" is an action, not a parameter a widget could fill.
+        "model.set": _model_set,
         "model.lease": _model_lease_action,
-        "model.lease.1h": _model_lease_action,
-        "model.lease.2h": _model_lease_action,
-        "model.lease.4h": _model_lease_action,
-        "model.lease.until_morning": _model_lease_action,
         "model.release": _model_release,
     }
 

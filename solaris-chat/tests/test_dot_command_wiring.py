@@ -71,12 +71,12 @@ def test_migrated_tools_carry_declarative_kind_tool_defs():
     assert _has(r'def && def\["tool-label"\]')
 
 
-def test_the_model_tile_declares_a_window_per_action_id():
-    # #1374: a `tool-action-params` value is a flat literal or a `$field` (ADR
-    # 0014) and a RemoteViews row has no chooser, so each offered duration is
-    # its OWN action id with the window wired in. `model.lease` keeps the free
-    # `until` for chat/PWA and never renders as a tile button, because the row
-    # carries no `until` field for its `$until` source to read.
+def test_the_model_tile_declares_exactly_one_action():
+    # #1381: the app resolves ONE action per tool — the first declared id the
+    # row can fill — so a second id fillable from the same fields is a button
+    # that runs the first one. The tile therefore ships a single `model.set`
+    # and puts the choice in the ROWS (`profile` + `hours`). `model.lease` and
+    # `model.release` stay registered for chat and the PWA, out of the schema.
     from pathlib import Path
 
     from solaris_chat.skills import list_tool_defs
@@ -90,18 +90,91 @@ def test_the_model_tile_declares_a_window_per_action_id():
     # A view+act tool: no create path, so no "Erfassen" tile is offered.
     assert model["tool-compose-path"] == ""
     assert model["tool-item-id-field"] == "id"
-    assert model["tool-cell-schema"]["actions"] == [
-        "model.lease.1h",
-        "model.lease.4h",
-        "model.lease.until_morning",
-        "model.release",
+    assert model["tool-actions"] == ["model.set", "model.lease", "model.release"]
+    assert model["tool-cell-schema"]["actions"] == ["model.set"]
+    assert model["tool-action-params"] == {
+        "model.set": {"profile": "$profile", "hours": "$hours"}
+    }
+    # The formulated status is the secondary line; the raw time fields the tile
+    # would print as "1757336400" are gone, and `meta` is now `detail` — the
+    # row field `meta` collided with the schema ROLE `meta`.
+    schema = model["tool-cell-schema"]
+    assert schema["subtitle"] == "status_text"
+    assert schema["meta"] == ["detail"]
+    assert "expires_at" not in str(schema) and "remaining_s" not in str(schema)
+
+
+def test_no_shipped_tool_offers_a_second_unreachable_action():
+    # The general rule behind #1381, for every tool that ships after it: a
+    # consumer resolves the FIRST action id the row can fill, so a second one
+    # in the same schema is unreachable. Titled actions (#1382) put a label on
+    # each id, but the chooser that shows them is the app's half — until it
+    # ships, a schema declares at most one.
+    from pathlib import Path
+
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    for tool in list_tool_defs(pack):
+        actions = tool["tool-cell-schema"].get("actions") or []
+        assert len(actions) <= 1, tool["tool-id"]
+
+
+def test_tool_actions_parse_from_both_spellings(tmp_path):
+    # #1382: an action entry may be an object `{id, title}` so a chooser can name
+    # the button; a bare string stays valid and means "untitled". Both spellings
+    # may mix in one JSON array, and the comma list every shipped def uses today
+    # keeps working unchanged.
+    from solaris_chat.skills import list_tool_defs
+
+    def _def(tool_id: str, actions: str) -> None:
+        d = tmp_path / (tool_id + "-tool")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            "---\n"
+            f"name: solaris-{tool_id}-tool\n"
+            "kind: tool\n"
+            f"tool-id: {tool_id}\n"
+            f"tool-actions: {actions}\n"
+            "---\n\n# t\n",
+            encoding="utf-8",
+        )
+
+    _def("comma", "a.one, a.two")
+    _def("mixed", '[{"id": "a.one", "title": "1 Stunde"}, "a.two"]')
+    _def("broken", '[{"id": "a.one", ')
+    by_id = {d["tool-id"]: d for d in list_tool_defs(tmp_path)}
+    # The bare-id list is what it always was, whichever spelling wrote it.
+    assert by_id["comma"]["tool-actions"] == ["a.one", "a.two"]
+    assert by_id["mixed"]["tool-actions"] == ["a.one", "a.two"]
+    assert by_id["comma"]["tool-actions-titled"] == [
+        {"id": "a.one", "title": None},
+        {"id": "a.two", "title": None},
     ]
-    for action_id, params in model["tool-action-params"].items():
-        assert action_id in model["tool-actions"], action_id
-        assert params["model"] == "$id", action_id
-    assert model["tool-action-params"]["model.lease"]["until"] == "$until"
-    for action_id in model["tool-cell-schema"]["actions"]:
-        assert "until" not in model["tool-action-params"][action_id]
+    assert by_id["mixed"]["tool-actions-titled"] == [
+        {"id": "a.one", "title": "1 Stunde"},
+        {"id": "a.two", "title": None},
+    ]
+    # A malformed array declares no action rather than a garbage id.
+    assert by_id["broken"]["tool-actions"] == []
+    assert by_id["broken"]["tool-actions-titled"] == []
+
+
+def test_shipped_tools_serve_titles_beside_the_bare_action_ids():
+    # #1382: the titled view is emitted for EVERY tool, in declaration order and
+    # with the same ids — a consumer parses one shape and never has to test
+    # whether this server or this tool has titles at all.
+    from pathlib import Path
+
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    for tool in list_tool_defs(pack):
+        titled = tool["tool-actions-titled"]
+        assert [a["id"] for a in titled] == tool["tool-actions"], tool["tool-id"]
+        for action in titled:
+            assert set(action) == {"id", "title"}
+            assert action["title"] is None or action["title"]
 
 
 def test_shipped_tool_cell_schemas_are_renderer_agnostic():

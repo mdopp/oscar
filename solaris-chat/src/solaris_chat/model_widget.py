@@ -8,6 +8,11 @@ that a service-operated one never did:
   "4 Stunden" or "bis morgen 07:00". `parse_until` turns either into the
   seconds the contract wants, and `rows` says the result back as "bis 16:30"
   rather than as an epoch.
+* **The row IS the choice.** The app resolves exactly ONE action per tool
+  (ADR 0014 — the first declared id the row can fill wins, a second is
+  unreachable), so a duration cannot be a second button next to the profile.
+  Every profile therefore gets one row per window it offers, each carrying its
+  own `profile` + `hours` for the tile's single `model.set` (#1381).
 * **A holder that is not the caller.** foundry and pi-web hold their own
   windows and renew them from their own process. Nobody renews on behalf of a
   phone that has been put back in a pocket, so the **engine** takes the window
@@ -23,6 +28,7 @@ itself.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -52,31 +58,22 @@ DEFAULT_UNTIL = "2h"
 # profile. Giving up is harmless: the release runs on the host either way.
 SWITCH_TRIES = 20
 
-# The tile's rows, in the order they are shown: the house first, then the two
-# windows that take the card away from it.
+# The profiles, in the order their rows are shown: the house first, so the top
+# line of a truncated tile always answers "what is running right now".
 PROFILES = (
-    (HOUSEHOLD, "Haushalt (Gemma)"),
-    ("coding", "Programmieren (Qwen)"),
-    ("foundry", "Foundry (Gemma 12B)"),
+    (HOUSEHOLD, "Haushalt", "Gemma"),
+    ("coding", "Programmieren", "Qwen 27B"),
+    ("foundry", "Foundry", "Gemma 12B"),
 )
 
-# The enumerated windows the tile offers. A `tool-action-params` value is a
-# flat literal or a `$field` reference (ADR 0014) — there is no chooser a
-# RemoteViews row could render — so each duration is its own action id, and
-# these are the literals behind them.
-UNTIL_CHOICES = {
-    "model.lease.1h": "1h",
-    "model.lease.2h": "2h",
-    "model.lease.4h": "4h",
-    "model.lease.until_morning": "morgen 07:00",
-}
+PROFILE_TITLES = {profile: title for profile, title, _ in PROFILES}
 
-_STATUS_TEXT = {
-    "active": "aktiv",
-    "available": "frei",
-    "preparing": "wird geladen",
-    "releasing": "wird freigegeben",
-}
+# The windows every real profile offers, as the row says them and as the hours
+# the row carries. `None` is "bis morgen 07:00" — the only one that shrinks as
+# the morning gets closer, so it is recomputed on every fetch.
+WINDOWS = (("1h", "1 h", 1.0), ("4h", "4 h", 4.0), ("morgen", "bis morgen 07:00", None))
+
+MORNING = "morgen 07:00"
 
 _HOURS = re.compile(r"\A(\d{1,2})\s*(?:h|std|stunde|stunden)\Z")
 _MINUTES = re.compile(r"\A(\d{1,4})\s*(?:m|min|minute|minuten)\Z")
@@ -147,16 +144,35 @@ def _target_time(text: str, *, tomorrow: bool, now: float) -> float:
     return base.timestamp()
 
 
-def lease_model(model: object) -> str:
-    """The profile a `model.lease` names, or `ValueError("invalid_model")`.
+def lease_profile(profile: object) -> str:
+    """The profile a row or a `model.lease` names, or `ValueError`.
 
     `household` is accepted here and nowhere else in the contract: it is the
     row that releases.
     """
-    name = str(model or "").strip().lower()
+    name = str(profile or "").strip().lower()
     if name != HOUSEHOLD and name not in model_lease.MODELS:
         raise ValueError("invalid_model")
     return name
+
+
+def lease_seconds(hours: object) -> int:
+    """Whole seconds for a row's `hours`, rounded up and capped at a day.
+
+    The tile passes numbers through raw (ADR 0014), fractions included — "bis
+    morgen 07:00" is 12.75 h at a quarter past six in the evening. Rounding UP
+    is what keeps such a window from ending a second before the time it names.
+    `0` is a value, not a missing one: it is the row that gives the card back.
+    """
+    try:
+        value = float(hours)
+    except (TypeError, ValueError):
+        raise ValueError("invalid_hours") from None
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        raise ValueError("invalid_hours")
+    if value == 0:
+        return 0
+    return _clamp(math.ceil(value * 3600))
 
 
 def when_text(expires_at: float | None, *, now: float | None = None) -> str:
@@ -175,7 +191,24 @@ def when_text(expires_at: float | None, *, now: float | None = None) -> str:
     return f"bis {end:%d.%m}. {end:%H:%M}"
 
 
-def _meta(state: str, *, expires_at: float | None, holder: str, now: float) -> str:
+def remaining_text(expires_at: float | None, *, now: float | None = None) -> str:
+    """ "noch 42 Min" while the window ends within the hour, "bis 16:30" after.
+
+    A resident reading a tile wants the number that is about to matter: minutes
+    when the card is nearly back, a clock time when it is hours away.
+    """
+    if not isinstance(expires_at, (int, float)) or not expires_at:
+        return ""
+    now = time.time() if now is None else now
+    seconds = expires_at - now
+    if 0 < seconds < 3600:
+        return f"noch {max(int(seconds // 60), 1)} Min"
+    return when_text(expires_at, now=now)
+
+
+def _status_text(
+    state: str, *, expires_at: float | None, holder: str, now: float
+) -> str:
     if state == "preparing":
         return "wird geladen — das dauert etwa eine Minute"
     if state == "releasing":
@@ -183,7 +216,7 @@ def _meta(state: str, *, expires_at: float | None, holder: str, now: float) -> s
     if state == "available":
         return "nicht geladen"
     parts = ["gerade geladen"]
-    when = when_text(expires_at, now=now)
+    when = remaining_text(expires_at, now=now)
     if when:
         parts.append(when)
     if holder and holder != HOLDER:
@@ -191,12 +224,34 @@ def _meta(state: str, *, expires_at: float | None, holder: str, now: float) -> s
     return " · ".join(parts)
 
 
-def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list[dict]:
-    """One row per profile for the tile — the shape `tool-api-path` serves.
+def _windows(profile: str, *, now: float) -> list[tuple[str, str, float]]:
+    """The rows one profile offers: `(id, title, hours)`.
 
+    The house offers exactly one — giving the card back — and its `0 h` is what
+    tells the action to release.
+    """
+    if profile == HOUSEHOLD:
+        return [(HOUSEHOLD, "Haushalt (freigeben)", 0.0)]
+    label = PROFILE_TITLES[profile]
+    out = []
+    for key, window, hours in WINDOWS:
+        if hours is None:
+            # Recomputed on every fetch: the distance to 07:00 shrinks all
+            # evening, so a value cached from the last fetch would take the
+            # card past the morning it names.
+            hours = round(parse_until(MORNING, now=now) / 3600, 4)
+        out.append((f"{profile}:{key}", f"{label} · {window}", hours))
+    return out
+
+
+def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list[dict]:
+    """One row per profile AND window — the shape `tool-api-path` serves.
+
+    Each row is a complete choice, because the app resolves one action per tool
+    (#1381): `profile` + `hours` are what the single `model.set` reads off it.
     `state` is the machine word (`active` = loaded right now, `available`,
-    `preparing`, `releasing`); `status_text` and `meta` are the same thing in
-    German, because a RemoteViews row shows text and nothing else.
+    `preparing`, `releasing`); `status_text` is that state said in German and
+    is the only place a time appears, because a tile renders a field raw.
     """
     now = time.time() if now is None else now
     lease_state = str(lease.get("state") or "none")
@@ -207,8 +262,8 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
         expires_at = None
 
     out: list[dict] = []
-    for profile_id, title in PROFILES:
-        if profile_id == HOUSEHOLD:
+    for profile, _title, model_name in PROFILES:
+        if profile == HOUSEHOLD:
             # The house keeps the card until the swap actually lands, and gets
             # it back a few seconds after the release request — so `preparing`
             # on another row still reads as `active` here.
@@ -220,29 +275,27 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
             row_holder, row_expires = "", None
             alias = household_alias
         else:
-            state = "available" if leased != profile_id else lease_state
+            state = "available" if leased != profile else lease_state
             if state == "ready":
                 state = "active"
-            row_holder = holder if leased == profile_id else ""
-            row_expires = expires_at if leased == profile_id else None
-            alias = model_lease.ALIASES[profile_id]
-        out.append(
-            {
-                "id": profile_id,
-                "title": title,
-                "alias": alias,
-                "state": state,
-                "status_text": _STATUS_TEXT[state],
-                "holder": row_holder,
-                "expires_at": row_expires,
-                "remaining_s": (
-                    max(int(row_expires - now), 0) if row_expires else None
-                ),
-                "meta": _meta(
-                    state, expires_at=row_expires, holder=row_holder, now=now
-                ),
-            }
-        )
+            row_holder = holder if leased == profile else ""
+            row_expires = expires_at if leased == profile else None
+            alias = model_lease.ALIASES[profile]
+        status = _status_text(state, expires_at=row_expires, holder=row_holder, now=now)
+        for row_id, title, hours in _windows(profile, now=now):
+            out.append(
+                {
+                    "id": row_id,
+                    "title": title,
+                    "profile": profile,
+                    "hours": hours,
+                    "alias": alias,
+                    "state": state,
+                    "status_text": status,
+                    "detail": model_name,
+                    "holder": row_holder,
+                }
+            )
     return out
 
 

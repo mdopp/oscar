@@ -1535,6 +1535,66 @@ async def test_napi_defs_tool_carries_a_new_tools_item_route(aiohttp_client, tmp
     )
 
 
+async def test_napi_defs_tool_serves_titled_actions_in_one_shape(
+    aiohttp_client, tmp_path
+):
+    # #1382: an action may carry the label a chooser shows for it. The catalog
+    # serves two views of one list: `tool-actions` keeps its bare-id shape (a
+    # consumer reading it as plain strings drops an object entry silently and
+    # would end up with no button at all), and `tool-actions-titled` carries the
+    # labels — always objects, `title` null when untitled, so the app parses one
+    # shape and never type-tests an entry.
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    skills_dir = tmp_path / "skills"
+    _write_tool_def(skills_dir)
+    new = skills_dir / "model-tool"
+    new.mkdir(parents=True, exist_ok=True)
+    (new / "SKILL.md").write_text(
+        "---\n"
+        "name: solaris-model-tool\n"
+        "description: The .model tool.\n"
+        "kind: tool\n"
+        "tool-id: model\n"
+        "tool-label: Modell\n"
+        "command: .model\n"
+        "tool-api-path: /api/portal/models\n"
+        'tool-actions: [{"id": "model.lease.1h", "title": "1 Stunde"}, '
+        '{"id": "model.release", "title": "Freigeben"}, "model.set"]\n'
+        'tool-cell-schema: {"id": "id", "title": "title"}\n'
+        "---\n\n# Modell\n",
+        encoding="utf-8",
+    )
+    client = await aiohttp_client(
+        build_app(
+            engine=_FakeEngine(),
+            remote_user_header="Remote-User",
+            default_uid="household",
+            solaris_db_path=db,
+            notes_dir=str(tmp_path),
+            skills_dir=str(skills_dir),
+        )
+    )
+    r = await client.get(
+        "/napi/defs/tool", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    by_id = {t["tool-id"]: t for t in (await r.json())["defs"]}
+    model = by_id["model"]
+    assert model["tool-actions"] == ["model.lease.1h", "model.release", "model.set"]
+    assert model["tool-actions-titled"] == [
+        {"id": "model.lease.1h", "title": "1 Stunde"},
+        {"id": "model.release", "title": "Freigeben"},
+        {"id": "model.set", "title": None},
+    ]
+    # The key is always there, so a consumer needs no "does this server have it"
+    # branch — an untitled tool serves the same shape with null titles.
+    assert by_id["task"]["tool-actions-titled"] == [
+        {"id": "task.set_status", "title": None},
+        {"id": "task.add", "title": None},
+    ]
+
+
 # ---- /napi/action-callback: no admin action on the bypassed prefix (#1170) ---
 
 

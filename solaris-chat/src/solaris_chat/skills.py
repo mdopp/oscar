@@ -294,6 +294,46 @@ def item_id_field_violations(
     return []
 
 
+# `tool-actions` (#1382, ADR 0011/0014): an entry may be a bare id or an object
+# `{id, title}` carrying the German label a chooser shows for it. The wire keeps
+# the two apart on purpose — a consumer that reads action ids as plain strings
+# drops a JSON object silently (`ToolDefs.stringList` in mdopp/solaris-android),
+# which would leave every already-installed app with no action button at all — so
+# `tool-actions` stays the bare-id list it has always been and the titles ride
+# alongside in `tool-actions-titled`, always objects with a nullable title.
+def _parse_tool_actions(raw: str) -> list[dict[str, Any]]:
+    """The declared actions as `[{id, title}]`, in declaration order.
+
+    Two authoring spellings: the comma-separated id list (untitled — `title` is
+    `None`), or a one-line JSON array whose entries are ids and/or
+    `{"id": …, "title": …}` objects, mixable. An entry without a usable id is
+    dropped, as is a malformed JSON array — the def then simply declares no
+    action, the same as an empty frontmatter line."""
+    value = raw.strip()
+    if value.startswith("["):
+        try:
+            entries = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(entries, list):
+            return []
+    else:
+        entries = value.split(",")
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            action_id, title = entry.strip(), None
+        elif isinstance(entry, dict):
+            raw_id, raw_title = entry.get("id"), entry.get("title")
+            action_id = raw_id.strip() if isinstance(raw_id, str) else ""
+            title = raw_title.strip() or None if isinstance(raw_title, str) else None
+        else:
+            continue
+        if action_id:
+            out.append({"id": action_id, "title": title})
+    return out
+
+
 def _json_field(meta: dict[str, str], key: str) -> dict[str, Any]:
     raw = meta.get(key, "").strip()
     try:
@@ -307,17 +347,20 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
     """The declarative `.tool` plugin surface (#1004, ADR 0011) read off a
     tool-kind def's flat frontmatter.
 
-    `tool-actions` is a comma-separated action-id list; `tool-cell-schema` and
-    `tool-action-params` are one-line JSON objects — all three stay within the
+    `tool-actions` is a comma-separated action-id list or a one-line JSON array
+    of ids / `{id, title}` objects (#1382); `tool-cell-schema` and
+    `tool-action-params` are one-line JSON objects — all stay within the
     pack's no-PyYAML flat parser. The client (#1005) dispatches on these instead
     of the hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the
     actions; `tool-action-params` (#1214) lets a renderer build an action's
     callback body straight from the row it drew; `tool-compose-path` (#1213)
     declares whether the tool has a create path at all, and where;
     `tool-item-id-field` (#1256) declares which field addresses one item, so a
-    row tap has a route instead of a guessed id.
+    row tap has a route instead of a guessed id; `tool-actions-titled` (#1382)
+    is the same action list with each id's chooser label, always objects with a
+    nullable `title`, so a consumer parses one shape.
     """
-    actions = [a.strip() for a in meta.get("tool-actions", "").split(",") if a.strip()]
+    titled = _parse_tool_actions(meta.get("tool-actions", ""))
     cell_schema = _json_field(meta, "tool-cell-schema")
     action_params = _json_field(meta, "tool-action-params")
     return {
@@ -328,7 +371,8 @@ def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
         "tool-search-path": meta.get("tool-search-path", ""),
         "tool-compose-path": meta.get("tool-compose-path", ""),
         "tool-item-id-field": meta.get("tool-item-id-field", ""),
-        "tool-actions": actions,
+        "tool-actions": [a["id"] for a in titled],
+        "tool-actions-titled": titled,
         "tool-cell-schema": cell_schema,
         "tool-action-params": action_params,
     }

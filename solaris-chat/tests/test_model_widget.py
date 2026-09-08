@@ -1,9 +1,10 @@
 """The Modell tile — the GPU lease as a `kind: tool` widget (#1374).
 
 What is pinned here is what a resident's window needs that a service's never
-did: a duration or a target time instead of `ttl_s`, one row per profile
-instead of one state, and a renewal loop that runs in the ENGINE because the
-phone that tapped the button is back in a pocket.
+did: a duration or a target time instead of `ttl_s`, one row per CHOICE instead
+of one state (#1381 — the app resolves one action per tool, so the row carries
+the profile and the window), and a renewal loop that runs in the ENGINE because
+the phone that tapped the button is back in a pocket.
 """
 
 from __future__ import annotations
@@ -118,10 +119,10 @@ def test_an_unreadable_window_is_refused_not_guessed():
 
 
 def test_the_household_profile_is_a_lease_name_here_and_nowhere_else():
-    assert model_widget.lease_model("household") == "household"
-    assert model_widget.lease_model("coding") == "coding"
+    assert model_widget.lease_profile("household") == "household"
+    assert model_widget.lease_profile("coding") == "coding"
     with pytest.raises(ValueError, match="invalid_model"):
-        model_widget.lease_model("gemma")
+        model_widget.lease_profile("gemma")
     # The contract itself still knows only the two real windows.
     assert "household" not in model_lease.MODELS
 
@@ -133,7 +134,7 @@ def test_the_cap_rose_to_a_day_without_moving_the_default():
     assert model_lease.parse_payload({"model": "coding"})[1] == 14400
 
 
-# ---- one row per profile ----------------------------------------------------
+# ---- one row per choice -----------------------------------------------------
 
 
 def _rows(lease, *, now=None):
@@ -145,19 +146,69 @@ def _rows(lease, *, now=None):
     }
 
 
-def test_no_lease_reads_as_the_household_model_loaded():
+def test_every_row_is_one_complete_choice():
+    # #1381: the app resolves ONE action per tool, so the duration cannot be a
+    # second button — each profile/window pair is its own row, carrying the
+    # `profile` and `hours` that single action reads.
     rows = _rows({"state": "none", "model": "", "holder": ""})
-    assert list(rows) == ["household", "coding", "foundry"]
-    assert rows["household"]["state"] == "active"
+    assert list(rows) == [
+        "household",
+        "coding:1h",
+        "coding:4h",
+        "coding:morgen",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
+    ]
+    assert [r["title"] for r in rows.values()] == [
+        "Haushalt (freigeben)",
+        "Programmieren · 1 h",
+        "Programmieren · 4 h",
+        "Programmieren · bis morgen 07:00",
+        "Foundry · 1 h",
+        "Foundry · 4 h",
+        "Foundry · bis morgen 07:00",
+    ]
+    assert rows["coding:1h"]["profile"] == "coding"
+    assert rows["coding:1h"]["hours"] == 1.0
+    assert rows["coding:4h"]["hours"] == 4.0
+    # The release row is `hours: 0` — a value, not a missing one.
+    assert rows["household"]["profile"] == "household"
+    assert rows["household"]["hours"] == 0.0
+
+
+def test_the_morning_row_is_recomputed_on_every_fetch():
+    # "bis morgen 07:00" shrinks all evening; a value cached from the last
+    # fetch would take the card hours past the morning it names.
+    evening = _rows({"state": "none"}, now=_at(hour=18, minute=15))["coding:morgen"]
+    assert evening["hours"] == 12.75
+    later = _rows({"state": "none"}, now=_at(hour=23))["coding:morgen"]
+    assert later["hours"] == 8.0
+
+
+def test_a_row_says_its_state_in_german_and_carries_no_raw_time():
+    # A tile prints a field as it stands, so "1757336400" is not a time and
+    # `remaining_s` is not a sentence: `status_text` is the whole answer.
+    rows = _rows({"state": "none", "model": "", "holder": ""})
+    assert rows["household"]["status_text"] == "gerade geladen"
+    assert rows["household"]["detail"] == "Gemma"
+    assert rows["coding:1h"]["status_text"] == "nicht geladen"
+    assert rows["coding:1h"]["detail"] == "Qwen 27B"
+    assert rows["foundry:4h"]["detail"] == "Gemma 12B"
+    for row in rows.values():
+        assert "meta" not in row
+        assert "expires_at" not in row
+        assert "remaining_s" not in row
+
+
+def test_the_alias_still_names_the_model_the_box_loads():
+    rows = _rows({"state": "none", "model": "", "holder": ""})
     assert rows["household"]["alias"] == "gemma-4-e4b"
-    assert rows["household"]["meta"] == "gerade geladen"
-    assert rows["coding"]["state"] == "available"
-    assert rows["coding"]["alias"] == "qwen3.8-27b"
-    assert rows["coding"]["meta"] == "nicht geladen"
-    assert rows["foundry"]["alias"] == "gemma-4-12b"
+    assert rows["coding:1h"]["alias"] == "qwen3.8-27b"
+    assert rows["foundry:1h"]["alias"] == "gemma-4-12b"
 
 
-def test_a_held_window_says_which_profile_and_until_when():
+def test_a_held_window_says_so_on_every_row_of_that_profile():
     rows = _rows(
         {
             "state": "ready",
@@ -166,11 +217,24 @@ def test_a_held_window_says_which_profile_and_until_when():
             "expires_at": _at(hour=16, minute=30),
         }
     )
-    assert rows["coding"]["state"] == "active"
-    assert rows["coding"]["status_text"] == "aktiv"
-    assert rows["coding"]["meta"] == "gerade geladen · bis 16:30"
-    assert rows["coding"]["remaining_s"] == 9000
+    for row_id in ("coding:1h", "coding:4h", "coding:morgen"):
+        assert rows[row_id]["state"] == "active"
+        assert rows[row_id]["status_text"] == "gerade geladen · bis 16:30"
     assert rows["household"]["state"] == "available"
+    assert rows["foundry:1h"]["status_text"] == "nicht geladen"
+
+
+def test_the_last_hour_counts_down_in_minutes():
+    # "noch 42 Min" is the number about to matter; a clock time is not.
+    rows = _rows(
+        {
+            "state": "ready",
+            "model": "foundry",
+            "holder": "widget",
+            "expires_at": _at(hour=14, minute=42),
+        }
+    )
+    assert rows["foundry:1h"]["status_text"] == "gerade geladen · noch 42 Min"
 
 
 def test_a_stranger_holding_the_card_is_named_on_the_row():
@@ -182,8 +246,11 @@ def test_a_stranger_holding_the_card_is_named_on_the_row():
             "expires_at": _at(hour=7, day=9),
         }
     )
-    assert rows["foundry"]["meta"] == "gerade geladen · bis morgen 07:00 · von pi-web"
-    assert rows["foundry"]["holder"] == "pi-web"
+    assert (
+        rows["foundry:1h"]["status_text"]
+        == "gerade geladen · bis morgen 07:00 · von pi-web"
+    )
+    assert rows["foundry:1h"]["holder"] == "pi-web"
 
 
 def test_the_house_keeps_the_card_until_the_swap_actually_lands():
@@ -191,12 +258,43 @@ def test_the_house_keeps_the_card_until_the_swap_actually_lands():
     # household model, so saying the house is not loaded would be a lie.
     rows = _rows({"state": "preparing", "model": "foundry", "holder": "widget"})
     assert rows["household"]["state"] == "active"
-    assert rows["foundry"]["state"] == "preparing"
-    assert "wird geladen" in rows["foundry"]["meta"]
+    assert rows["foundry:1h"]["state"] == "preparing"
+    assert "wird geladen" in rows["foundry:1h"]["status_text"]
     # …and while the card comes back the house is the one that is preparing.
     rows = _rows({"state": "releasing", "model": "foundry", "holder": "widget"})
     assert rows["household"]["state"] == "preparing"
-    assert rows["foundry"]["state"] == "releasing"
+    assert rows["foundry:1h"]["state"] == "releasing"
+
+
+# ---- the window a row carries -----------------------------------------------
+
+
+def test_hours_become_whole_seconds_rounded_up():
+    assert model_widget.lease_seconds(1) == 3600
+    assert model_widget.lease_seconds(4.0) == 14400
+    # A fraction is what "bis morgen 07:00" is; rounding up keeps the window
+    # from ending a second before the time it names.
+    assert model_widget.lease_seconds(12.75) == 45900
+    assert model_widget.lease_seconds(1.00001) == 3601
+    # Passed as the string a chat or a query param would send.
+    assert model_widget.lease_seconds("2") == 7200
+
+
+def test_zero_hours_is_the_release_row_not_a_missing_value():
+    assert model_widget.lease_seconds(0) == 0
+    assert model_widget.lease_seconds(0.0) == 0
+
+
+def test_a_window_is_capped_at_a_day_and_floored_at_the_swap():
+    assert model_widget.lease_seconds(24) == 86400
+    assert model_widget.lease_seconds(48) == 86400
+    assert model_widget.lease_seconds(0.01) == model_lease.TTL_MIN_SECONDS
+
+
+def test_an_unreadable_number_of_hours_is_refused_not_guessed():
+    for bad in (None, "", "gleich", -1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            model_widget.lease_seconds(bad)
 
 
 # ---- the rows endpoint ------------------------------------------------------
@@ -208,8 +306,17 @@ async def test_the_rows_endpoint_serves_the_tile(aiohttp_client, tmp_path):
     assert r.status == 200
     body = await r.json()
     assert body["ok"] is True
-    assert [row["id"] for row in body["models"]] == ["household", "coding", "foundry"]
+    assert [row["id"] for row in body["models"]] == [
+        "household",
+        "coding:1h",
+        "coding:4h",
+        "coding:morgen",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
+    ]
     assert body["models"][0]["state"] == "active"
+    assert body["models"][1]["hours"] == 1.0
     assert body["retry_after"] == model_lease.RETRY_AFTER_SECONDS
 
 
@@ -230,13 +337,11 @@ def _request(tmp_path) -> dict:
     )
 
 
-async def test_an_enumerated_duration_takes_the_window_it_names(
-    aiohttp_client, tmp_path
-):
+async def test_a_row_takes_the_window_its_own_hours_name(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
         "/api/action-callback",
-        json={"action_id": "model.lease.4h", "params": {"model": "coding"}},
+        json={"action_id": "model.set", "params": {"profile": "coding", "hours": 4}},
     )
     body = await r.json()
     assert body["ok"] is True
@@ -248,20 +353,42 @@ async def test_an_enumerated_duration_takes_the_window_it_names(
     # broker is the only difference from the four hours it names.
     assert 14395 <= request["ttl_s"] <= 14400
     # The answer is the plain sentence the card shows, not a state machine.
-    assert "Programmieren (Qwen)" in body["detail"]
+    assert "Programmieren" in body["detail"]
     assert "bis " in body["detail"]
+
+
+async def test_a_fractional_row_is_taken_to_the_whole_second(aiohttp_client, tmp_path):
+    # The morning row's hours are a float; the action rounds up and caps at 24 h.
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/action-callback",
+        json={
+            "action_id": "model.set",
+            "params": {"profile": "foundry", "hours": 12.75},
+        },
+    )
+    assert (await r.json())["ok"] is True
+    # Measured from the tap, so the sub-second on the way to the broker is the
+    # only difference from the 12.75 h the row named.
+    assert 45895 <= _request(tmp_path)["ttl_s"] <= 45900
+    r = await client.post(
+        "/api/action-callback",
+        json={"action_id": "model.set", "params": {"profile": "foundry", "hours": 48}},
+    )
+    assert (await r.json())["ok"] is True
+    assert 86395 <= _request(tmp_path)["ttl_s"] <= model_widget.UNTIL_MAX_SECONDS
 
 
 async def test_the_household_row_is_the_release_button(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     await client.post(
         "/api/action-callback",
-        json={"action_id": "model.lease.1h", "params": {"model": "foundry"}},
+        json={"action_id": "model.set", "params": {"profile": "foundry", "hours": 1}},
     )
     _hold(tmp_path, "foundry")
     r = await client.post(
         "/api/action-callback",
-        json={"action_id": "model.lease", "params": {"model": "household"}},
+        json={"action_id": "model.set", "params": {"profile": "household", "hours": 0}},
     )
     body = await r.json()
     assert body["ok"] is True
@@ -269,13 +396,42 @@ async def test_the_household_row_is_the_release_button(aiohttp_client, tmp_path)
     assert _request(tmp_path)["holder"] == model_widget.HOLDER
 
 
-async def test_an_unreadable_window_answers_in_plain_language(aiohttp_client, tmp_path):
+async def test_zero_hours_releases_whatever_profile_it_names(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_app(tmp_path))
+    await client.post(
+        "/api/action-callback",
+        json={"action_id": "model.set", "params": {"profile": "coding", "hours": 1}},
+    )
+    _hold(tmp_path, "coding")
+    r = await client.post(
+        "/api/action-callback",
+        json={"action_id": "model.set", "params": {"profile": "coding", "hours": 0}},
+    )
+    assert (await r.json())["ok"] is True
+    assert _request(tmp_path)["op"] == "release"
+
+
+async def test_the_free_form_lease_stays_for_chat_and_the_pwa(aiohttp_client, tmp_path):
+    # The tile never sends a phrase, but a sentence in the chat does.
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
         "/api/action-callback",
         json={
             "action_id": "model.lease",
-            "params": {"model": "coding", "until": "gleich"},
+            "params": {"model": "coding", "until": "morgen 07:00"},
+        },
+    )
+    assert (await r.json())["ok"] is True
+    assert _request(tmp_path)["op"] == "acquire"
+
+
+async def test_an_unreadable_window_answers_in_plain_language(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/action-callback",
+        json={
+            "action_id": "model.set",
+            "params": {"profile": "coding", "hours": "gleich"},
         },
     )
     body = await r.json()
@@ -283,7 +439,7 @@ async def test_an_unreadable_window_answers_in_plain_language(aiohttp_client, tm
     assert "Zeitangabe" in body["detail"]
     r = await client.post(
         "/api/action-callback",
-        json={"action_id": "model.lease", "params": {"model": "gemma"}},
+        json={"action_id": "model.set", "params": {"profile": "gemma", "hours": 1}},
     )
     body = await r.json()
     assert body["ok"] is False
@@ -295,7 +451,7 @@ async def test_a_window_somebody_else_holds_is_left_alone(aiohttp_client, tmp_pa
     _hold(tmp_path, "coding", holder="pi-web")
     r = await client.post(
         "/api/action-callback",
-        json={"action_id": "model.lease.1h", "params": {"model": "foundry"}},
+        json={"action_id": "model.set", "params": {"profile": "foundry", "hours": 1}},
     )
     body = await r.json()
     assert body["ok"] is False
@@ -328,7 +484,12 @@ async def test_every_button_the_def_offers_has_a_handler(aiohttp_client, tmp_pat
     for action_id in model["tool-actions"]:
         r = await client.post(
             "/api/action-callback",
-            json={"action_id": action_id, "params": {"model": "household"}},
+            json={
+                "action_id": action_id,
+                # The union of what the three actions read — every one of them
+                # names the household, which is the release either way.
+                "params": {"model": "household", "profile": "household", "hours": 0},
+            },
         )
         assert r.status == 200, action_id
         assert (await r.json())["ok"] is True, action_id

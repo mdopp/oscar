@@ -27,7 +27,59 @@ plain field name.
 | `actions` | list of `action.id`s | tap targets → the declared `tool-actions` |
 
 `actions` references **`action.id` only** — the ids the def already lists in its
-`tool-actions` frontmatter. No inline JS or handlers live in the schema.
+`tool-actions` frontmatter, as bare strings; an `{id, title}` object never
+appears *here*. No inline JS or handlers live in the schema.
+
+### Titled actions — the contract (#1382, part B of #1381)
+
+An action carries a label so a chooser can name it. The label lives **once**,
+at the tool, joined to the row by its id:
+
+- **Authoring.** `tool-actions` takes either the comma list it always took, or a
+  one-line JSON array whose entries are ids and/or objects, mixable:
+  `tool-actions: [{"id": "model.lease.1h", "title": "1 Stunde"}, {"id": "model.release", "title": "Freigeben"}]`.
+  A bare string means "untitled". Titles are finished German text — the same
+  server-says/client-shows rule as `status_text`.
+- **Emission.** `/api/defs/tool` and `/napi/defs/tool` serve two views of that
+  one list, same order: `tool-actions` unchanged (bare ids), plus
+  `tool-actions-titled`: `[{"id": …, "title": … | null}]` — **always objects**,
+  `title` null when untitled, the key always present (empty list when the tool
+  declares no action), so a consumer parses one shape and needs no per-entry
+  type test.
+- **Why not titles inside `tool-actions`.** A consumer that reads that list as
+  plain strings drops a JSON object entry *silently* (`ToolDefs.stringList` in
+  mdopp/solaris-android keeps only `String`s, and `parseDef` then filters the
+  schema's actions against it). Objects there would leave every already-installed
+  app with `actions = []` — no button in *any* tool, no error. Additive key
+  instead: an old consumer ignores what it doesn't know.
+- **Resolution.** A consumer that supports the chooser walks the schema's
+  `actions` in declaration order and offers **every** id whose
+  `tool-action-params` mapping the row can fill — not only the first. The entry's
+  label is that id's `title`, or the consumer's fixed wording when null.
+
+### One action id per tool — in force until the app ships the chooser
+
+`actions` is a list at the **tool**, not at the row, and today's consumer
+resolves **exactly one** entry per row: the first id whose `tool-action-params`
+mapping that row can fill wins (`ToolCells.resolveAction` in
+mdopp/solaris-android). So **a second id fillable from the same row fields is
+unreachable** — every row runs the first one, the button reacts, something
+happens, and it is the same something everywhere. That is a bug that passes a
+click-test.
+
+This rule therefore **stays in force**: a shipped `tool-cell-schema` declares
+**one** action id. A second choice belongs in the **rows**: give each row its
+own fields (`{"profile": "$profile", "hours": "$hours"}`) so one id does
+different things per row — see the `.model` tool for the worked example. Ids
+that only chat or the PWA calls stay out of the schema; they may live in
+`tool-actions`.
+
+**Lifted when solaris-android ≥ `<version>`** — the version that renders the
+titled chooser (contract handed over at solarisbay#1374, awaiting that number).
+From then on a schema may declare several ids, and the author owes one ordering
+duty: an app older than that version still runs the **first** fillable id, so
+the safest, least surprising action goes first (for `.model`: the shortest
+lease, never "until tomorrow").
 
 ## `tool-action-params` — where an action's params come from
 
