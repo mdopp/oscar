@@ -35,7 +35,14 @@ therefore cannot cleanly inject its own JS.
 A `.tool` is a `templates/solaris/skills/<id>/SKILL.md` with frontmatter:
 `tool-id`, `tool-label`, `tool-api-path` (+ optional `tool-search-path` and
 `tool-compose-path`), `tool-actions: [action.id, …]`, and a
-**`tool-cell-schema`** (see below). `tool-compose-path` (#1213) is the tool's own
+**`tool-cell-schema`** (see below). An entry of `tool-actions` may also be an
+object `{id, title}` (#1382) carrying the label a chooser shows for that action;
+a bare id means "untitled". The catalog serves both views of the same list, in
+declaration order: `tool-actions` stays the bare-id list every consumer already
+reads, and `tool-actions-titled` carries `[{id, title}]` with `title` null when
+untitled — always objects, so a consumer parses one shape. The titles do not
+move into `tool-actions` itself because a consumer that reads that list as plain
+strings drops an object entry silently and would end up with no action at all. `tool-compose-path` (#1213) is the tool's own
 statement that it HAS a create path, and the deep link that opens it —
 `#/p/<tool-id>/new`; a consumer that can't render a card, such as an Android 1×1
 tile, offers a "create" tile only for tools that declare one. `tool-item-id-field`
