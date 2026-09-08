@@ -26,21 +26,7 @@
   },
   "CHAT_PORT": {
     "type": "text",
-    "description": "Loopback port the Solaris Engine listens on, i.e. the `solaris` template's CHAT_PORT. Default `8787`. Only the host-side lease unit uses it: it POSTs `/api/model-lease` to load Qwen for the duration of a PI WEB session. That endpoint carries no token — being able to reach it on loopback IS the authorisation — which is why the lease is held by a systemd unit on the host and not from inside this pod.",
+    "description": "Loopback port the Solaris Engine listens on, i.e. the `solaris` template's CHAT_PORT. Default `8787`. The post-deploy uses it once per deploy, to give back a coding lease still filed under the holder `pi-web` by the retired lease unit (#1392) — PI WEB itself never asks for a lease any more; that is the model tile's job. The endpoint carries no token — being able to reach it on loopback IS the authorisation — which is why only a host-side script can call it and never this pod, which has its own network namespace.",
     "default": "8787"
-  },
-  "PI_WEB_START_ON_BOOT": {
-    "type": "select",
-    "description": "Whether PI WEB comes up on its own when the box boots. Default `false`, and that default is the point: ServiceBay writes `[Install] WantedBy=default.target` into every `.kube` unit it renders, so without this the box would start PI WEB after every reboot — and the host lease unit bound to it would take the coding lease, loading Qwen, moving voice onto the CPU and leaving the household assistant slow for up to four hours, with nobody having asked for a coding session (#1373). The post-deploy therefore strips that section back out and reloads the generator. Set to `true` only if you want PI WEB running unattended; then the platform's autostart is left alone and the deploy no longer restores the previous run state either.",
-    "options": [
-      "true",
-      "false"
-    ],
-    "default": "false"
-  },
-  "PI_WEB_LEASE_TTL_SECONDS": {
-    "type": "text",
-    "description": "How long a coding lease is asked for, in seconds, and therefore how long Qwen stays loaded after the last renewal is missed. Default `14400` (4 hours) — the maximum the engine accepts, and the box's own lease duration. This is a safety net, not the schedule: the unit renews after a third of the window while PI WEB runs and releases the lease when it stops. Lowering it means the household gets Gemma back sooner if the box loses the unit; raising it above 4 hours is refused by the engine.",
-    "default": "14400"
   }
 }

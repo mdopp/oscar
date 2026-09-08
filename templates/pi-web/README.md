@@ -81,84 +81,57 @@ Three details that are not obvious:
   all, so a dummy value is what makes them appear. Upstream's own Ollama
   example does the same.
 - **Both aliases are listed.** llama-server serves one model at a time: the
-  coding alias answers while the lease is held, the household alias otherwise.
-  A list with only one of them would name a model that is absent for half the
-  day.
+  coding alias answers while the lease is held from the model tile, the
+  household alias otherwise. A list with only one of them would name a model
+  that is absent for half the day.
 
-## How the coding lease is held
+## The model it answers on, and how Qwen is requested
 
 The household model stays Gemma 4 E4B (#1318/#1325). Qwen 3.8 27B is what the
-**coding lease** loads, and that lease is an endpoint of the Solaris Engine —
-`POST /api/model-lease {"model": "coding", "ttl_s": …, "holder": "pi-web"}`
-(contract mdopp/foundry-chronicle#321, holder semantics #1347).
+**coding lease** loads, and that lease is an endpoint of the Solaris Engine.
+PI WEB does not ask for it: **Qwen über die Modell-Kachel anfordern; pi läuft
+sonst auf dem Haushaltsmodell.** The tile is the model widget in Solaris
+(#1374/#1381) — reachable from the phone's home screen, without a development
+tool running — and it holds the window under its own holder.
 
-That endpoint carries no token: it is loopback-only and being able to reach it
-*is* the authorisation, so the engine binds `127.0.0.1` alone. An isolated pod
-cannot call it — `host.containers.internal` maps to the host's LAN address,
-where nothing listens. Widening the engine's bind to fix that would expose far
-more than a lease, so **the lease is held on the host instead**: the post-deploy
-copies itself to `{{DATA_DIR}}/pi-web/pi-web-lease.py` and installs a systemd
-user unit
+So PI WEB simply talks to `http://host.containers.internal:11435/v1` and uses
+whatever llama-server currently serves: the coding alias while somebody holds
+the lease, the household alias otherwise. Both are listed in `models.json` for
+exactly that reason; picking the one that is not loaded is a request llama-server
+answers with the model it has.
 
-```ini
-[Unit]
-After=pi-web.service
-BindsTo=pi-web.service
-[Service]
-Environment=DATA_DIR=…
-ExecStart=… pi-web-lease.py hold
-ExecStopPost=… pi-web-lease.py release
-[Install]
-WantedBy=pi-web.service
-```
+### The retired lease unit (#1392)
 
-so systemd starts it with PI WEB and stops it with PI WEB. The `hold` loop
-follows the contract's state machine:
+Until v0.63 the post-deploy installed a host-side systemd unit
+`pi-web-model-lease.service`, `BindsTo=pi-web.service`, that took the coding
+lease whenever PI WEB started. That coupling is what forced PI WEB to stay
+switched off (#1373) — a reboot, or ServiceBay's own start on every deploy,
+would otherwise load Qwen, move voice onto the CPU and leave the household
+assistant slow for up to four hours nobody asked for.
 
-| answer | what the unit does |
-|---|---|
-| `200 ready` | logs the alias, sleeps `renew_after`, POSTs again to renew |
-| `202 preparing` | polls `GET` every `retry_after` until `ready` (15 min ceiling) |
-| `409 held` | logs who holds it and carries on with whatever model is loaded; asks again in 5 min |
-| unreachable | logs it, carries on, retries in a minute |
+The upgrade retires it rather than deleting it quietly: the post-deploy stops
+the unit, `disable`s it (which is what drops the `pi-web.service.wants` link —
+a unit file removed while still enabled comes back with the next PI WEB start),
+removes the unit file and the `{{DATA_DIR}}/pi-web/pi-web-lease.py` script copy,
+and gives back a window still filed under holder `pi-web` — `GET` first, `DELETE`
+only if it is ours, so the model tile's own window is never touched.
 
-`ExecStopPost` sends `DELETE {"holder": "pi-web"}`, which releases only this
-service's own window — a `409` there means somebody else's lease and is left
-alone. The TTL (4 h by default, the engine's maximum) is the safety net for a
-box that loses the unit, not the schedule.
+## Why it now runs around the clock
 
-## Why it does not start on its own
+PI WEB runs like any other service on the box: `pi.<publicDomain>` answers
+without anybody starting anything first. ServiceBay's kube-write path emits
+`[Install] WantedBy=default.target` into every `.kube` unit it renders, which is
+what Quadlet turns into the `default.target.wants` link, and the post-deploy no
+longer strips it back out. A box upgraded from #1373 carries a `.kube` this
+template *stripped*, and ServiceBay only rewrites that file when the rendered
+spec changed — so the post-deploy adds the section back when it is missing,
+reloads the generator, and starts the service. (`systemctl enable` is not the
+tool for it: a Quadlet-generated unit cannot be enabled; the generator makes
+the link from `[Install]` itself.)
 
-PI WEB is started by the operator when they want a coding session, and by
-nobody else. That is not the default it would otherwise get: ServiceBay's
-kube-write path emits `[Install] WantedBy=default.target` into every `.kube`
-unit it renders and takes no annotation to say otherwise, so Quadlet links
-`pi-web.service` into `default.target.wants` and the box brings it up after
-every reboot. With it comes `pi-web-model-lease.service`, which takes the
-coding lease — Qwen loaded, voice on the CPU, the household assistant slow for
-up to four hours, for a session nobody started (#1373).
-
-So the post-deploy strips that `[Install]` section back out of
-`~/.config/containers/systemd/pi-web.kube` and reloads the generator. Setting
-`PI_WEB_START_ON_BOOT` to `true` leaves the platform's section alone for an
-operator who does want it up unattended.
-
-The deploy itself has the same problem one step earlier: ServiceBay starts (or
-restarts) the service before it runs the post-deploy, so a deploy would take
-the lease on a box where PI WEB had been off for days. The pre-deploy run state
-cannot be read at that point — the start has already happened — so the lease
-unit's two hooks, which are exactly a PI WEB start and a PI WEB stop, append
-`<epoch> running|stopped` to `{{DATA_DIR}}/pi-web/run-state.log`. The
-post-deploy restores the newest entry written *before* the `.kube` file's
-mtime, i.e. the last transition the operator caused; no entry at all means
-nobody has had PI WEB up since this landed, and it is stopped. Two consequences
-worth knowing:
-
-- a fresh install ends **stopped** — start it from the ServiceBay UI or with
-  `systemctl --user start pi-web`;
-- because the on-disk `.kube` no longer matches what ServiceBay renders, its
-  `specChanged` check is true on every deploy, so a running PI WEB is always
-  restarted by a redeploy.
+The run-state log of #1373/#1377/#1378 is gone with the reason for it: nothing
+has to remember whether the operator had PI WEB running, because the answer is
+now always "yes".
 
 ## Not in the `solarisbay` stack
 
@@ -172,10 +145,10 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   login the UI loads over WebSocket.
 - The model picker lists the alias llama-server currently reports
   (`curl http://127.0.0.1:11435/v1/models`).
-- `journalctl --user -u pi-web-model-lease` shows `coding lease held` with the
-  alias, and `coding lease released` after `systemctl --user stop pi-web`.
-- After a deploy, `systemctl --user is-enabled pi-web` is **disabled** and
-  `grep Install ~/.config/containers/systemd/pi-web.kube` finds nothing — the
-  reboot no longer takes the coding lease.
+- `systemctl --user status pi-web-model-lease` reports **not-found** and
+  `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the
+  service is up now and comes back after a reboot.
+- `curl -s http://127.0.0.1:8787/api/model-lease` names no holder `pi-web`
+  until somebody takes the lease from the model tile.
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
