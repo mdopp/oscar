@@ -103,7 +103,25 @@ def test_the_app_data_is_kept(backup):
 
 
 def test_the_cluster_dir_the_broker_and_media_are_dropped(backup):
-    assert set(backup["exclude"]) == {"pgdata", "redis", "media"}
+    assert set(backup["exclude"]) == {
+        "pgdata",
+        "redis",
+        "media",
+        "data/log",
+        "data/celerybeat-schedule.db",
+    }
+
+
+def test_celery_logs_and_schedule_state_are_excluded_subpaths_of_data(backup):
+    # #1389: these two subpaths of the included `data` dir carried ~20 of a
+    # 22 MB tar (rotated celery worker logs + celerybeat's runtime schedule
+    # state). The platform contract lets an exclude name a path under an
+    # included dir (backup-worker's `collectDirFiles`/`isExcluded` walk `data`
+    # and drop anything matching or nested under an exclude entry) — assert
+    # both subpaths stay excluded without narrowing `include` off `data`.
+    assert backup["include"] == ["data"]
+    assert "data/log" in backup["exclude"]
+    assert "data/celerybeat-schedule.db" in backup["exclude"]
 
 
 def test_media_exclusion_carries_the_operator_decision(raw):

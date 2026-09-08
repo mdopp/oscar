@@ -57,6 +57,12 @@ metadata:
         - pgdata
         # Celery broker state, rebuilt by the next task run.
         - redis
+        # Rotated celery worker logs (celery.log.1 .. .13, ~1 MB each) — grow
+        # with rotation and carry nothing a restore needs (#1389: ~20 of the
+        # 22 MB tar was this one subdir).
+        - data/log
+        # Celery beat's schedule state, rebuilt on the next task run.
+        - data/celerybeat-schedule.db
         # Operator decision, 2026-09-07: the NAS-config backup (FritzBox stick)
         # is for parameters, not data. media (scanned originals, ~105 of ~107 MB
         # per run) blew the stick's capacity — five runs on 2026-09-07 wrote
