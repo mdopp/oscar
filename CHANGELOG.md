@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.63.0](https://github.com/mdopp/solarisbay/compare/v0.62.0...v0.63.0) (2026-09-08)
+
+
+### Features
+
+* **skill:** show the active model, its end time and a running swap on the tile ([8868edf](https://github.com/mdopp/solarisbay/commit/8868edf409fa3711c974a7b6ac75ba05c244303e)), closes [#1385](https://github.com/mdopp/solarisbay/issues/1385)
+
 ## [0.62.0](https://github.com/mdopp/solarisbay/compare/v0.61.0...v0.62.0) (2026-09-08)
 
 
