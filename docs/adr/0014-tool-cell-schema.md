@@ -29,6 +29,23 @@ plain field name.
 `actions` references **`action.id` only** — the ids the def already lists in its
 `tool-actions` frontmatter. No inline JS or handlers live in the schema.
 
+### One action id per tool — until titled actions land (#1381 B)
+
+`actions` is a list at the **tool**, not at the row, and a consumer resolves
+**exactly one** entry per row: the first id whose `tool-action-params` mapping
+that row can fill wins (`ToolCells.resolveAction` in mdopp/solaris-android). So
+**a second id fillable from the same row fields is unreachable** — every row
+runs the first one, the button reacts, something happens, and it is the same
+something everywhere. That is a bug that passes a click-test.
+
+Until part B of #1381 lets `tool-actions` carry `{id, title}` objects and the
+app renders a titled chooser, a shipped `tool-cell-schema` therefore declares
+**one** action id. A second choice belongs in the **rows**: give each row its
+own fields (`{"profile": "$profile", "hours": "$hours"}`) so one id does
+different things per row — see the `.model` tool for the worked example. Ids
+that only chat or the PWA calls stay out of the schema; they may live in
+`tool-actions`.
+
 ## `tool-action-params` — where an action's params come from
 
 An action id alone is not enough to call `POST /api/action-callback`, which wants

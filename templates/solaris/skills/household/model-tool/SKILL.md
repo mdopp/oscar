@@ -8,28 +8,38 @@ tool-label: Modell
 command: .model
 tool-api-path: /api/portal/models
 tool-item-id-field: id
-tool-actions: model.lease, model.lease.1h, model.lease.2h, model.lease.4h, model.lease.until_morning, model.release
-tool-cell-schema: {"id": "id", "title": "title", "badge": "status_text", "meta": ["meta"], "actions": ["model.lease.1h", "model.lease.4h", "model.lease.until_morning", "model.release"]}
-tool-action-params: {"model.lease": {"model": "$id", "until": "$until"}, "model.lease.1h": {"model": "$id"}, "model.lease.2h": {"model": "$id"}, "model.lease.4h": {"model": "$id"}, "model.lease.until_morning": {"model": "$id"}, "model.release": {"model": "$id"}}
-version: 1.0.0
+tool-actions: model.set, model.lease, model.release
+tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "actions": ["model.set"]}
+tool-action-params: {"model.set": {"profile": "$profile", "hours": "$hours"}}
+version: 2.0.0
 author: Solaris
 license: MIT
 ---
 
 # Solaris — Modell (`.model`)
 
-**Usage:** `.model` zeigt eine Zeile je Profil — welches Modell gerade geladen
-ist, wer es hält und bis wann — und schaltet auf Knopfdruck um.
+**Usage:** `.model` zeigt je Wahl eine Zeile — welches Modell wie lange laufen
+soll — und schaltet auf Knopfdruck um.
 
 | Zeile | Was sie bedeutet |
 |---|---|
-| **Haushalt (Gemma)** | der Normalzustand; die Karte gehört dem Haus |
-| **Programmieren (Qwen)** | die ganze Grafikkarte für einen Programmierlauf |
-| **Foundry (Gemma 12B)** | ein Foundry-Abend; Solaris antwortet weiter, nur langsamer |
+| **Haushalt (freigeben)** | die Karte gehört wieder dem Haus — der Normalzustand |
+| **Programmieren · 1 h / 4 h / bis morgen 07:00** | die ganze Grafikkarte für einen Programmierlauf |
+| **Foundry · 1 h / 4 h / bis morgen 07:00** | ein Foundry-Abend; Solaris antwortet weiter, nur langsamer |
 
-Ein Knopf nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres":
-1 Std, 4 Std oder „bis morgen 07:00". Danach kommt sie von selbst zurück —
-niemand muss daran denken. `Freigeben` holt sie sofort zurück.
+Ein Tipp nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres".
+Danach kommt sie von selbst zurück — niemand muss daran denken. Unter jedem
+Titel steht der Stand: „nicht geladen", „gerade geladen · noch 42 Min",
+„gerade geladen · bis morgen 07:00".
+
+## Warum die Zeile die Wahl ist
+
+Die Kachel löst **genau eine** Aktion je Werkzeug auf (ADR 0014): die erste
+deklarierte Id, deren Parameter die Zeile füllen kann, gewinnt — eine zweite Id
+aus denselben Feldern ist unerreichbar. Ein Profil mit drei Dauer-Knöpfen wäre
+also ein Profil mit dreimal demselben Knopf. Darum ist jede Kombination aus
+Profil und Dauer eine eigene Zeile, und die Zeile trägt beides: `profile` und
+`hours`. Betitelte Aktionen je Zeile kommen mit #1381 B.
 
 ## Warum das Widget die Zeit hält, nicht das Telefon
 
@@ -41,23 +51,23 @@ widget`) und erneuert es bis zur gewählten Endzeit, dann gibt sie es zurück
 Deadline). Eine automatische Verlängerung gibt es nicht: das gewählte Ende ist
 das Ende.
 
-- **Zeilen:** `GET /api/portal/models` (`tool-api-path`) — je Profil `id`,
-  `title`, `alias`, `state` (`active` = gerade geladen / `available` /
-  `preparing` / `releasing`), `status_text`, `holder`, `expires_at`,
-  `remaining_s` und ein fertiger `meta`-Satz („gerade geladen · bis 16:30").
-  Denselben Inhalt liefert `GET /napi/portal/models` über den Geräte-Token, den
-  Weg, den die Kachel geht.
-- **Aktionen:** `model.lease` nimmt ein Fenster (`model`, `until` als Dauer
-  `1h`/`2h`/`4h` oder als Zielzeit `morgen 07:00` / `2026-09-09T07:00`, bis
-  24 h); `model.release` gibt es zurück. `model` = `household` heißt ebenfalls
-  freigeben, damit die Haushaltszeile ein vollwertiger Knopf ist und kein
-  Sonderfall.
-- **Feste Dauern als eigene Aktions-Ids.** Ein `tool-action-params`-Wert ist ein
-  flaches Literal oder ein `$feld` (ADR 0014) — eine RemoteViews-Zeile kann
-  keine Auswahlliste zeichnen. Darum sind `model.lease.1h`, `model.lease.4h` und
-  `model.lease.until_morning` eigene Aktionen mit fest verdrahteter Dauer;
-  `model.lease` mit freiem `until` bleibt für Chat und PWA und erscheint in der
-  Kachel gar nicht erst, weil die Zeile kein `until`-Feld liefert.
+- **Zeilen:** `GET /api/portal/models` (`tool-api-path`) — je Wahl `id`,
+  `title`, `profile`, `hours`, `alias`, `state` (`active` = gerade geladen /
+  `available` / `preparing` / `releasing`), ein fertig formulierter
+  `status_text` („gerade geladen · noch 42 Min") und `detail` (das Modell:
+  „Qwen 27B"). Denselben Inhalt liefert `GET /napi/portal/models` über den
+  Geräte-Token, den Weg, den die Kachel geht. Rohe Zeitfelder gibt es nicht
+  mehr: eine Kachel zeigt ein Feld unverändert an, und „1757336400" ist keine
+  Uhrzeit.
+- **`hours`:** eine Zahl, Brüche eingeschlossen — „bis morgen 07:00" ist um
+  Viertel nach sechs abends 12,75 und wird bei **jedem** Abruf neu gerechnet,
+  damit die Zeile nicht über den Morgen hinausschießt. `0` heißt freigeben. Die
+  Aktion rundet auf ganze Sekunden **auf** und deckelt bei 24 Stunden.
+- **Aktionen:** `model.set` (`profile`, `hours`) ist die **einzige** Aktion der
+  Kachel. `model.lease` (`model`, `until` als Dauer `1h`/`2h`/`4h` oder als
+  Zielzeit `morgen 07:00` / `2026-09-09T07:00`, bis 24 h) und `model.release`
+  bleiben für Chat und PWA, wo eine frei gesprochene Zeit möglich ist; im
+  `tool-cell-schema` stehen sie nicht, sonst wäre `model.set` unerreichbar.
 - **Umschalten:** ein anderes Profil, während eines läuft, gibt erst zurück und
   nimmt dann — die Kachel zeigt dabei `wird freigegeben` und danach
   `wird geladen`. Hält ein **anderer** Dienst die Karte, sagt die Aktion das im
