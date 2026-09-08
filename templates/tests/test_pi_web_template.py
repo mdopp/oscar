@@ -98,15 +98,19 @@ def test_published_port_has_a_host_port(pod):
     assert published["hostPort"] == 8504
 
 
-def test_both_containers_keep_tini_as_entrypoint(pod):
+def test_every_container_keeps_tini_as_entrypoint(pod):
     """`command:` in kube YAML replaces ENTRYPOINT; the sessions' children
     would then never be reaped."""
     for container in pod["spec"]["containers"]:
         assert "command" not in container
-        assert container["args"] in (["pi-web-sessiond"], ["pi-web-server"])
+        assert container["args"] in (
+            ["pi-web-sessiond"],
+            ["pi-web-server"],
+            ["pi-web-autoloop"],
+        )
 
 
-def test_the_two_processes_share_the_state_volume(pod):
+def test_the_processes_share_the_state_volume(pod):
     """web reaches sessiond over a unix socket on /data — a container missing
     that mount comes up and answers nothing."""
     for container in pod["spec"]["containers"]:
