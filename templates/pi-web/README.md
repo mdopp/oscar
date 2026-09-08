@@ -133,6 +133,65 @@ The run-state log of #1373/#1377/#1378 is gone with the reason for it: nothing
 has to remember whether the operator had PI WEB running, because the answer is
 now always "yes".
 
+## Git-Zugang für private Repositories
+
+Eine PI-WEB-Sitzung ist eine Shell in einem Ordner unter `/workspace`. „Add a
+project" zeigt auf einen Ordner, **der schon existiert** — geklont wird im
+Terminal, und dafür braucht der Container Zugangsdaten, sonst bleibt ein
+`git clone` eines privaten Repositories an der Anmeldung hängen (#1395).
+
+**Was der Betreiber einträgt** — im ServiceBay-Assistenten, einmal:
+
+| Variable | Wert |
+|---|---|
+| `PI_WEB_GIT_TOKEN` | das Token (Typ `secret`, kein Vorgabewert, wird nicht erzeugt) |
+| `PI_WEB_GIT_USER` | `x-access-token` (GitHub-Konvention; GitLab: `oauth2`) |
+| `PI_WEB_GIT_HOST` | `github.com` |
+
+**Ein GitHub-Token dafür anlegen:** GitHub → Settings → Developer settings →
+Personal access tokens → **Fine-grained tokens** → *Generate new token*.
+*Repository access* auf **Only select repositories** stellen und genau die
+Repositories auswählen, in denen hier gearbeitet wird; unter *Repository
+permissions* reicht **Contents: Read and write** — mehr braucht `git clone`,
+`fetch` und `push` nicht. Eine Laufzeit setzen (90 Tage sind ein guter
+Kompromiss) und den Wert direkt in den Assistenten kopieren; GitHub zeigt ihn
+nur einmal.
+
+**Wie das Token in den Container kommt.** Nicht über `sessiond` oder `web`,
+sondern nur über einen eigenen Init-Container `pi-web-git-credentials`, der als
+`USER node` läuft und daraus einmal pro Start schreibt:
+
+- `/data/pi-web/git-credentials`, Modus **0600**, Eigentümer `node` — das
+  Format des eingebauten Helfers `git credential-store`, eine Zeile
+  `https://<user>:<token>@<host>`.
+- `/data/home/.gitconfig` (`$HOME` im Image) mit
+  `credential.helper = store --file=/data/pi-web/git-credentials` und
+  `safe.directory` für `/workspace` und `*` — ohne das verweigert Git jeden
+  Checkout, dessen Dateien einer anderen UID gehören.
+
+Der Init-Container muss **nach** `pi-web-data-perms` laufen: dessen
+`chmod -R a+rwX /data` würde eine 0600-Datei bei jedem Start wieder öffnen.
+
+**Was das schützt — und was nicht.** Das Token steht in keinem Argument, in
+keiner Remote-URL und in keiner Shell-History; es taucht in `ps` nicht auf und
+wird nirgends ausgegeben. `sessiond` und `web` tragen die Variable *nicht*, eine
+Sitzung findet sie also nicht in ihrer eigenen Umgebung. Sie kann die Datei
+`/data/pi-web/git-credentials` aber lesen — sie läuft als `node`, und genau das
+ist der Zweck der Datei; wer eine Sitzung hat, hat das Token. Und weil
+ServiceBay keinen Secret-Mount kennt (jedes Secret dieses Repositories erreicht
+seinen Pod als gerendertes `value:`, siehe `templates/solaris/template.yml`),
+ist der Wert für `podman inspect` dieses einen Init-Containers sichtbar. Der
+Zuschnitt ist deshalb das Token selbst: fine-grained, nur die Repositories, nur
+`Contents`.
+
+Ein geleertes `PI_WEB_GIT_TOKEN` entfernt die Datei beim nächsten Start wieder —
+Widerrufen heißt also: Token auf GitHub löschen, Feld im Assistenten leeren,
+neu ausrollen.
+
+> Nach einem Upgrade sind die drei Variablen neu: ServiceBay übernimmt für neue
+> Variablen keine Installations-Überschreibungen, das Feld muss im Assistenten
+> einmal ausgefüllt werden.
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -152,3 +211,7 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   until somebody takes the lease from the model tile.
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
+- In einer Sitzung: `git clone https://github.com/<privates Repo>.git` läuft ohne
+  Rückfrage durch, `git -C /workspace/<name> fetch` ebenso. `ls -l
+  /data/pi-web/git-credentials` zeigt `-rw------- node`, und
+  `grep -r <Token-Präfix> ~/.bash_history` sowie `ps auxww` finden nichts.

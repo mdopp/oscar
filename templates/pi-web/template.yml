@@ -56,6 +56,56 @@ spec:
       name: pi-web-data
     - mountPath: /workspace
       name: pi-web-workspace
+
+  # git-credentials — the only place in this pod where the git token exists.
+  # It runs as the image's `USER node`, so the store file it writes is owned by
+  # the UID the sessions run as and can be 0600; it has to come *after* the
+  # perms init above, whose recursive `a+rwX` would otherwise reopen it on
+  # every start. `sessiond` and `web` deliberately do NOT carry
+  # PI_WEB_GIT_TOKEN: a session's own shell therefore cannot read the token out
+  # of its environment, only use it through git. Nothing here puts the token in
+  # argv, in a remote URL or on stdout — `sh -c` sees the variable's *name*.
+  #
+  # ServiceBay has no secret-mount mechanism: every secret in this repo reaches
+  # its pod as a rendered `value:` (templates/solaris/template.yml does it for
+  # HASS_TOKEN, PUSH_TOKEN, CALDAV_PASSWORD …), so the value is readable by
+  # `podman inspect` for whoever can already run podman as the service user.
+  # Confining it to this one short-lived init container is what that buys.
+  - name: pi-web-git-credentials
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    env:
+    - name: PI_WEB_GIT_TOKEN
+      value: "{{PI_WEB_GIT_TOKEN}}"
+    - name: PI_WEB_GIT_USER
+      value: "{{PI_WEB_GIT_USER}}"
+    - name: PI_WEB_GIT_HOST
+      value: "{{PI_WEB_GIT_HOST}}"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      umask 077
+      store=/data/pi-web/git-credentials
+      config=/data/home/.gitconfig
+      user=${PI_WEB_GIT_USER:-x-access-token}
+      host=${PI_WEB_GIT_HOST:-github.com}
+      mkdir -p /data/pi-web /data/home
+      if [ -n "${PI_WEB_GIT_TOKEN:-}" ]; then
+        printf 'https://%s:%s@%s\n' "$user" "$PI_WEB_GIT_TOKEN" "$host" >"$store"
+        chmod 600 "$store"
+      else
+        rm -f "$store"
+      fi
+      unset PI_WEB_GIT_TOKEN
+      git config --file "$config" --replace-all credential.helper "store --file=$store"
+      git config --file "$config" --unset-all safe.directory || true
+      git config --file "$config" --add safe.directory /workspace
+      git config --file "$config" --add safe.directory '*'
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser

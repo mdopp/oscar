@@ -62,7 +62,10 @@ def pod(template_text) -> dict:
     variables = json.loads((PI_WEB / "variables.json").read_text(encoding="utf-8"))
     rendered = template_text
     for key, spec in variables.items():
-        rendered = rendered.replace("{{" + key + "}}", str(spec["default"]))
+        # A `secret` the operator leaves blank has no default at all; ServiceBay
+        # prunes the env entry it renders to, which is the case the credential
+        # init has to survive.
+        rendered = rendered.replace("{{" + key + "}}", str(spec.get("default", "")))
     for key, value in (("DATA_DIR", "/mnt/data/stacks"), ("PUBLIC_DOMAIN", "example")):
         rendered = rendered.replace("{{" + key + "}}", value)
     return yaml.safe_load(rendered)
@@ -482,3 +485,136 @@ def test_the_readme_says_where_qwen_comes_from(variables):
     readme = (PI_WEB / "README.md").read_text(encoding="utf-8")
     assert "Modell-Kachel" in readme
     assert "Haushaltsmodell" in readme
+
+
+# ── git credentials for private clones (#1395 slice A) ──────────────────────
+
+
+GIT_INIT = "pi-web-git-credentials"
+
+
+@pytest.fixture(scope="module")
+def git_init(pod) -> dict:
+    return next(c for c in pod["spec"]["initContainers"] if c["name"] == GIT_INIT)
+
+
+@pytest.fixture(scope="module")
+def git_init_script(git_init) -> str:
+    assert git_init["args"][:2] == ["sh", "-c"]
+    return git_init["args"][2]
+
+
+def test_the_git_token_is_a_secret_the_operator_types_in(variables):
+    """No default and `noAutoGenerate`: a generated random value would write a
+    credential file that fails every clone with a 401 and look configured."""
+    token = variables["PI_WEB_GIT_TOKEN"]
+    assert token["type"] == "secret"
+    assert token["noAutoGenerate"] is True
+    assert "default" not in token
+
+
+def test_the_git_user_and_host_are_plain_text_with_conventional_defaults(variables):
+    assert variables["PI_WEB_GIT_USER"]["type"] == "text"
+    assert variables["PI_WEB_GIT_USER"]["default"] == "x-access-token"
+    assert variables["PI_WEB_GIT_HOST"]["type"] == "text"
+    assert variables["PI_WEB_GIT_HOST"]["default"] == "github.com"
+
+
+def test_only_the_credential_init_ever_sees_the_token(pod):
+    """The point of the whole arrangement: a session's shell runs in `sessiond`
+    and `web`, so `env` there must not name the token at all — it can use the
+    credential through git and cannot read it back out of its environment."""
+    carriers = [
+        c["name"]
+        for c in pod["spec"]["initContainers"] + pod["spec"]["containers"]
+        if any(e["name"] == "PI_WEB_GIT_TOKEN" for e in c.get("env", []))
+    ]
+    assert carriers == [GIT_INIT]
+
+
+def test_the_credential_init_runs_after_the_perms_init(pod):
+    """`chmod -R a+rwX /data` would reopen a 0600 store file to the world on
+    every start; order is what keeps the mode."""
+    order = [c["name"] for c in pod["spec"]["initContainers"]]
+    assert order.index("pi-web-data-perms") < order.index(GIT_INIT)
+
+
+def test_the_credential_init_runs_as_the_image_user(git_init):
+    """No `runAsUser: 0` override — the store file must be owned by the UID the
+    sessions run as, or a 0600 file is one they cannot read."""
+    assert "securityContext" not in git_init
+    mounts = {m["mountPath"] for m in git_init["volumeMounts"]}
+    assert mounts == {"/data"}
+
+
+def test_the_store_file_is_written_private(git_init_script):
+    assert "umask 077" in git_init_script
+    assert "chmod 600" in git_init_script
+    assert "store=/data/pi-web/git-credentials" in git_init_script
+
+
+def test_git_is_pointed_at_the_store_and_trusts_the_workspace(git_init_script):
+    """Without the helper every clone prompts; without `safe.directory` git
+    refuses a checkout whose files another UID owns."""
+    assert 'credential.helper "store --file=$store"' in git_init_script
+    assert "--add safe.directory /workspace" in git_init_script
+    assert "--add safe.directory '*'" in git_init_script
+    assert "--unset-all safe.directory" in git_init_script
+
+
+def test_the_token_never_reaches_argv_a_url_or_a_log(template_text, git_init_script):
+    """`sh -c` carries the variable's *name*; the value goes through the
+    environment into a `printf` redirect and nothing echoes it."""
+    assert "$PI_WEB_GIT_TOKEN" in git_init_script
+    for banned in ("echo", "set -x", "git clone", "--verbose"):
+        assert banned not in git_init_script, banned
+    assert "{{PI_WEB_GIT_TOKEN}}@" not in template_text
+    assert git_init_script.count("PI_WEB_GIT_TOKEN") == 3  # :- guard, printf, unset
+    assert "unset PI_WEB_GIT_TOKEN" in git_init_script
+
+
+def test_a_blank_token_removes_a_stored_one(git_init_script):
+    """ServiceBay prunes an env entry that renders empty, so clearing the
+    secret in the wizard has to take the credential off the box too."""
+    assert 'rm -f "$store"' in git_init_script
+
+
+def test_the_script_defaults_match_the_declared_ones(git_init_script, variables):
+    """The shell fallbacks exist because a cleared text variable is pruned like
+    an empty secret; drifting from variables.json would authenticate as
+    somebody else's convention."""
+    assert (
+        "user=${PI_WEB_GIT_USER:-%s}" % variables["PI_WEB_GIT_USER"]["default"]
+        in git_init_script
+    )
+    assert (
+        "host=${PI_WEB_GIT_HOST:-%s}" % variables["PI_WEB_GIT_HOST"]["default"]
+        in git_init_script
+    )
+
+
+def test_no_token_literal_is_committed_anywhere():
+    """A pasted real token in a template, a README or the Dockerfile would ship
+    to GHCR and to every box that installs this."""
+    prefixes = ("github_pat_", "ghp_", "gho_", "ghs_", "ghu_", "glpat-")
+    files = list(PI_WEB.glob("*")) + [ROOT / "pi-web" / "Dockerfile"]
+    for path in files:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for prefix in prefixes:
+            assert prefix not in text, f"{path.name}: {prefix}"
+
+
+def test_the_image_ships_git_for_the_credential_helper():
+    """`git credential-store` is part of the git package; no git, no helper —
+    and the init container's `git config` calls would fail the pod's start."""
+    dockerfile = (ROOT / "pi-web" / "Dockerfile").read_text(encoding="utf-8")
+    assert " git " in dockerfile
+
+
+def test_the_readme_explains_which_github_token_to_create():
+    readme = (PI_WEB / "README.md").read_text(encoding="utf-8")
+    assert "fine-grained" in readme
+    assert "Contents" in readme
+    assert "PI_WEB_GIT_TOKEN" in readme
