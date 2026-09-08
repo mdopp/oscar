@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.60.2](https://github.com/mdopp/solarisbay/compare/v0.60.1...v0.60.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **template:** keep pi-web off at boot so the coding lease is never taken unasked ([e8a43b5](https://github.com/mdopp/solarisbay/commit/e8a43b56883e2c811f3f62e203e24102b1665b78)), closes [#1373](https://github.com/mdopp/solarisbay/issues/1373)
+* **template:** stop pi-web unconditionally when restoring its run state ([#1377](https://github.com/mdopp/solarisbay/issues/1377)) ([b1c381d](https://github.com/mdopp/solarisbay/commit/b1c381dec7c3a37ec423441b870f02d255355b4b))
+* **template:** wait for pi-web's own start to settle before stopping it ([#1378](https://github.com/mdopp/solarisbay/issues/1378)) ([4d22578](https://github.com/mdopp/solarisbay/commit/4d22578d84a0b569bb6839067ee8c71aacf975e9))
+
 ## [0.60.1](https://github.com/mdopp/solarisbay/compare/v0.60.0...v0.60.1) (2026-09-08)
 
 
