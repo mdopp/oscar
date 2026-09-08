@@ -85,11 +85,19 @@ from solaris_chat import gpu_lease
 # does not know.
 MODELS = ("foundry", "coding")
 
-# 5 minutes to 4 hours. The floor keeps a lease from expiring inside its own
-# swap (the 12B cold-loads in ~40 s), the ceiling is the box's own default
-# lease duration — ours to enforce, not theirs to exceed.
+# 5 minutes to 24 hours. The floor keeps a lease from expiring inside its own
+# swap (the 12B cold-loads in ~40 s). The ceiling was the box's own default
+# lease duration (4 h) until #1374: the Modell tile lets a resident say "bis
+# morgen 07:00", which at teatime is longer than that, so the cap is a day —
+# the contract addendum on mdopp/foundry-chronicle#321. The deadline is still
+# the outer net and the grace (#1361) still ends a window nobody renews, so a
+# longer ceiling buys a longer *asked-for* window, not a longer orphan.
 TTL_MIN_SECONDS = 300
-TTL_MAX_SECONDS = 14400
+TTL_MAX_SECONDS = 86400
+# What a payload that names no window gets: unchanged at the box's own default
+# lease duration, so raising the ceiling above did not silently give every
+# existing caller a 24-hour window.
+TTL_DEFAULT_SECONDS = 14400
 
 # What a `preparing` answer tells the caller to wait before polling `GET`.
 RETRY_AFTER_SECONDS = 30
@@ -157,7 +165,7 @@ def parse_payload(body: Any) -> tuple[str, int, str]:
     model = body.get("model")
     if not isinstance(model, str) or model.strip() not in MODELS:
         raise ValueError("invalid_model")
-    raw_ttl = body.get("ttl_s", TTL_MAX_SECONDS)
+    raw_ttl = body.get("ttl_s", TTL_DEFAULT_SECONDS)
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl <= 0:
         raise ValueError("invalid_ttl")
     return (

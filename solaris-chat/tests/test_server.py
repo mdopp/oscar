@@ -2161,7 +2161,8 @@ def test_shipped_pack_groups_into_the_four_kinds():
     # command-kind def now.
     assert by_kind["command"] == set()
     # #1006: every existing .tool now ships as a declarative kind:tool plugin
-    # (task is the reference; the rest joined in slice 4).
+    # (task is the reference; the rest joined in slice 4). #1374 added the
+    # Modell tile — the first .tool that never had an inline predecessor.
     assert by_kind["tool"] == {
         "task-tool",
         "note-tool",
@@ -2169,6 +2170,7 @@ def test_shipped_pack_groups_into_the_four_kinds():
         "contacts-tool",
         "photo-tool",
         "home-tool",
+        "model-tool",
         "energy-tool",
     }
     # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
