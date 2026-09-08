@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.1](https://github.com/mdopp/solarisbay/compare/v0.60.0...v0.60.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **autoloop:** drop stale labels from closed issues at mirror and seal ([60737aa](https://github.com/mdopp/solarisbay/commit/60737aa37331ca4f8ec3296bad8f15dce3067fe9)), closes [#1370](https://github.com/mdopp/solarisbay/issues/1370)
+* **template:** keep paperless originals out of the NAS config backup ([970afcc](https://github.com/mdopp/solarisbay/commit/970afccafd7d0c1171c4251f4c0b517e9dfb40e3)), closes [#1369](https://github.com/mdopp/solarisbay/issues/1369)
+
 ## [0.60.0](https://github.com/mdopp/solarisbay/compare/v0.59.1...v0.60.0) (2026-09-07)
 
 
