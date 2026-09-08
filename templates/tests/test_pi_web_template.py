@@ -522,6 +522,21 @@ def test_restore_stops_a_pi_web_that_was_not_running_before(pd, monkeypatch):
     assert calls == [["systemctl", "--user", "stop", "pi-web.service"]]
 
 
+def test_restore_stops_even_when_the_deploys_own_start_is_still_in_flight(
+    pd, monkeypatch
+):
+    """`pod_is_active()` can read `False` while ServiceBay's own start for
+    this deploy is still mid-flight (`Type=notify`, `TimeoutStartSec=600`) —
+    box-verified against #1375, where that stale read skipped the stop and
+    left PI WEB (and the coding lease) running. The stop must not be gated on
+    it."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pd, "pod_is_active", lambda: False)
+    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    pd.restore_run_state("")
+    assert calls == [["systemctl", "--user", "stop", "pi-web.service"]]
+
+
 def test_restore_leaves_a_pi_web_that_was_running_alone(pd, monkeypatch):
     """Stopping it would kill the agent sessions the operator had open — the
     whole reason the run state is recorded rather than assumed."""

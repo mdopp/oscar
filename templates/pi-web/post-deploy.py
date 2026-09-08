@@ -53,11 +53,14 @@ Three responsibilities:
      ServiceBay also *starts* the service on every deploy (`deploy.ts` starts
      or restarts before it runs this script), which is the same lease taken by
      a different route. The pre-deploy run state is not readable from here —
-     by the time this runs the deploy's own start has already happened — so
-     the lease unit records each transition it lives through into a small log,
-     and the state restored below is the newest entry written *before* this
-     deploy rewrote the `.kube` file. No entry at all means nobody has had PI
-     WEB running since this landed: stopped.
+     that start may still be *in flight* when this script runs (`Type=notify`,
+     `TimeoutStartSec=600`), so a live `is-active` read here cannot be trusted
+     either — so the lease unit records each transition it lives through into
+     a small log, and the state restored below is the newest entry written
+     *before* this deploy rewrote the `.kube` file. No entry at all means
+     nobody has had PI WEB running since this landed: stopped. Restoring
+     "stopped" always re-issues the stop rather than checking whether it looks
+     needed first — see `restore_run_state()`.
 
 Idempotent: identical `models.json` is left alone, and the unit is rewritten
 with the same text and re-enabled.
@@ -584,12 +587,18 @@ def keep_off_at_boot() -> bool:
 
 def restore_run_state(desired: str) -> None:
     """Put PI WEB back in the state it was in before ServiceBay's deploy
-    started it. Anything but a recorded `running` means stop."""
+    started it. Anything but a recorded `running` means stop.
+
+    Always issues the stop rather than gating it on `pod_is_active()` first:
+    ServiceBay's own start (`Type=notify`, `TimeoutStartSec=600`) can still be
+    mid-flight when this runs, so an is-active read here can land before
+    systemd has settled, read `False`, and skip the stop — leaving PI WEB (and
+    the coding lease it pulls) running, box-verified against #1375. A `stop`
+    on a unit that is already inactive, or one that is still starting, is a
+    safe no-op / queued job either way.
+    """
     if desired == "running":
         jlog("info", "pi-web:runstate", "PI WEB was running before the deploy; left up")
-        return
-    if not pod_is_active():
-        jlog("info", "pi-web:runstate", "PI WEB is not running; nothing to stop")
         return
     subprocess.run(
         ["systemctl", "--user", "stop", POD_UNIT], check=False, capture_output=True
