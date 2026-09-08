@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.63.1](https://github.com/mdopp/solarisbay/compare/v0.63.0...v0.63.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **template:** keep celery logs out of the paperless NAS backup ([5eb717b](https://github.com/mdopp/solarisbay/commit/5eb717ba754d37c6de2adc83363d0ba4517cc200)), closes [#1389](https://github.com/mdopp/solarisbay/issues/1389)
+
 ## [0.63.0](https://github.com/mdopp/solarisbay/compare/v0.62.0...v0.63.0) (2026-09-08)
 
 
