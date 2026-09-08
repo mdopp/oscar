@@ -2,7 +2,7 @@
 """
 post-deploy hook for the `pi-web` template.
 
-Two responsibilities:
+Three responsibilities:
 
   1. **Point the Pi agent at llama-server.** PI WEB has no LLM configuration of
      its own — the model runtime is the Pi Coding Agent's, and a self-hosted
@@ -38,6 +38,27 @@ Two responsibilities:
      the last POST, which is the net when the whole host went down; this is the
      faster path for the ordinary case where PI WEB simply comes back.
 
+  3. **Keep PI WEB off unless somebody asked for it (#1373).** ServiceBay's
+     kube-write path hard-codes `[Install] WantedBy=default.target` into every
+     `.kube` unit it renders and offers no way for a template to opt out, so
+     Quadlet links pi-web into `default.target.wants` and the box would bring
+     PI WEB up on its own after a reboot — and with it the host lease unit,
+     which takes the coding lease: Qwen loaded, voice on CPU, Solaris muted for
+     up to four hours, without anyone asking. A developer tool the operator
+     starts on demand must not do that, so this strips the `[Install]` section
+     back out of `~/.config/containers/systemd/pi-web.kube` and reloads the
+     generator. `PI_WEB_START_ON_BOOT=true` leaves the platform's section in
+     place for an operator who does want it up at boot.
+
+     ServiceBay also *starts* the service on every deploy (`deploy.ts` starts
+     or restarts before it runs this script), which is the same lease taken by
+     a different route. The pre-deploy run state is not readable from here —
+     by the time this runs the deploy's own start has already happened — so
+     the lease unit records each transition it lives through into a small log,
+     and the state restored below is the newest entry written *before* this
+     deploy rewrote the `.kube` file. No entry at all means nobody has had PI
+     WEB running since this landed: stopped.
+
 Idempotent: identical `models.json` is left alone, and the unit is rewritten
 with the same text and re-enabled.
 
@@ -68,6 +89,13 @@ LEASE_UNIT = "pi-web-model-lease"
 LEASE_SCRIPT = "pi-web-lease.py"
 POD_UNIT = "pi-web.service"
 SYSTEMD_USER_DIR = "~/.config/systemd/user"
+QUADLET_DIR = "~/.config/containers/systemd"
+KUBE_UNIT = "pi-web.kube"
+
+# One line per transition the lease unit lived through — `<epoch> <state>`.
+# Short because only the entries around the last deploy are ever read.
+RUN_STATE_LOG = "run-state.log"
+RUN_STATE_KEEP = 20
 
 # The aliases llama-server reports (`--alias`) for the two profiles this box
 # runs: the coding lease's Qwen, and the household Gemma that answers before
@@ -294,13 +322,60 @@ def models_document(llama_port: str) -> dict:
     }
 
 
-def render_lease_unit(script: str, chat_port: str, ttl: int) -> str:
+def strip_boot_install(kube_text: str) -> str:
+    """The `.kube` unit with its `[Install]` section removed.
+
+    That section is ServiceBay's, not the template's: every kube-write path in
+    the platform emits `[Install] WantedBy=default.target` literally and takes
+    no annotation to say otherwise. Dropping it is what keeps Quadlet from
+    linking pi-web into `default.target.wants` — everything else in the file
+    (`[Kube]`, the platform's `[Service]`/`[Unit]` directives) is left byte for
+    byte as it was.
+    """
+    out: list[str] = []
+    in_install = False
+    for line in kube_text.splitlines(keepends=True):
+        header = line.strip()
+        if header.startswith("[") and header.endswith("]"):
+            in_install = header == "[Install]"
+        if not in_install:
+            out.append(line)
+    return "".join(out)
+
+
+def state_before(log_text: str, cutoff: float) -> str:
+    """The newest recorded run state older than `cutoff` — `""` if none.
+
+    `cutoff` is the mtime of the `.kube` file this deploy wrote, which is the
+    last moment before ServiceBay started the service. The deploy's own start
+    (and the stop half of its restart) are recorded after it and are therefore
+    skipped, so what comes back is the state the operator left PI WEB in.
+    """
+    newest = ""
+    for line in log_text.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            when = float(parts[0])
+        except ValueError:
+            continue
+        if when < cutoff:
+            newest = parts[1]
+    return newest
+
+
+def render_lease_unit(script: str, chat_port: str, ttl: int, data_dir: str) -> str:
     """The host-side unit that owns the window.
 
     `BindsTo` + `WantedBy` on the pod unit is the whole lifecycle: systemd
     starts this with PI WEB and stops it with PI WEB, and `ExecStopPost` gives
     the card back on the way down — including when the pod is stopped by an
     operator, a redeploy or a reboot.
+
+    `DATA_DIR` is here because those same two hooks are the only witnesses of
+    a PI WEB start or stop that survive a redeploy: they write the run-state
+    log the next post-deploy restores from (#1373).
     """
     return (
         "[Unit]\n"
@@ -311,6 +386,7 @@ def render_lease_unit(script: str, chat_port: str, ttl: int) -> str:
         "[Service]\n"
         "Type=simple\n"
         f"Environment=CHAT_PORT={chat_port}\n"
+        f"Environment=DATA_DIR={data_dir}\n"
         f"Environment=PI_WEB_LEASE_TTL_SECONDS={ttl}\n"
         f"ExecStart={sys.executable} {script} hold\n"
         f"ExecStopPost={sys.executable} {script} release\n"
@@ -383,7 +459,7 @@ def install_lease_script(data_dir: str) -> str:
     return dst
 
 
-def install_lease_unit(script: str, chat_port: str, ttl: int) -> bool:
+def install_lease_unit(script: str, chat_port: str, ttl: int, data_dir: str) -> bool:
     if not script:
         return False
     unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
@@ -391,7 +467,7 @@ def install_lease_unit(script: str, chat_port: str, ttl: int) -> bool:
     try:
         os.makedirs(unit_dir, exist_ok=True)
         with open(os.path.join(unit_dir, name), "w", encoding="utf-8") as f:
-            f.write(render_lease_unit(script, chat_port, ttl))
+            f.write(render_lease_unit(script, chat_port, ttl, data_dir))
         os.chmod(os.path.join(unit_dir, name), 0o644)
     except OSError as e:
         jlog(
@@ -405,13 +481,125 @@ def install_lease_unit(script: str, chat_port: str, ttl: int) -> bool:
     subprocess.run(
         ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
     )
+    # `enable`, never `enable --now`: this unit is `BindsTo=pi-web.service`,
+    # which implies `Requires=`, so starting it pulls PI WEB up with it — the
+    # deploy would take the coding lease on a box where nobody asked for PI WEB
+    # at all (#1373). The `WantedBy=pi-web.service` link is what starts it, and
+    # a PI WEB that is already up gets it started explicitly below.
     subprocess.run(
-        ["systemctl", "--user", "enable", "--now", name],
-        check=False,
-        capture_output=True,
+        ["systemctl", "--user", "enable", name], check=False, capture_output=True
     )
+    if pod_is_active():
+        subprocess.run(
+            ["systemctl", "--user", "start", f"{LEASE_UNIT}.service"],
+            check=False,
+            capture_output=True,
+        )
     jlog("info", "pi-web:lease", "lease unit installed", unit=name)
     return True
+
+
+# ── boot behaviour and the run state (#1373) ────────────────────────────────
+
+
+def kube_unit_path() -> str:
+    return os.path.join(os.path.expanduser(QUADLET_DIR), KUBE_UNIT)
+
+
+def pod_is_active() -> bool:
+    out = subprocess.run(
+        ["systemctl", "--user", "is-active", POD_UNIT],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return out.stdout.strip() == "active"
+
+
+def run_state_path(data_dir: str) -> str:
+    return os.path.join(data_dir, "pi-web", RUN_STATE_LOG)
+
+
+def record_run_state(data_dir: str, state: str) -> None:
+    path = run_state_path(data_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        kept = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                kept = f.read().splitlines()[-(RUN_STATE_KEEP - 1) :]
+        kept.append(f"{int(time.time())} {state}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(kept) + "\n")
+    except OSError as e:
+        jlog("warn", "pi-web:runstate", "could not record run state", error=str(e))
+
+
+def run_state_before_deploy(data_dir: str, cutoff: float) -> str:
+    try:
+        with open(run_state_path(data_dir), encoding="utf-8") as f:
+            return state_before(f.read(), cutoff)
+    except OSError:
+        return ""
+
+
+def keep_off_at_boot() -> bool:
+    """Take ServiceBay's `[Install] WantedBy=default.target` back out of the
+    `.kube` unit and reload the generator. No-op once it is gone."""
+    path = kube_unit_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            current = f.read()
+    except OSError as e:
+        jlog(
+            "warn",
+            "pi-web:boot",
+            "could not read the kube unit; PI WEB may still start at boot",
+            path=path,
+            error=str(e),
+        )
+        return False
+    stripped = strip_boot_install(current)
+    if stripped == current:
+        jlog("info", "pi-web:boot", "kube unit already has no [Install]", path=path)
+        return True
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(stripped)
+    except OSError as e:
+        jlog(
+            "error",
+            "pi-web:boot",
+            "could not rewrite the kube unit; PI WEB would start at boot and take the coding lease",
+            path=path,
+            error=str(e),
+        )
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    jlog("info", "pi-web:boot", "pi-web unlinked from default.target", path=path)
+    return True
+
+
+def restore_run_state(desired: str) -> None:
+    """Put PI WEB back in the state it was in before ServiceBay's deploy
+    started it. Anything but a recorded `running` means stop."""
+    if desired == "running":
+        jlog("info", "pi-web:runstate", "PI WEB was running before the deploy; left up")
+        return
+    if not pod_is_active():
+        jlog("info", "pi-web:runstate", "PI WEB is not running; nothing to stop")
+        return
+    subprocess.run(
+        ["systemctl", "--user", "stop", POD_UNIT], check=False, capture_output=True
+    )
+    jlog(
+        "info",
+        "pi-web:runstate",
+        "PI WEB was not running before the deploy; stopped again so the coding lease stays free",
+        recorded=desired or "none",
+    )
 
 
 def hold(chat_port: str, ttl: int) -> int:
@@ -487,12 +675,36 @@ def main() -> int:
     ttl = clamp_ttl(env("PI_WEB_LEASE_TTL_SECONDS", "14400"))
 
     if len(sys.argv) > 1 and sys.argv[1] == "hold":
+        # Recorded here rather than inside hold(), which calls release() itself
+        # to close a stale window — that is not PI WEB going down.
+        record_run_state(data_dir, "running")
         return hold(chat_port, ttl)
     if len(sys.argv) > 1 and sys.argv[1] == "release":
+        record_run_state(data_dir, "stopped")
         return release(chat_port)
 
+    start_on_boot = env("PI_WEB_START_ON_BOOT", "false") == "true"
+    # Read before keep_off_at_boot() rewrites the file: the mtime ServiceBay's
+    # own write left is the dividing line between the operator's transitions
+    # and the deploy's.
+    try:
+        deployed_at = os.path.getmtime(kube_unit_path())
+    except OSError:
+        deployed_at = time.time()
+
     write_models_json(data_dir, env("LLAMA_PORT", "11435"))
-    install_lease_unit(install_lease_script(data_dir), chat_port, ttl)
+    if start_on_boot:
+        jlog(
+            "info",
+            "pi-web:boot",
+            "PI_WEB_START_ON_BOOT is true; leaving the platform's autostart in place",
+        )
+    else:
+        keep_off_at_boot()
+        # Before the lease unit is enabled below, so a PI WEB the deploy is
+        # about to stop never gets a lease taken for it on the way past.
+        restore_run_state(run_state_before_deploy(data_dir, deployed_at))
+    install_lease_unit(install_lease_script(data_dir), chat_port, ttl, data_dir)
     return 0
 
 
