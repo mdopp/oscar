@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.0](https://github.com/mdopp/solarisbay/compare/v0.65.0...v0.66.0) (2026-09-08)
+
+
+### Features
+
+* **template:** let pi work labelled tickets from inside the pi-web pod ([8552b21](https://github.com/mdopp/solarisbay/commit/8552b21039ea45501550988aa16ee729b98a6a84)), closes [#1398](https://github.com/mdopp/solarisbay/issues/1398)
+
 ## [0.65.0](https://github.com/mdopp/solarisbay/compare/v0.64.0...v0.65.0) (2026-09-08)
 
 
