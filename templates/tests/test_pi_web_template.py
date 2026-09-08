@@ -618,3 +618,125 @@ def test_the_readme_explains_which_github_token_to_create():
     assert "fine-grained" in readme
     assert "Contents" in readme
     assert "PI_WEB_GIT_TOKEN" in readme
+
+
+# ── one ServiceBay token per project (#1395 slice C) ────────────────────────
+
+
+SB_INIT = "pi-web-sb-token"
+
+
+@pytest.fixture(scope="module")
+def sb_init(pod) -> dict:
+    return next(c for c in pod["spec"]["initContainers"] if c["name"] == SB_INIT)
+
+
+@pytest.fixture(scope="module")
+def sb_init_script(sb_init) -> str:
+    assert sb_init["args"][:2] == ["sh", "-c"]
+    return sb_init["args"][2]
+
+
+def test_servicebay_mints_the_parent_token_itself(variables):
+    """`mintApiToken` is the platform's own flag for a variable whose value is a
+    ServiceBay token: it mints a read-scoped, never-expiring one at install and
+    reuses it on re-install. `noAutoGenerate` would leave an operator step for
+    a credential ServiceBay is the issuer of."""
+    token = variables["PI_WEB_SB_TOKEN"]
+    assert token["type"] == "secret"
+    assert token["mintApiToken"] is True
+    assert "noAutoGenerate" not in token
+    assert "default" not in token
+
+
+def test_the_parent_is_not_the_per_deploy_read_token(variables):
+    """Children die with their parent (servicebay#2049) and ServiceBay revokes
+    and re-mints `SB_READ_TOKEN` on every deploy — using it here would silently
+    take every project's token away on each redeploy."""
+    assert "SB_READ_TOKEN" not in variables
+    assert "SB_READ_TOKEN" not in variables["PI_WEB_SB_TOKEN"]["description"].replace(
+        "Nicht dasselbe wie `SB_READ_TOKEN`", ""
+    )
+
+
+def test_servicebay_is_addressed_the_way_an_isolated_pod_must(variables, template_text):
+    """`127.0.0.1` is this pod itself, and the `servicebay.<domain>` route is
+    Authelia-gated — either one answers nothing and looks like a token problem."""
+    assert (
+        variables["SERVICEBAY_API_URL"]["default"]
+        == "http://host.containers.internal:5888"
+    )
+    assert "127.0.0.1:5888" not in template_text
+    assert "https://servicebay" not in template_text
+
+
+def test_only_the_sb_token_init_ever_sees_the_parent_token(pod):
+    """A session's shell runs in `sessiond`; the parent can mint children, so it
+    must not be readable out of the session's own environment."""
+    carriers = [
+        c["name"]
+        for c in pod["spec"]["initContainers"] + pod["spec"]["containers"]
+        if any(e["name"] == "PI_WEB_SB_TOKEN" for e in c.get("env", []))
+    ]
+    assert carriers == [SB_INIT]
+
+
+def test_the_sessions_are_told_where_servicebay_is(pod):
+    """The URL is not a credential, and `pi-web-project` inherits it from
+    sessiond — without it every session would fall back to a compiled default."""
+    sessiond = next(c for c in pod["spec"]["containers"] if c["name"] == "sessiond")
+    assert {
+        "name": "SERVICEBAY_API_URL",
+        "value": "http://host.containers.internal:5888",
+    } in sessiond["env"]
+
+
+def test_the_sb_token_init_runs_after_the_perms_init_as_the_image_user(pod, sb_init):
+    order = [c["name"] for c in pod["spec"]["initContainers"]]
+    assert order.index("pi-web-data-perms") < order.index(SB_INIT)
+    assert "securityContext" not in sb_init
+    assert {m["mountPath"] for m in sb_init["volumeMounts"]} == {"/data"}
+
+
+def test_the_parent_token_file_is_written_private(sb_init_script):
+    assert "umask 077" in sb_init_script
+    assert 'chmod 600 "$file"' in sb_init_script
+    assert "file=$dir/parent-token" in sb_init_script
+
+
+def test_the_project_entries_get_their_mode_back_on_every_start(sb_init_script):
+    """Each entry holds that project's own token and is written at runtime; the
+    perms init's recursive `a+rwX` reopens them all on the next start."""
+    assert "-name '*.json' -exec chmod 600" in sb_init_script
+
+
+def test_the_parent_token_never_reaches_argv_or_a_log(sb_init_script, template_text):
+    assert "$PI_WEB_SB_TOKEN" in sb_init_script
+    for banned in ("echo", "set -x", "curl"):
+        assert banned not in sb_init_script, banned
+    assert "unset PI_WEB_SB_TOKEN" in sb_init_script
+    assert sb_init_script.count("PI_WEB_SB_TOKEN") == 3  # :- guard, printf, unset
+
+
+def test_a_blank_parent_token_removes_a_stored_one(sb_init_script):
+    assert 'rm -f "$file"' in sb_init_script
+
+
+def test_the_image_ships_the_project_cli_and_a_python_to_run_it():
+    """The CLI is how a session reads the box at all: Pi ships no MCP, so there
+    is no config file a token could live in instead."""
+    dockerfile = (ROOT / "pi-web" / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project"
+        in dockerfile
+    )
+    assert " python3 " in dockerfile
+    assert (ROOT / "pi-web" / "pi_web_project.py").is_file()
+
+
+def test_the_readme_says_how_a_project_gets_its_token():
+    readme = (PI_WEB / "README.md").read_text(encoding="utf-8")
+    assert "pi-web-project add" in readme
+    assert "PI_WEB_SB_TOKEN" in readme
+    # The rule an operator has to know: nothing is adopted by being there.
+    assert "pi-web-project remove" in readme

@@ -106,6 +106,43 @@ spec:
     - mountPath: /data
       name: pi-web-data
 
+  # sb-token — the parent ServiceBay token `pi-web-project` delegates from
+  # (#1395 slice C). ServiceBay mints it itself at install (`mintApiToken` on a
+  # secret variable): read scope, never expiring, reused across re-installs.
+  # Same shape and the same reason as the credential init above: it runs after
+  # the perms init, as `USER node`, and writes a 0600 file rather than putting
+  # the value in sessiond's environment where every session would read it.
+  #
+  # The `chmod` on the entries is not belt-and-braces: each project's entry file
+  # holds that project's own token, they are written at runtime, and the perms
+  # init's recursive `a+rwX` would reopen every one of them on the next start.
+  - name: pi-web-sb-token
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    env:
+    - name: PI_WEB_SB_TOKEN
+      value: "{{PI_WEB_SB_TOKEN}}"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      umask 077
+      dir=/data/servicebay
+      file=$dir/parent-token
+      mkdir -p "$dir/projects"
+      chmod 700 "$dir" "$dir/projects"
+      if [ -n "${PI_WEB_SB_TOKEN:-}" ]; then
+        printf '%s\n' "$PI_WEB_SB_TOKEN" >"$file"
+        chmod 600 "$file"
+      else
+        rm -f "$file"
+      fi
+      unset PI_WEB_SB_TOKEN
+      find "$dir/projects" -type f -name '*.json' -exec chmod 600 {} +
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
@@ -116,6 +153,12 @@ spec:
     # `args`, not `command`: the image's ENTRYPOINT is tini, and a `command`
     # here would replace it and leave the sessions' children unreaped.
     args: ["pi-web-sessiond"]
+    env:
+    # Where `pi-web-project` reaches ServiceBay. The URL is not a credential and
+    # the sessions inherit it from sessiond; the token deliberately does NOT
+    # travel this way — it stays in the 0600 file the init above writes.
+    - name: SERVICEBAY_API_URL
+      value: "{{SERVICEBAY_API_URL}}"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data

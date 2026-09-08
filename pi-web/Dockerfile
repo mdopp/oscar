@@ -34,13 +34,20 @@ FROM docker.io/library/node:22-trixie-slim AS runtime
 
 # git and a real shell are the point of the product — an agent session is a
 # shell in a repository. tini reaps the processes those sessions leave behind.
+# python3 runs `pi-web-project` below: the box's other post-deploy/CLI tooling is
+# stdlib Python and covered by the repo's ruff + pytest gates, which a second
+# language in this one file would leave untested.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates git less procps ripgrep tini \
+      ca-certificates git less procps python3 ripgrep tini \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=package /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=package /usr/local/bin /usr/local/bin
+
+# Pi ships no MCP, so a session reads this box through a CLI instead: one
+# delegated read-only ServiceBay token per project (#1395).
+COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project
 
 # Everything durable lives under /data, which the pod mounts from the host:
 # the PI WEB state (project registry, session archives, the sessiond socket)

@@ -192,6 +192,65 @@ neu ausrollen.
 > Variablen keine Installations-Überschreibungen, das Feld muss im Assistenten
 > einmal ausgefüllt werden.
 
+## Ein ServiceBay-Token je Projekt
+
+Damit der Agent in einer Sitzung diese Box *lesen* kann — Dienstliste, Logs,
+gerenderte Service-Definitionen — bekommt jedes Projekt sein eigenes,
+schreibgeschütztes ServiceBay-Token (#1395).
+
+**Warum das hier anders aussieht als bei claude-dev.** Bei claude-dev trägt der
+MCP-Eintrag des Projekts dessen `sb_`-Token, und dieser Eintrag *ist* der
+Besitznachweis (servicebay#2680). **Pi kennt kein MCP** — upstream sagt das
+ausdrücklich („It intentionally does not include built-in MCP … build CLI tools
+with READMEs") — es gibt hier also keine MCP-Konfigurationsdatei, in die ein
+Token gehören könnte. An ihre Stelle tritt ein kleines Kommando im Container:
+
+```
+pi-web-project add <Projekt>        # Token anlegen
+pi-web-project get /api/services    # damit lesen
+pi-web-project list                 # welche Projekte eins haben
+pi-web-project remove <Projekt>     # Token widerrufen
+```
+
+**Die drei Regeln**, weil sie das Verhalten erklären, das sonst überrascht:
+
+- **Der Eintrag ist der Besitznachweis.** Ein Projekt gehört uns genau dann,
+  wenn `/data/servicebay/projects/<Name>.json` existiert und ein `sb_`-Token
+  nennt. Dieser eine Datensatz ist gleichzeitig Kennzeichen und Zugangsdatum,
+  Token und Eintrag können also nicht auseinanderlaufen.
+- **Nichts wird übernommen, nur weil es da ist.** Es gibt keinen Abgleich beim
+  Start, der für neu aufgetauchte Ordner Token anlegt, und keine Markierungsdatei
+  zum Mitmachen. `add` tippt ein Mensch, einmal, pro Projekt — was von Hand
+  geklont wurde, bleibt unangetastet, und `remove` weist es ab statt zu raten.
+- **`remove` löscht keine Dateien.** Es widerruft das Token und entfernt den
+  Eintrag; das Arbeitsverzeichnis bleibt liegen. Danach scheitert derselbe
+  Lesezugriff mit **401**.
+
+**Woher das Eltern-Token kommt.** Aus der Variablen `PI_WEB_SB_TOKEN` — **leer
+lassen**: `mintApiToken` heißt, dass ServiceBay bei der Installation selbst
+eines anlegt, nur mit Leserecht und ohne Ablauf, und bei einer erneuten
+Installation dasselbe wiederverwendet. Kein Handgriff für den Betreiber. Ein
+selbst eingetragener Wert gewinnt.
+
+> Ausdrücklich **nicht** `SB_READ_TOKEN`: das widerruft und erneuert ServiceBay
+> bei jedem Ausrollen, und Kind-Token werden mit ihrem Elternteil ungültig
+> (servicebay#2049) — jeder Deploy hätte damit sämtliche Projekt-Token
+> abgeräumt, ohne dass irgendwo etwas danach aussieht.
+
+Der Wert erreicht nur den Init-Container `pi-web-sb-token`, der ihn nach
+`/data/servicebay/parent-token` (Modus 0600, Eigentümer `node`) schreibt und
+nebenbei die Modi der Projekt-Einträge wiederherstellt — `pi-web-data-perms`
+öffnet mit `chmod -R a+rwX /data` bei jedem Start sonst auch die. `sessiond` und
+`web` tragen die Variable nicht; in der Umgebung einer Sitzung steht nur
+`SERVICEBAY_API_URL`, und das ist kein Geheimnis. Wie beim Git-Token gilt: wer
+eine Sitzung hat, kann die Dateien unter `/data` lesen — der Zuschnitt ist
+deshalb das Recht selbst, `read` und sonst nichts.
+
+> Nach einem Upgrade sind `PI_WEB_SB_TOKEN` und `SERVICEBAY_API_URL` neue
+> Variablen; ServiceBay übernimmt für neue Variablen keine
+> Installations-Überschreibungen, der Assistent muss also einmal durchlaufen
+> werden (das Token-Feld dabei leer lassen).
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -211,6 +270,11 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   until somebody takes the lease from the model tile.
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
+- In einer Sitzung im Projektordner: `pi-web-project add <Projekt>` meldet eine
+  Token-Kennung, `pi-web-project get /api/services` beantwortet die Dienstliste,
+  und nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit
+  **401** — das Arbeitsverzeichnis liegt danach noch da. `ls -l
+  /data/servicebay/projects/` zeigt `-rw------- node`.
 - In einer Sitzung: `git clone https://github.com/<privates Repo>.git` läuft ohne
   Rückfrage durch, `git -C /workspace/<name> fetch` ebenso. `ls -l
   /data/pi-web/git-credentials` zeigt `-rw------- node`, und
