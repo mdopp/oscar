@@ -323,7 +323,7 @@ def test_an_unreachable_engine_retries_instead_of_dying(pd):
 
 def test_lease_unit_lives_and_dies_with_the_pod(pd):
     unit = pd.render_lease_unit(
-        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400
+        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400, "/mnt/data/stacks"
     )
     assert "BindsTo=pi-web.service" in unit
     assert "WantedBy=pi-web.service" in unit
@@ -333,7 +333,7 @@ def test_lease_unit_releases_on_the_way_down(pd):
     """Without ExecStopPost a stopped PI WEB leaves Qwen loaded until the TTL
     runs out — four hours of a slower household assistant."""
     unit = pd.render_lease_unit(
-        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400
+        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400, "/mnt/data/stacks"
     )
     assert "pi-web-lease.py release" in unit
     assert "ExecStopPost=" in unit
@@ -341,10 +341,13 @@ def test_lease_unit_releases_on_the_way_down(pd):
 
 def test_lease_unit_carries_the_config_the_script_reads(pd):
     unit = pd.render_lease_unit(
-        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400
+        "/mnt/data/stacks/pi-web/pi-web-lease.py", "8787", 14400, "/mnt/data/stacks"
     )
     assert "Environment=CHAT_PORT=8787" in unit
     assert "Environment=PI_WEB_LEASE_TTL_SECONDS=14400" in unit
+    # The two hooks are the only witnesses of a PI WEB start/stop that outlive
+    # a redeploy; without DATA_DIR they cannot write the run-state log (#1373).
+    assert "Environment=DATA_DIR=/mnt/data/stacks" in unit
 
 
 def test_the_lease_endpoint_is_the_engine_on_loopback(pd):
@@ -396,3 +399,134 @@ def test_pi_web_is_not_in_the_household_stack():
         (ROOT / "stacks" / "solarisbay" / "stack.yml").read_text(encoding="utf-8")
     )
     assert "pi-web" not in stack["spec"]["templates"]
+
+
+# ── not started unless somebody asked (#1373) ───────────────────────────────
+
+
+PLATFORM_KUBE = (
+    "[Kube]\n"
+    "Yaml=pi-web.yml\n"
+    "AutoUpdate=registry\n"
+    "\n"
+    "[Install]\n"
+    "WantedBy=default.target\n"
+    "[Service]\n"
+    "TimeoutStartSec=600\n"
+    "Restart=on-failure\n"
+    "\n"
+    "[Unit]\n"
+    "StartLimitIntervalSec=0\n"
+)
+
+
+def test_boot_autostart_is_stripped_from_the_platforms_kube_unit(pd):
+    """ServiceBay hard-codes `[Install] WantedBy=default.target` into every
+    `.kube` it renders, so Quadlet links pi-web into `default.target.wants` and
+    a reboot starts it — taking the coding lease with it. Nothing about that
+    looks broken until the household assistant is slow for four hours."""
+    stripped = pd.strip_boot_install(PLATFORM_KUBE)
+    assert "[Install]" not in stripped
+    assert "WantedBy=default.target" not in stripped
+
+
+def test_stripping_the_install_section_leaves_the_rest_of_the_unit_alone(pd):
+    """The `[Kube]` body and the platform's own `[Service]`/`[Unit]`
+    directives are ServiceBay's; dropping one of them would change how the pod
+    starts, not whether it starts at boot."""
+    stripped = pd.strip_boot_install(PLATFORM_KUBE)
+    assert "Yaml=pi-web.yml" in stripped
+    assert "AutoUpdate=registry" in stripped
+    assert "TimeoutStartSec=600" in stripped
+    assert "StartLimitIntervalSec=0" in stripped
+    # Idempotent: the next deploy re-adds the section, every other run is a
+    # no-op that must not rewrite the file (and restart the generator).
+    assert pd.strip_boot_install(stripped) == stripped
+
+
+def test_the_start_on_boot_variable_defaults_to_off(variables):
+    spec = variables["PI_WEB_START_ON_BOOT"]
+    assert spec["default"] == "false"
+    assert spec["options"] == ["true", "false"]
+
+
+def test_the_state_restored_is_the_one_from_before_the_deploy(pd):
+    """A redeploy of a RUNNING PI WEB writes stop+start of its own after the
+    `.kube` file; the last entry before it is the operator's."""
+    log = "100 running\n200 stopped\n210 running\n"
+    assert pd.state_before(log, 150) == "running"
+
+
+def test_a_pi_web_the_operator_had_stopped_stays_stopped(pd):
+    """The deploy starts the service before the post-deploy runs, so its own
+    `running` entry is exactly what must not be mistaken for consent."""
+    log = "100 running\n120 stopped\n210 running\n"
+    assert pd.state_before(log, 150) == "stopped"
+
+
+def test_no_record_at_all_means_stopped(pd):
+    """A first install, or a box that has not had PI WEB up since this landed:
+    nobody asked for a coding session, so nobody gets Qwen loaded."""
+    assert pd.state_before("", 150) == ""
+    assert pd.state_before("garbage\n\nnot-a-timestamp running\n", 150) == ""
+
+
+def test_the_run_state_log_is_appended_and_bounded(pd, tmp_path):
+    for _ in range(pd.RUN_STATE_KEEP + 5):
+        pd.record_run_state(str(tmp_path), "running")
+    lines = (tmp_path / "pi-web" / pd.RUN_STATE_LOG).read_text().splitlines()
+    assert len(lines) == pd.RUN_STATE_KEEP
+    assert all(line.split()[1] == "running" for line in lines)
+
+
+def test_recorded_states_read_back_as_the_state_before_now(pd, tmp_path):
+    pd.record_run_state(str(tmp_path), "stopped")
+    assert pd.run_state_before_deploy(str(tmp_path), 1e12) == "stopped"
+    assert pd.run_state_before_deploy(str(tmp_path), 0) == ""
+
+
+def test_the_lease_unit_is_enabled_without_now(pd):
+    """`--now` starts the lease unit, and `BindsTo=pi-web.service` implies
+    `Requires=` — so systemd pulls PI WEB up with it and the deploy takes the
+    coding lease on a box where nobody opened a session (#1373)."""
+    source = (PI_WEB / "post-deploy.py").read_text(encoding="utf-8")
+    assert '"enable", "--now"' not in source
+
+
+def test_keep_off_at_boot_rewrites_the_unit_and_reloads_the_generator(
+    pd, tmp_path, monkeypatch
+):
+    quadlet = tmp_path / ".config" / "containers" / "systemd"
+    quadlet.mkdir(parents=True)
+    (quadlet / "pi-web.kube").write_text(PLATFORM_KUBE, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    assert pd.keep_off_at_boot()
+    assert "[Install]" not in (quadlet / "pi-web.kube").read_text(encoding="utf-8")
+    # Without the reload the generator keeps yesterday's unit — and the
+    # default.target.wants link with it.
+    assert ["systemctl", "--user", "daemon-reload"] in calls
+
+    calls.clear()
+    assert pd.keep_off_at_boot()
+    assert calls == []
+
+
+def test_restore_stops_a_pi_web_that_was_not_running_before(pd, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pd, "pod_is_active", lambda: True)
+    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    pd.restore_run_state("")
+    assert calls == [["systemctl", "--user", "stop", "pi-web.service"]]
+
+
+def test_restore_leaves_a_pi_web_that_was_running_alone(pd, monkeypatch):
+    """Stopping it would kill the agent sessions the operator had open — the
+    whole reason the run state is recorded rather than assumed."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pd, "pod_is_active", lambda: True)
+    monkeypatch.setattr(pd.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    pd.restore_run_state("running")
+    assert calls == []

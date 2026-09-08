@@ -105,6 +105,7 @@ user unit
 After=pi-web.service
 BindsTo=pi-web.service
 [Service]
+Environment=DATA_DIR=…
 ExecStart=… pi-web-lease.py hold
 ExecStopPost=… pi-web-lease.py release
 [Install]
@@ -126,6 +127,39 @@ service's own window — a `409` there means somebody else's lease and is left
 alone. The TTL (4 h by default, the engine's maximum) is the safety net for a
 box that loses the unit, not the schedule.
 
+## Why it does not start on its own
+
+PI WEB is started by the operator when they want a coding session, and by
+nobody else. That is not the default it would otherwise get: ServiceBay's
+kube-write path emits `[Install] WantedBy=default.target` into every `.kube`
+unit it renders and takes no annotation to say otherwise, so Quadlet links
+`pi-web.service` into `default.target.wants` and the box brings it up after
+every reboot. With it comes `pi-web-model-lease.service`, which takes the
+coding lease — Qwen loaded, voice on the CPU, the household assistant slow for
+up to four hours, for a session nobody started (#1373).
+
+So the post-deploy strips that `[Install]` section back out of
+`~/.config/containers/systemd/pi-web.kube` and reloads the generator. Setting
+`PI_WEB_START_ON_BOOT` to `true` leaves the platform's section alone for an
+operator who does want it up unattended.
+
+The deploy itself has the same problem one step earlier: ServiceBay starts (or
+restarts) the service before it runs the post-deploy, so a deploy would take
+the lease on a box where PI WEB had been off for days. The pre-deploy run state
+cannot be read at that point — the start has already happened — so the lease
+unit's two hooks, which are exactly a PI WEB start and a PI WEB stop, append
+`<epoch> running|stopped` to `{{DATA_DIR}}/pi-web/run-state.log`. The
+post-deploy restores the newest entry written *before* the `.kube` file's
+mtime, i.e. the last transition the operator caused; no entry at all means
+nobody has had PI WEB up since this landed, and it is stopped. Two consequences
+worth knowing:
+
+- a fresh install ends **stopped** — start it from the ServiceBay UI or with
+  `systemctl --user start pi-web`;
+- because the on-disk `.kube` no longer matches what ServiceBay renders, its
+  `specChanged` check is true on every deploy, so a running PI WEB is always
+  restarted by a redeploy.
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -140,5 +174,8 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   (`curl http://127.0.0.1:11435/v1/models`).
 - `journalctl --user -u pi-web-model-lease` shows `coding lease held` with the
   alias, and `coding lease released` after `systemctl --user stop pi-web`.
+- After a deploy, `systemctl --user is-enabled pi-web` is **disabled** and
+  `grep Install ~/.config/containers/systemd/pi-web.kube` finds nothing — the
+  reboot no longer takes the coding lease.
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
