@@ -58,7 +58,7 @@ Run `python3 .claude/skills/autoloop-issues/queue.py <verb>` (add `--offline` to
 | `verify-get` | orchestrator | read verify state (auto-resets a dead `verifying`) |
 | `park <issue> <blocked\|refinement\|review\|device-test\|upstream-wait> [--comment …]` | planner | durably park to GitHub (label + comment) |
 | `note "<one line>"` | any | append to the bounded run-scoped ring |
-| `mirror [--pr N]` | orchestrator | prune the cache + re-project labels (one-way) |
+| `mirror [--pr N]` | orchestrator | prune the cache + drop stale `autoloop:*` labels off closed issues + re-project the verify label (one-way) |
 | `rebuild [--release-pr N]` | orchestrator | cold-start: reconstruct the cache from GitHub |
 | `lock` / `unlock` | orchestrator | advisory single-writer lock for this checkout |
 
