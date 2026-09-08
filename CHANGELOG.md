@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.65.0](https://github.com/mdopp/solarisbay/compare/v0.64.0...v0.65.0) (2026-09-08)
+
+
+### Features
+
+* **template:** add a clone button to pi-web as a plugin ([f65e4a7](https://github.com/mdopp/solarisbay/commit/f65e4a76d9d5505be74bdf1612dcf3ab44bb55e8)), closes [#1395](https://github.com/mdopp/solarisbay/issues/1395)
+* **template:** give each pi-web project its own read-only ServiceBay token ([140898b](https://github.com/mdopp/solarisbay/commit/140898b3ee020c2ac67b0ecb8aafeead72fe8ac5))
+* **template:** let pi-web clone private repos with a stored git token ([bc71b46](https://github.com/mdopp/solarisbay/commit/bc71b46df7f951a1e9d9fdce353e940543401fb4))
+
 ## [0.64.0](https://github.com/mdopp/solarisbay/compare/v0.63.1...v0.64.0) (2026-09-08)
 
 
