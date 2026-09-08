@@ -229,6 +229,40 @@ spec:
     - mountPath: /workspace
       name: pi-web-workspace
 
+  # autoloop — Pi works tickets labelled {{PI_AUTOLOOP_LABEL}} headlessly
+  # (#1398 slice B). Its own container rather than a thread inside sessiond:
+  # a run is a `pi --mode json` subprocess with a hard time cap, and a crash
+  # loop in it must not take the browser surface down with it.
+  #
+  # It deliberately does NOT carry PI_WEB_GIT_TOKEN — same rule as sessiond and
+  # web. The token stays in the 0600 store the credential init wrote; git finds
+  # it through the credential helper and the loop reads that same file for its
+  # GitHub REST calls, so it reaches neither this container's environment nor
+  # the environment `pi` is started with.
+  - name: autoloop
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args: ["pi-web-autoloop"]
+    env:
+    - name: PI_AUTOLOOP_ENABLED
+      value: "{{PI_AUTOLOOP_ENABLED}}"
+    - name: PI_AUTOLOOP_REPOS
+      value: "{{PI_AUTOLOOP_REPOS}}"
+    - name: PI_AUTOLOOP_LABEL
+      value: "{{PI_AUTOLOOP_LABEL}}"
+    - name: PI_AUTOLOOP_INTERVAL_S
+      value: "{{PI_AUTOLOOP_INTERVAL_S}}"
+    - name: PI_AUTOLOOP_TIME_CAP_S
+      value: "{{PI_AUTOLOOP_TIME_CAP_S}}"
+    # Which alias llama-server has loaded right now — read, never requested.
+    # The loop holds no lease (#1392): Qwen comes from the Solaris model tile.
+    - name: LLAMA_PORT
+      value: "{{LLAMA_PORT}}"
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+    - mountPath: /workspace
+      name: pi-web-workspace
+
   volumes:
   # PI WEB + Pi agent state: the project and machine registries, session
   # archives, the sessiond socket, and the Pi agent directory whose

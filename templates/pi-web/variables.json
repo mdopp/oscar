@@ -42,7 +42,32 @@
   "PI_WEB_GIT_TOKEN": {
     "type": "secret",
     "noAutoGenerate": true,
-    "description": "Git-Zugangstoken für private Repositories, die in einer PI-WEB-Sitzung geklont werden. Leer lassen, wenn nur öffentliche Repositories geklont werden — dann wird gar keine Zugangsdatei angelegt und eine vorhandene wird beim nächsten Start entfernt. Bei GitHub gehört hier ein **fine-grained personal access token** hinein, dessen Repository-Zugriff auf die Repositories beschränkt ist, in denen wirklich gearbeitet wird, mit der Berechtigung `Contents: Read and write` (mehr braucht `git clone`/`push` nicht). Der Wert wird nur im ServiceBay-Assistenten eingegeben und landet weder im Repository noch in einem Log: Er erreicht ausschließlich den Init-Container `pi-web-git-credentials`, der daraus die Datei `/data/pi-web/git-credentials` mit Modus 0600 schreibt — `sessiond` und `web` bekommen die Variable nie, eine Sitzung findet den Token also nicht in ihrer eigenen Umgebung."
+    "description": "Git-Zugangstoken für private Repositories, die in einer PI-WEB-Sitzung geklont werden. Leer lassen, wenn nur öffentliche Repositories geklont werden — dann wird gar keine Zugangsdatei angelegt und eine vorhandene wird beim nächsten Start entfernt. Bei GitHub gehört hier ein **fine-grained personal access token** hinein, dessen Repository-Zugriff auf die Repositories beschränkt ist, in denen wirklich gearbeitet wird. Für `git clone`/`push` allein genügt `Contents: Read and write`; wer den Pi-Autoloop unten einschaltet, braucht am selben Token zusätzlich `Issues: Read` (Tickets mit dem Label finden) und `Pull requests: Read and write` (PR öffnen und das Protokoll als Kommentar anhängen) — `Contents` deckt dabei auch den Sperr-Ref `refs/autoloop/claim/<Nummer>` ab. Der Wert wird nur im ServiceBay-Assistenten eingegeben und landet weder im Repository noch in einem Log: Er erreicht ausschließlich den Init-Container `pi-web-git-credentials`, der daraus die Datei `/data/pi-web/git-credentials` mit Modus 0600 schreibt — `sessiond`, `web` und `autoloop` bekommen die Variable nie, weder eine Sitzung noch Pi findet den Token also in der eigenen Umgebung."
+  },
+  "PI_AUTOLOOP_ENABLED": {
+    "type": "text",
+    "default": "false",
+    "description": "Ob der Pi-Autoloop Tickets abarbeitet. Standard `false`: der Container läuft mit, tut aber nichts und schreibt einmal je Runde in sein Log, dass er aus ist. Auf `true` stellen, wenn Pi wirklich selbständig an markierten Tickets arbeiten soll — dann klont er die Repositories aus `PI_AUTOLOOP_REPOS`, lässt das gerade geladene Modell daran arbeiten und öffnet einen Pull Request. **Zusammengeführt wird nie etwas vom Loop**; das entscheidet ein Mensch. Vorher muss `PI_WEB_GIT_TOKEN` die drei Berechtigungen oben haben, sonst findet der Loop keine Tickets."
+  },
+  "PI_AUTOLOOP_REPOS": {
+    "type": "text",
+    "default": "mdopp/solarisbay",
+    "description": "Repositories, in denen der Autoloop arbeiten darf, mit Komma getrennt (`besitzer/name`). Das ist die Grenze, nicht der Prompt: was hier nicht steht, wird nie geklont und nie verändert, auch wenn dort Tickets mit dem Label liegen. Standard ist nur dieses Repository."
+  },
+  "PI_AUTOLOOP_LABEL": {
+    "type": "text",
+    "default": "pi:ready",
+    "description": "Das Label, das ein Ticket zur Arbeit freigibt. Kein Label, keine Arbeit — die Claude-Seite schneidet Tickets zu und vergibt es, Pi entscheidet nicht selbst, was ein Ticket ist. Muss derselbe Name sein, den die Claude-Seite vergibt, sonst bleibt die Warteschlange leer."
+  },
+  "PI_AUTOLOOP_INTERVAL_S": {
+    "type": "text",
+    "default": "300",
+    "description": "Sekunden zwischen zwei Blicken auf die Ticketliste. Standard 300 (fünf Minuten). Je Runde wird höchstens ein Ticket bearbeitet, damit eine Runde nicht die ganze Nacht die Box belegt."
+  },
+  "PI_AUTOLOOP_TIME_CAP_S": {
+    "type": "text",
+    "default": "3600",
+    "description": "Hartes Zeitlimit je Ticket in Sekunden, Standard 3600 (eine Stunde). Danach wird Pi abgebrochen; was bis dahin entstanden ist, geht als **Entwurfs-PR** heraus, damit die Arbeit sichtbar ist und nicht still verschwindet. Das Limit steht bewusst hier und nicht im Prompt: ein Modell kann man nicht bitten, sich an eine Uhr zu halten."
   },
   "PI_WEB_GIT_USER": {
     "type": "text",

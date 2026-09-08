@@ -327,6 +327,59 @@ da ist.
 > muss `sessiond` selbst neu starten; für die Browser-Hälfte allein genügt ein
 > Neuladen der Seite.
 
+## Pi-Autoloop
+
+Neben der Weboberfläche läuft im selben Pod ein dritter Prozess, `autoloop`. Er
+holt sich Tickets von GitHub und lässt Pi sie kopflos abarbeiten.
+Arbeitsteilung: **Claude schneidet zu, Pi baut ab.**
+
+**Ein Ticket freigeben.** Auf dem Ticket das Label **`pi:ready`** setzen — mehr
+nicht. Kein Label, kein Zugriff: der Loop sieht ausschließlich offene Tickets
+mit diesem Label, und ausschließlich in den Repositories, die in
+`PI_AUTOLOOP_REPOS` stehen. Was dort nicht steht, wird nicht einmal geklont.
+
+**Was dann passiert.** Höchstens ein Ticket je Runde (Standard: alle fünf
+Minuten nachsehen):
+
+1. Der Loop legt die Sperre `refs/autoloop/claim/<Nummer>` im Repository an.
+   Wer sie zuerst anlegt, arbeitet; jeder zweite Loop bekommt von GitHub
+   **HTTP 422 „Reference already exists"** und lässt das Ticket in Ruhe. Es ist
+   dieselbe Sperre, die die Claude-Seite benutzt — deshalb greifen die beiden
+   nie nach demselben Ticket.
+2. Das Repository wird nach `/workspace/autoloop/<besitzer>/<repo>/<nummer>`
+   geklont.
+3. `pi --mode json` bekommt das Ticket als Auftrag, mit dem Modell, das
+   llama-server **gerade** geladen hat. Der Loop fordert **keine** GPU an; Qwen
+   kommt weiterhin über die Modell-Kachel in Solaris.
+4. Danach laufen die Prüfungen des Zielrepositories — was es selbst mitbringt
+   (`ruff`, `pytest`, `npm run lint`, `npm test`). Ein Werkzeug, das dieser
+   Container nicht hat, steht im Protokoll als *übersprungen* und gilt nie als
+   bestanden.
+5. Commit auf den Zweig `pi/<nummer>-<kurztitel>`, Push, Pull Request mit
+   `Refs #<nummer>`.
+
+**Zusammengeführt wird nie etwas.** Der Loop öffnet den PR und hört auf.
+Zusammenführen entscheidet ein Mensch oder die Claude-Seite. Ist das Gate rot
+oder das Zeitlimit (Standard eine Stunde) erreicht, wird der PR als **Entwurf**
+geöffnet — abgebrochen, aber sichtbar, und **ohne Nachbesserungsschleife**.
+
+**Wo das Protokoll steht.** Als Kommentar am Pull Request und im Container unter
+`/data/pi-web/autoloop/<besitzer>-<repo>-<nummer>.log` (auf der Box unter
+`<DATA_DIR>/pi-web/data/pi-web/autoloop/`). Es nennt Modell, Dauer, Zweig, PR,
+das Ergebnis jedes Gates und eine Zusammenfassung dessen, was Pi getan hat.
+
+**Noch einmal arbeiten lassen.** Am Ende gibt der Loop die Sperre wieder frei.
+Dass ein Ticket trotzdem nicht sofort erneut angefasst wird, liegt am
+gepushten Zweig: solange `pi/<nummer>-…` im Repository steht, überspringt der
+Loop das Ticket. Wer eine zweite Runde will, löscht diesen Zweig.
+
+**Anschalten.** Standardmäßig ist der Loop **aus** (`PI_AUTOLOOP_ENABLED` =
+`false`) und schreibt das einmal je Runde in sein Log. Vor dem Anschalten muss
+`PI_WEB_GIT_TOKEN` drei Berechtigungen haben: `Issues: Read`,
+`Pull requests: Read and write`, `Contents: Read and write`. Der Token steht
+nirgends in einer Umgebungsvariable — der Loop liest ihn aus derselben
+0600-Datei, aus der auch `git` ihn nimmt, und startet Pi ohne ihn.
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -367,3 +420,15 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   Rückfrage durch, `git -C /workspace/<name> fetch` ebenso. `ls -l
   /data/pi-web/git-credentials` zeigt `-rw------- node`, und
   `grep -r <Token-Präfix> ~/.bash_history` sowie `ps auxww` finden nichts.
+- Autoloop aus (Standard): `podman logs pi-web-autoloop` meldet je Runde
+  „switched off", und unter `/workspace/autoloop` liegt nichts.
+- Autoloop an: ein Wegwerf-Ticket mit `pi:ready` markieren. Das Log nennt Klon,
+  Modell und Gates, unter `/data/pi-web/autoloop/` liegt ein Protokoll, und im
+  Repository steht ein PR mit `Refs #<nummer>` — nicht zusammengeführt.
+- Sperre: während der Lauf läuft, liefert
+  `gh api repos/<repo>/git/matching-refs/autoloop/claim` den Ref des Tickets,
+  und ein zweiter Anlauf auf dasselbe Ticket
+  (`gh api --method POST repos/<repo>/git/refs -f ref=refs/autoloop/claim/<n>
+  -f sha=$(git rev-parse origin/main)`) scheitert mit **422 „Reference already
+  exists"**. Nach dem Lauf ist der Ref wieder weg.
+- `podman exec pi-web-autoloop env | grep -i token` findet nichts.

@@ -49,6 +49,11 @@ COPY --from=package /usr/local/bin /usr/local/bin
 # delegated read-only ServiceBay token per project (#1395).
 COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project
 
+# The Pi autoloop (#1398 slice B): a third process in the pod that works issues
+# labelled `pi:ready` headlessly. Same reason as above for the language — it is
+# stdlib Python, so the repo's ruff + pytest gates cover it.
+COPY --chmod=0755 pi_autoloop.py /usr/local/bin/pi-web-autoloop
+
 # The "Repo klonen" plugin (#1395 slice B). It rides in the image rather than in
 # the template's asset tree because it is written against the plugin API of the
 # PI_WEB_VERSION pinned above — the two move together or not at all. An init
