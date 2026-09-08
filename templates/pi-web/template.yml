@@ -10,7 +10,7 @@ metadata:
     servicebay.ports: "{{PI_WEB_PORT}}/tcp"
     # nginx + auth for the proxy host and Authelia forward-auth; llama because
     # the sessions have no model without llama-server; solaris because the
-    # coding lease that loads Qwen is an endpoint of the Solaris Engine.
+    # post-deploy hands the retired lease unit's window back to the engine.
     servicebay.dependencies: "nginx,auth,llama,solaris"
     # PI WEB answers /api/pi-web/runtime once the web process is up and has
     # reached its session daemon. ServiceBay can't substitute a variable inside
@@ -32,8 +32,10 @@ spec:
   #
   # The one thing this pod therefore CANNOT reach is the Solaris Engine's
   # `/api/model-lease`: it is loopback-only by design (no token, reachability
-  # is the authorisation) and the engine binds 127.0.0.1 alone. The lease is
-  # held by a host-side systemd unit instead — see post-deploy.py.
+  # is the authorisation) and the engine binds 127.0.0.1 alone. That is fine —
+  # pi-web does not ask for a lease at all (#1392): it uses whatever model
+  # llama-server currently serves, and Qwen is requested from the Solaris model
+  # tile instead.
   restartPolicy: Always
   initContainers:
   # `DirectoryOrCreate` makes the host path owned by userns-root (the "core"
