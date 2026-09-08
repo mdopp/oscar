@@ -519,6 +519,38 @@ def pod_is_active() -> bool:
     return out.stdout.strip() == "active"
 
 
+# How long ServiceBay's own deploy-time start of pi-web.service takes to
+# settle in practice (box-verified: ~2s), and the ceiling given to it before
+# giving up and stopping anyway — generous headroom, not the expected wait.
+SETTLE_POLL_SECONDS = 0.5
+SETTLE_DEADLINE_SECONDS = 30
+
+
+def wait_until_settled() -> None:
+    """Block until pi-web.service leaves `activating`.
+
+    A `stop` issued while ExecStart (`podman kube play`, `Type=notify`) is
+    still running does not queue cleanly behind it — it kills that in-flight
+    process, which then exits non-zero and leaves the unit `failed` rather
+    than `inactive` (box-verified against #1375/#1377: stopping unconditionally
+    fixed the coding-lease regression but left pi-web.service failed after
+    every deploy that keeps it off). Waiting for the deploy's own start to
+    finish first — it settles in ~2s in practice — means the stop that follows
+    lands on a unit that is actually active, and stops it cleanly.
+    """
+    deadline = time.time() + SETTLE_DEADLINE_SECONDS
+    while time.time() < deadline:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", POD_UNIT],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if out.stdout.strip() != "activating":
+            return
+        time.sleep(SETTLE_POLL_SECONDS)
+
+
 def run_state_path(data_dir: str) -> str:
     return os.path.join(data_dir, "pi-web", RUN_STATE_LOG)
 
@@ -589,17 +621,18 @@ def restore_run_state(desired: str) -> None:
     """Put PI WEB back in the state it was in before ServiceBay's deploy
     started it. Anything but a recorded `running` means stop.
 
-    Always issues the stop rather than gating it on `pod_is_active()` first:
-    ServiceBay's own start (`Type=notify`, `TimeoutStartSec=600`) can still be
-    mid-flight when this runs, so an is-active read here can land before
-    systemd has settled, read `False`, and skip the stop — leaving PI WEB (and
-    the coding lease it pulls) running, box-verified against #1375. A `stop`
-    on a unit that is already inactive, or one that is still starting, is a
-    safe no-op / queued job either way.
+    Always issues the stop rather than gating it on a single `pod_is_active()`
+    read first: ServiceBay's own start can still be mid-flight when this runs,
+    so one early read can come back `False` before systemd has settled and
+    skip the stop — leaving PI WEB (and the coding lease it pulls) running
+    (box-verified against #1375). `wait_until_settled()` is what makes the
+    stop that follows land cleanly rather than colliding with that in-flight
+    start (box-verified against #1377 — see its docstring).
     """
     if desired == "running":
         jlog("info", "pi-web:runstate", "PI WEB was running before the deploy; left up")
         return
+    wait_until_settled()
     subprocess.run(
         ["systemctl", "--user", "stop", POD_UNIT], check=False, capture_output=True
     )
