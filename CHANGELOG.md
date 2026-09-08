@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.64.0](https://github.com/mdopp/solarisbay/compare/v0.63.1...v0.64.0) (2026-09-08)
+
+
+### Features
+
+* **template:** run pi-web around the clock and leave the GPU lease to the model tile ([c3e49f9](https://github.com/mdopp/solarisbay/commit/c3e49f97feef5ea016a603bcdbd85b8fc4c73661)), closes [#1392](https://github.com/mdopp/solarisbay/issues/1392)
+
 ## [0.63.1](https://github.com/mdopp/solarisbay/compare/v0.63.0...v0.63.1) (2026-09-08)
 
 
