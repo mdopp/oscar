@@ -190,15 +190,42 @@ def test_a_row_says_its_state_in_german_and_carries_no_raw_time():
     # A tile prints a field as it stands, so "1757336400" is not a time and
     # `remaining_s` is not a sentence: `status_text` is the whole answer.
     rows = _rows({"state": "none", "model": "", "holder": ""})
-    assert rows["household"]["status_text"] == "gerade geladen"
-    assert rows["household"]["detail"] == "Gemma"
-    assert rows["coding:1h"]["status_text"] == "nicht geladen"
+    assert rows["household"]["status_text"] == "Gemma 4 e4b · Haushalt"
     assert rows["coding:1h"]["detail"] == "Qwen 27B"
-    assert rows["foundry:4h"]["detail"] == "Gemma 12B"
+    assert rows["foundry:4h"]["detail"] == "Gemma 4 12B"
     for row in rows.values():
         assert "meta" not in row
         assert "expires_at" not in row
         assert "remaining_s" not in row
+
+
+def test_a_quiet_row_says_only_its_model_and_the_loud_one_only_its_status():
+    # The tile joins subtitle and meta into ONE line, so a model name in both
+    # would read "Qwen 27B · bis 19:42 · Qwen 27B" (#1385).
+    rows = _rows({"state": "none", "model": "", "holder": ""})
+    assert rows["coding:1h"]["status_text"] == ""
+    assert rows["coding:1h"]["detail"] == "Qwen 27B"
+    assert rows["household"]["detail"] == ""
+    for row in rows.values():
+        assert not (row["status_text"] and row["detail"]), row["id"]
+
+
+def test_the_badge_is_a_ready_short_word_never_the_machine_state():
+    # `active`/`preparing` are the words the lease speaks; the chip at the
+    # right edge is the first thing a resident reads, so it speaks German.
+    quiet = _rows({"state": "none", "model": "", "holder": ""})
+    assert quiet["household"]["badge"] == "läuft"
+    # An idle row shows no chip at all rather than a word for "does nothing".
+    assert quiet["coding:1h"]["badge"] == ""
+    assert quiet["foundry:morgen"]["badge"] == ""
+    held = _rows({"state": "ready", "model": "coding", "holder": "widget"})
+    assert held["coding:4h"]["badge"] == "läuft"
+    assert held["household"]["badge"] == ""
+    assert model_widget.BADGES == {
+        "active": "läuft",
+        "preparing": "wird geladen",
+        "releasing": "wird freigegeben",
+    }
 
 
 def test_the_alias_still_names_the_model_the_box_loads():
@@ -214,18 +241,34 @@ def test_a_held_window_says_so_on_every_row_of_that_profile():
             "state": "ready",
             "model": "coding",
             "holder": "widget",
-            "expires_at": _at(hour=16, minute=30),
+            "expires_at": _at(hour=19, minute=42),
         }
     )
     for row_id in ("coding:1h", "coding:4h", "coding:morgen"):
         assert rows[row_id]["state"] == "active"
-        assert rows[row_id]["status_text"] == "gerade geladen · bis 16:30"
+        # The model first, then the END as a clock — the two things the
+        # operator asked the tile to answer at a glance (#1385).
+        assert rows[row_id]["status_text"] == "Qwen 27B · bis 19:42"
+        assert rows[row_id]["badge"] == "läuft"
     assert rows["household"]["state"] == "available"
-    assert rows["foundry:1h"]["status_text"] == "nicht geladen"
+    assert rows["foundry:1h"]["status_text"] == ""
 
 
-def test_the_last_hour_counts_down_in_minutes():
-    # "noch 42 Min" is the number about to matter; a clock time is not.
+def test_a_window_that_ends_tomorrow_names_the_day_with_the_clock():
+    rows = _rows(
+        {
+            "state": "ready",
+            "model": "foundry",
+            "holder": "widget",
+            "expires_at": _at(hour=7, day=9),
+        }
+    )
+    assert rows["foundry:4h"]["status_text"] == "Gemma 4 12B · bis morgen 07:00"
+
+
+def test_the_last_hour_is_a_clock_too_never_a_remaining_duration():
+    # "noch 42 Min" has to be added to the current time before it answers
+    # "until when" — the one question the row exists to answer (#1385).
     rows = _rows(
         {
             "state": "ready",
@@ -234,7 +277,7 @@ def test_the_last_hour_counts_down_in_minutes():
             "expires_at": _at(hour=14, minute=42),
         }
     )
-    assert rows["foundry:1h"]["status_text"] == "gerade geladen · noch 42 Min"
+    assert rows["foundry:1h"]["status_text"] == "Gemma 4 12B · bis 14:42"
 
 
 def test_a_stranger_holding_the_card_is_named_on_the_row():
@@ -248,7 +291,7 @@ def test_a_stranger_holding_the_card_is_named_on_the_row():
     )
     assert (
         rows["foundry:1h"]["status_text"]
-        == "gerade geladen · bis morgen 07:00 · von pi-web"
+        == "Gemma 4 12B · bis morgen 07:00 · von pi-web"
     )
     assert rows["foundry:1h"]["holder"] == "pi-web"
 
@@ -259,11 +302,29 @@ def test_the_house_keeps_the_card_until_the_swap_actually_lands():
     rows = _rows({"state": "preparing", "model": "foundry", "holder": "widget"})
     assert rows["household"]["state"] == "active"
     assert rows["foundry:1h"]["state"] == "preparing"
-    assert "wird geladen" in rows["foundry:1h"]["status_text"]
+    assert rows["foundry:1h"]["badge"] == "wird geladen"
     # …and while the card comes back the house is the one that is preparing.
     rows = _rows({"state": "releasing", "model": "foundry", "holder": "widget"})
     assert rows["household"]["state"] == "preparing"
     assert rows["foundry:1h"]["state"] == "releasing"
+
+
+def test_a_swap_is_two_rows_speaking_at_once():
+    # "dass gerade ein Wechsel stattfindet" (#1385): one row hands the card
+    # back while the other takes it, and both say which half they are.
+    rows = _rows({"state": "releasing", "model": "foundry", "holder": "widget"})
+    assert rows["foundry:1h"]["badge"] == "wird freigegeben"
+    assert rows["foundry:1h"]["status_text"] == "Gemma 4 12B · gleich wieder da"
+    assert rows["household"]["badge"] == "wird geladen"
+    assert (
+        rows["household"]["status_text"] == "Gemma 4 e4b · das dauert etwa eine Minute"
+    )
+    assert [r["badge"] for r in rows.values() if r["badge"]] == [
+        "wird geladen",
+        "wird freigegeben",
+        "wird freigegeben",
+        "wird freigegeben",
+    ]
 
 
 # ---- the window a row carries -----------------------------------------------

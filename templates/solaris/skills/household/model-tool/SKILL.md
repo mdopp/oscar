@@ -9,9 +9,9 @@ command: .model
 tool-api-path: /api/portal/models
 tool-item-id-field: id
 tool-actions: model.set, model.lease, model.release
-tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "actions": ["model.set"]}
+tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "badge": "badge", "actions": ["model.set"]}
 tool-action-params: {"model.set": {"profile": "$profile", "hours": "$hours"}}
-version: 2.0.0
+version: 2.1.0
 author: Solaris
 license: MIT
 ---
@@ -28,9 +28,19 @@ soll — und schaltet auf Knopfdruck um.
 | **Foundry · 1 h / 4 h / bis morgen 07:00** | ein Foundry-Abend; Solaris antwortet weiter, nur langsamer |
 
 Ein Tipp nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres".
-Danach kommt sie von selbst zurück — niemand muss daran denken. Unter jedem
-Titel steht der Stand: „nicht geladen", „gerade geladen · noch 42 Min",
-„gerade geladen · bis morgen 07:00".
+Danach kommt sie von selbst zurück — niemand muss daran denken.
+
+Auf einen Blick sagt jede Zeile zweierlei: rechts als fettes Kurzwort, **was
+gerade passiert** — `läuft` / `wird geladen` / `wird freigegeben`, und gar
+nichts, wenn die Zeile still ist; unter dem Titel **welches Modell und bis
+wann** — „Qwen 27B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
+„Gemma 4 e4b · Haushalt". Zeilen, die nichts tun, nennen nur ihr Modell
+(„Qwen 27B"). Die Endzeit steht als **Uhrzeit**, nicht als Restdauer: „noch 42
+Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann die Karte
+wieder frei ist.
+
+Während eines Wechsels sprechen **zwei** Zeilen: die alte „wird freigegeben",
+die neue „wird geladen".
 
 ## Warum die Zeile die Wahl ist
 
@@ -53,12 +63,16 @@ das Ende.
 
 - **Zeilen:** `GET /api/portal/models` (`tool-api-path`) — je Wahl `id`,
   `title`, `profile`, `hours`, `alias`, `state` (`active` = gerade geladen /
-  `available` / `preparing` / `releasing`), ein fertig formulierter
-  `status_text` („gerade geladen · noch 42 Min") und `detail` (das Modell:
-  „Qwen 27B"). Denselben Inhalt liefert `GET /napi/portal/models` über den
-  Geräte-Token, den Weg, den die Kachel geht. Rohe Zeitfelder gibt es nicht
-  mehr: eine Kachel zeigt ein Feld unverändert an, und „1757336400" ist keine
-  Uhrzeit.
+  `available` / `preparing` / `releasing`), das fertige Kurzwort `badge`
+  („läuft" / „wird geladen" / „wird freigegeben" / leer), ein fertig
+  formulierter `status_text` („Qwen 27B · bis 19:42") und `detail` (das Modell:
+  „Qwen 27B"). `status_text` und `detail` sind **nie beide** gefüllt: die Kachel
+  klebt Untertitel und Meta zu **einer** Zeile zusammen, also steht der
+  Modellname genau einmal darin. Rohe Zustands- oder Zeitfelder zeigt die Kachel
+  nie: sie stellt ein Feld unverändert dar, und weder „active" noch
+  „1757336400" ist etwas, das jemand lesen will. Denselben Inhalt liefert
+  `GET /napi/portal/models` über den Geräte-Token, den Weg, den die Kachel
+  geht.
 - **`hours`:** eine Zahl, Brüche eingeschlossen — „bis morgen 07:00" ist um
   Viertel nach sechs abends 12,75 und wird bei **jedem** Abruf neu gerechnet,
   damit die Zeile nicht über den Morgen hinausschießt. `0` heißt freigeben. Die
@@ -69,6 +83,7 @@ das Ende.
   bleiben für Chat und PWA, wo eine frei gesprochene Zeit möglich ist; im
   `tool-cell-schema` stehen sie nicht, sonst wäre `model.set` unerreichbar.
 - **Umschalten:** ein anderes Profil, während eines läuft, gibt erst zurück und
-  nimmt dann — die Kachel zeigt dabei `wird freigegeben` und danach
-  `wird geladen`. Hält ein **anderer** Dienst die Karte, sagt die Aktion das im
-  Klartext und ändert nichts.
+  nimmt dann — dabei tragen zwei Zeilen gleichzeitig ein Kurzwort: die
+  abgebende „wird freigegeben", die kommende „wird geladen". Hält ein
+  **anderer** Dienst die Karte, sagt die Aktion das im Klartext und ändert
+  nichts; die Zeile nennt den Halter („… · von pi-web").
