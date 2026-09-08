@@ -61,10 +61,21 @@ SWITCH_TRIES = 20
 # The profiles, in the order their rows are shown: the house first, so the top
 # line of a truncated tile always answers "what is running right now".
 PROFILES = (
-    (HOUSEHOLD, "Haushalt", "Gemma"),
+    (HOUSEHOLD, "Haushalt", "Gemma 4 e4b"),
     ("coding", "Programmieren", "Qwen 27B"),
-    ("foundry", "Foundry", "Gemma 12B"),
+    ("foundry", "Foundry", "Gemma 4 12B"),
 )
+
+# The short word the tile's badge chip shows, per state. The chip is bold and
+# at the right edge, so it is the first thing read: it carries the state and
+# nothing else. A raw `active`/`preparing` must never reach a resident, and an
+# unlisted state renders "" — which hides the chip rather than leaving a word
+# on a row that has nothing to say (#1385).
+BADGES = {
+    "active": "läuft",
+    "preparing": "wird geladen",
+    "releasing": "wird freigegeben",
+}
 
 PROFILE_TITLES = {profile: title for profile, title, _ in PROFILES}
 
@@ -191,32 +202,35 @@ def when_text(expires_at: float | None, *, now: float | None = None) -> str:
     return f"bis {end:%d.%m}. {end:%H:%M}"
 
 
-def remaining_text(expires_at: float | None, *, now: float | None = None) -> str:
-    """ "noch 42 Min" while the window ends within the hour, "bis 16:30" after.
-
-    A resident reading a tile wants the number that is about to matter: minutes
-    when the card is nearly back, a clock time when it is hours away.
-    """
-    if not isinstance(expires_at, (int, float)) or not expires_at:
-        return ""
-    now = time.time() if now is None else now
-    seconds = expires_at - now
-    if 0 < seconds < 3600:
-        return f"noch {max(int(seconds // 60), 1)} Min"
-    return when_text(expires_at, now=now)
-
-
 def _status_text(
-    state: str, *, expires_at: float | None, holder: str, now: float
+    state: str,
+    *,
+    profile: str,
+    model_name: str,
+    expires_at: float | None,
+    holder: str,
+    now: float,
 ) -> str:
-    if state == "preparing":
-        return "wird geladen — das dauert etwa eine Minute"
-    if state == "releasing":
-        return "wird freigegeben — gleich wieder da"
+    """The line under the title: the model FIRST, then when its window ends.
+
+    Always a clock ("bis 19:42", "bis morgen 07:00"), never a remaining
+    duration — "noch 42 Min" is a number a resident has to add to the current
+    time to know when the card is free again (#1385). An inactive row says
+    nothing here: its `detail` already names the model, and the tile joins the
+    two into one line.
+    """
     if state == "available":
-        return "nicht geladen"
-    parts = ["gerade geladen"]
-    when = remaining_text(expires_at, now=now)
+        return ""
+    if state == "preparing":
+        return f"{model_name} · das dauert etwa eine Minute"
+    if state == "releasing":
+        return f"{model_name} · gleich wieder da"
+    parts = [model_name]
+    when = when_text(expires_at, now=now)
+    if not when and profile == HOUSEHOLD:
+        # The house holds no window, so there is no end to name — say whose
+        # model it is instead of leaving the active row on the bare name.
+        when = "Haushalt"
     if when:
         parts.append(when)
     if holder and holder != HOLDER:
@@ -250,8 +264,11 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
     Each row is a complete choice, because the app resolves one action per tool
     (#1381): `profile` + `hours` are what the single `model.set` reads off it.
     `state` is the machine word (`active` = loaded right now, `available`,
-    `preparing`, `releasing`); `status_text` is that state said in German and
-    is the only place a time appears, because a tile renders a field raw.
+    `preparing`, `releasing`); `badge` is that state as the one short word the
+    tile shows in bold; `status_text` names the model and the end of its window
+    and is the only place a time appears, because a tile renders a field raw.
+    `status_text` and `detail` are never both filled — the tile joins them into
+    one line, so the model name is in exactly one of them.
     """
     now = time.time() if now is None else now
     lease_state = str(lease.get("state") or "none")
@@ -281,7 +298,14 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
             row_holder = holder if leased == profile else ""
             row_expires = expires_at if leased == profile else None
             alias = model_lease.ALIASES[profile]
-        status = _status_text(state, expires_at=row_expires, holder=row_holder, now=now)
+        status = _status_text(
+            state,
+            profile=profile,
+            model_name=model_name,
+            expires_at=row_expires,
+            holder=row_holder,
+            now=now,
+        )
         for row_id, title, hours in _windows(profile, now=now):
             out.append(
                 {
@@ -291,8 +315,9 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
                     "hours": hours,
                     "alias": alias,
                     "state": state,
+                    "badge": BADGES.get(state, ""),
                     "status_text": status,
-                    "detail": model_name,
+                    "detail": "" if status else model_name,
                     "holder": row_holder,
                 }
             )

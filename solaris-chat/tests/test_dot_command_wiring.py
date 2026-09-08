@@ -101,6 +101,10 @@ def test_the_model_tile_declares_exactly_one_action():
     schema = model["tool-cell-schema"]
     assert schema["subtitle"] == "status_text"
     assert schema["meta"] == ["detail"]
+    # The bold chip at the right edge (#1385) — a ready German word, never the
+    # `state` field, whose values are `active`/`preparing`.
+    assert schema["badge"] == "badge"
+    assert "state" not in schema
     assert "expires_at" not in str(schema) and "remaining_s" not in str(schema)
 
 

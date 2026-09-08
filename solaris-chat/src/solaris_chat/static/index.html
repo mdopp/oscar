@@ -5251,9 +5251,14 @@
                 var t = document.createElement("div"); t.className = "task-title";
                 t.textContent = row.title;
                 var meta = document.createElement("div"); meta.className = "task-meta";
-                meta.textContent = row.status_text + (row.detail ? " · " + row.detail : "");
+                meta.textContent = [row.status_text, row.detail].filter(Boolean).join(" · ");
                 main.appendChild(t); main.appendChild(meta); r.appendChild(main);
                 var acts = document.createElement("div"); acts.className = "task-acts";
+                if (row.badge) {
+                  var badge = document.createElement("span");
+                  badge.className = "pill " + (row.state === "active" ? "on" : "off");
+                  badge.textContent = row.badge; acts.appendChild(badge);
+                }
                 var release = !row.hours;
                 acts.appendChild(modelBtn(el, row, release ? "Freigeben" : "Starten", release));
                 r.appendChild(acts); listEl.appendChild(r);
