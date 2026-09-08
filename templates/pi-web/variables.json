@@ -28,5 +28,30 @@
     "type": "text",
     "description": "Loopback port the Solaris Engine listens on, i.e. the `solaris` template's CHAT_PORT. Default `8787`. The post-deploy uses it once per deploy, to give back a coding lease still filed under the holder `pi-web` by the retired lease unit (#1392) — PI WEB itself never asks for a lease any more; that is the model tile's job. The endpoint carries no token — being able to reach it on loopback IS the authorisation — which is why only a host-side script can call it and never this pod, which has its own network namespace.",
     "default": "8787"
+  },
+  "PI_WEB_SB_TOKEN": {
+    "type": "secret",
+    "mintApiToken": true,
+    "description": "ServiceBay-Token, aus dem `pi-web-project add` für jedes Projekt ein eigenes Kind-Token ableitet (`POST /api/system/api-tokens/delegate`, Bereich `read`). **Leer lassen** — `mintApiToken` heißt, dass ServiceBay bei der Installation selbst ein Token anlegt: nur Lesen, ohne Ablauf, und bei einer erneuten Installation dasselbe. Ein eingetragener eigener Wert gewinnt. Nicht dasselbe wie `SB_READ_TOKEN`, das ServiceBay bei jedem Ausrollen widerruft und neu anlegt: Kind-Token werden mit ihrem Elternteil ungültig (servicebay#2049), ein rotierendes Elternteil würde also bei jedem Deploy alle Projekt-Token abräumen. Der Wert erreicht nur den Init-Container `pi-web-sb-token`, der ihn nach `/data/servicebay/parent-token` mit Modus 0600 schreibt; `sessiond` und `web` tragen die Variable nicht."
+  },
+  "SERVICEBAY_API_URL": {
+    "type": "text",
+    "default": "http://host.containers.internal:5888",
+    "description": "ServiceBay-Kontrollebene, gegen die `pi-web-project` Token ableitet und liest. `host.containers.internal`, weil dieser Pod eine eigene Netzwerk-Namensraum hat (ADR 0007) — `127.0.0.1` wäre der Pod selbst. Kein Geheimnis, deshalb steht die Variable in der Umgebung von `sessiond`; dasselbe Ziel und derselbe Standardwert wie bei claude-dev auf dieser Box. Nie die Domain `servicebay.<publicDomain>`: die ist Authelia-gesichert und für einen Menschen mit Browser gedacht."
+  },
+  "PI_WEB_GIT_TOKEN": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Git-Zugangstoken für private Repositories, die in einer PI-WEB-Sitzung geklont werden. Leer lassen, wenn nur öffentliche Repositories geklont werden — dann wird gar keine Zugangsdatei angelegt und eine vorhandene wird beim nächsten Start entfernt. Bei GitHub gehört hier ein **fine-grained personal access token** hinein, dessen Repository-Zugriff auf die Repositories beschränkt ist, in denen wirklich gearbeitet wird, mit der Berechtigung `Contents: Read and write` (mehr braucht `git clone`/`push` nicht). Der Wert wird nur im ServiceBay-Assistenten eingegeben und landet weder im Repository noch in einem Log: Er erreicht ausschließlich den Init-Container `pi-web-git-credentials`, der daraus die Datei `/data/pi-web/git-credentials` mit Modus 0600 schreibt — `sessiond` und `web` bekommen die Variable nie, eine Sitzung findet den Token also nicht in ihrer eigenen Umgebung."
+  },
+  "PI_WEB_GIT_USER": {
+    "type": "text",
+    "default": "x-access-token",
+    "description": "Benutzername, unter dem der Token in der Zugangsdatei steht. `x-access-token` ist GitHubs eigene Konvention für Token-Anmeldung über HTTPS und funktioniert für klassische wie fine-grained Tokens; der GitHub-Kontoname tut es ebenso. Bei einem anderen Anbieter das, was dessen Dokumentation als Benutzername zum Token nennt (GitLab: `oauth2`)."
+  },
+  "PI_WEB_GIT_HOST": {
+    "type": "text",
+    "default": "github.com",
+    "description": "Host, für den der Token gilt. Git wählt den Eintrag der Zugangsdatei nach Protokoll und Host aus, deshalb gilt der Token nur für `https://<dieser Host>/...` und für sonst nichts — ein Klon von einem anderen Host fragt weiterhin nach, statt den Token dorthin zu schicken."
   }
 }

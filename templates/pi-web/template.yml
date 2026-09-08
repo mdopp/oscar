@@ -56,6 +56,126 @@ spec:
       name: pi-web-data
     - mountPath: /workspace
       name: pi-web-workspace
+
+  # git-credentials — the only place in this pod where the git token exists.
+  # It runs as the image's `USER node`, so the store file it writes is owned by
+  # the UID the sessions run as and can be 0600; it has to come *after* the
+  # perms init above, whose recursive `a+rwX` would otherwise reopen it on
+  # every start. `sessiond` and `web` deliberately do NOT carry
+  # PI_WEB_GIT_TOKEN: a session's own shell therefore cannot read the token out
+  # of its environment, only use it through git. Nothing here puts the token in
+  # argv, in a remote URL or on stdout — `sh -c` sees the variable's *name*.
+  #
+  # ServiceBay has no secret-mount mechanism: every secret in this repo reaches
+  # its pod as a rendered `value:` (templates/solaris/template.yml does it for
+  # HASS_TOKEN, PUSH_TOKEN, CALDAV_PASSWORD …), so the value is readable by
+  # `podman inspect` for whoever can already run podman as the service user.
+  # Confining it to this one short-lived init container is what that buys.
+  - name: pi-web-git-credentials
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    env:
+    - name: PI_WEB_GIT_TOKEN
+      value: "{{PI_WEB_GIT_TOKEN}}"
+    - name: PI_WEB_GIT_USER
+      value: "{{PI_WEB_GIT_USER}}"
+    - name: PI_WEB_GIT_HOST
+      value: "{{PI_WEB_GIT_HOST}}"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      umask 077
+      store=/data/pi-web/git-credentials
+      config=/data/home/.gitconfig
+      user=${PI_WEB_GIT_USER:-x-access-token}
+      host=${PI_WEB_GIT_HOST:-github.com}
+      mkdir -p /data/pi-web /data/home
+      if [ -n "${PI_WEB_GIT_TOKEN:-}" ]; then
+        printf 'https://%s:%s@%s\n' "$user" "$PI_WEB_GIT_TOKEN" "$host" >"$store"
+        chmod 600 "$store"
+      else
+        rm -f "$store"
+      fi
+      unset PI_WEB_GIT_TOKEN
+      git config --file "$config" --replace-all credential.helper "store --file=$store"
+      git config --file "$config" --unset-all safe.directory || true
+      git config --file "$config" --add safe.directory /workspace
+      git config --file "$config" --add safe.directory '*'
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
+  # sb-token — the parent ServiceBay token `pi-web-project` delegates from
+  # (#1395 slice C). ServiceBay mints it itself at install (`mintApiToken` on a
+  # secret variable): read scope, never expiring, reused across re-installs.
+  # Same shape and the same reason as the credential init above: it runs after
+  # the perms init, as `USER node`, and writes a 0600 file rather than putting
+  # the value in sessiond's environment where every session would read it.
+  #
+  # The `chmod` on the entries is not belt-and-braces: each project's entry file
+  # holds that project's own token, they are written at runtime, and the perms
+  # init's recursive `a+rwX` would reopen every one of them on the next start.
+  - name: pi-web-sb-token
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    env:
+    - name: PI_WEB_SB_TOKEN
+      value: "{{PI_WEB_SB_TOKEN}}"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      umask 077
+      dir=/data/servicebay
+      file=$dir/parent-token
+      mkdir -p "$dir/projects"
+      chmod 700 "$dir" "$dir/projects"
+      if [ -n "${PI_WEB_SB_TOKEN:-}" ]; then
+        printf '%s\n' "$PI_WEB_SB_TOKEN" >"$file"
+        chmod 600 "$file"
+      else
+        rm -f "$file"
+      fi
+      unset PI_WEB_SB_TOKEN
+      find "$dir/projects" -type f -name '*.json' -exec chmod 600 {} +
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
+  # plugins — install the "Repo klonen" plugin (#1395 slice B) into the local
+  # plugin root PI WEB scans, `$PI_WEB_DATA_DIR/plugins`. A plugin found there
+  # is enabled unless the config disables it, so this copy IS the installation:
+  # nothing has to be switched on under Settings → PI WEB plugins.
+  #
+  # It has to be a copy into /data rather than a mount from the image, because
+  # the plugin root is scanned inside the volume PI WEB owns. `rm -rf` first is
+  # deliberate and safe: the target is the directory this image put there, so a
+  # file dropped from the plugin between versions does not linger and keep being
+  # served. (That is the opposite of the repo's tombstone rule, which is about
+  # ServiceBay's asset-transport — this path never goes through it.)
+  #
+  # The server half of a plugin is activated when `sessiond` starts, which is
+  # why this runs as an init container: by the time sessiond comes up, the files
+  # are already in place.
+  - name: pi-web-plugins
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      dest=/data/pi-web/plugins
+      mkdir -p "$dest"
+      for plugin in /opt/solaris/pi-web-plugins/*/; do
+        name=$(basename "$plugin")
+        rm -rf "$dest/$name"
+        cp -a "${plugin%/}" "$dest/"
+      done
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
@@ -66,6 +186,12 @@ spec:
     # `args`, not `command`: the image's ENTRYPOINT is tini, and a `command`
     # here would replace it and leave the sessions' children unreaped.
     args: ["pi-web-sessiond"]
+    env:
+    # Where `pi-web-project` reaches ServiceBay. The URL is not a credential and
+    # the sessions inherit it from sessiond; the token deliberately does NOT
+    # travel this way — it stays in the 0600 file the init above writes.
+    - name: SERVICEBAY_API_URL
+      value: "{{SERVICEBAY_API_URL}}"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data

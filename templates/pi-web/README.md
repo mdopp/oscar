@@ -133,6 +133,200 @@ The run-state log of #1373/#1377/#1378 is gone with the reason for it: nothing
 has to remember whether the operator had PI WEB running, because the answer is
 now always "yes".
 
+## Git-Zugang für private Repositories
+
+Eine PI-WEB-Sitzung ist eine Shell in einem Ordner unter `/workspace`. „Add a
+project" zeigt auf einen Ordner, **der schon existiert** — geklont wird über den
+Knopf „Repo klonen" (siehe unten) oder im Terminal, und beides braucht
+Zugangsdaten im Container, sonst bleibt ein `git clone` eines privaten
+Repositories an der Anmeldung hängen (#1395).
+
+**Was der Betreiber einträgt** — im ServiceBay-Assistenten, einmal:
+
+| Variable | Wert |
+|---|---|
+| `PI_WEB_GIT_TOKEN` | das Token (Typ `secret`, kein Vorgabewert, wird nicht erzeugt) |
+| `PI_WEB_GIT_USER` | `x-access-token` (GitHub-Konvention; GitLab: `oauth2`) |
+| `PI_WEB_GIT_HOST` | `github.com` |
+
+**Ein GitHub-Token dafür anlegen:** GitHub → Settings → Developer settings →
+Personal access tokens → **Fine-grained tokens** → *Generate new token*.
+*Repository access* auf **Only select repositories** stellen und genau die
+Repositories auswählen, in denen hier gearbeitet wird; unter *Repository
+permissions* reicht **Contents: Read and write** — mehr braucht `git clone`,
+`fetch` und `push` nicht. Eine Laufzeit setzen (90 Tage sind ein guter
+Kompromiss) und den Wert direkt in den Assistenten kopieren; GitHub zeigt ihn
+nur einmal.
+
+**Wie das Token in den Container kommt.** Nicht über `sessiond` oder `web`,
+sondern nur über einen eigenen Init-Container `pi-web-git-credentials`, der als
+`USER node` läuft und daraus einmal pro Start schreibt:
+
+- `/data/pi-web/git-credentials`, Modus **0600**, Eigentümer `node` — das
+  Format des eingebauten Helfers `git credential-store`, eine Zeile
+  `https://<user>:<token>@<host>`.
+- `/data/home/.gitconfig` (`$HOME` im Image) mit
+  `credential.helper = store --file=/data/pi-web/git-credentials` und
+  `safe.directory` für `/workspace` und `*` — ohne das verweigert Git jeden
+  Checkout, dessen Dateien einer anderen UID gehören.
+
+Der Init-Container muss **nach** `pi-web-data-perms` laufen: dessen
+`chmod -R a+rwX /data` würde eine 0600-Datei bei jedem Start wieder öffnen.
+
+**Was das schützt — und was nicht.** Das Token steht in keinem Argument, in
+keiner Remote-URL und in keiner Shell-History; es taucht in `ps` nicht auf und
+wird nirgends ausgegeben. `sessiond` und `web` tragen die Variable *nicht*, eine
+Sitzung findet sie also nicht in ihrer eigenen Umgebung. Sie kann die Datei
+`/data/pi-web/git-credentials` aber lesen — sie läuft als `node`, und genau das
+ist der Zweck der Datei; wer eine Sitzung hat, hat das Token. Und weil
+ServiceBay keinen Secret-Mount kennt (jedes Secret dieses Repositories erreicht
+seinen Pod als gerendertes `value:`, siehe `templates/solaris/template.yml`),
+ist der Wert für `podman inspect` dieses einen Init-Containers sichtbar. Der
+Zuschnitt ist deshalb das Token selbst: fine-grained, nur die Repositories, nur
+`Contents`.
+
+Ein geleertes `PI_WEB_GIT_TOKEN` entfernt die Datei beim nächsten Start wieder —
+Widerrufen heißt also: Token auf GitHub löschen, Feld im Assistenten leeren,
+neu ausrollen.
+
+> Nach einem Upgrade sind die drei Variablen neu: ServiceBay übernimmt für neue
+> Variablen keine Installations-Überschreibungen, das Feld muss im Assistenten
+> einmal ausgefüllt werden.
+
+## Ein ServiceBay-Token je Projekt
+
+Damit der Agent in einer Sitzung diese Box *lesen* kann — Dienstliste, Logs,
+gerenderte Service-Definitionen — bekommt jedes Projekt sein eigenes,
+schreibgeschütztes ServiceBay-Token (#1395).
+
+**Warum das hier anders aussieht als bei claude-dev.** Bei claude-dev trägt der
+MCP-Eintrag des Projekts dessen `sb_`-Token, und dieser Eintrag *ist* der
+Besitznachweis (servicebay#2680). **Pi kennt kein MCP** — upstream sagt das
+ausdrücklich („It intentionally does not include built-in MCP … build CLI tools
+with READMEs") — es gibt hier also keine MCP-Konfigurationsdatei, in die ein
+Token gehören könnte. An ihre Stelle tritt ein kleines Kommando im Container:
+
+```
+pi-web-project add <Projekt>        # Token anlegen
+pi-web-project get /api/services    # damit lesen
+pi-web-project list                 # welche Projekte eins haben
+pi-web-project remove <Projekt>     # Token widerrufen
+```
+
+**Die drei Regeln**, weil sie das Verhalten erklären, das sonst überrascht:
+
+- **Der Eintrag ist der Besitznachweis.** Ein Projekt gehört uns genau dann,
+  wenn `/data/servicebay/projects/<Name>.json` existiert und ein `sb_`-Token
+  nennt. Dieser eine Datensatz ist gleichzeitig Kennzeichen und Zugangsdatum,
+  Token und Eintrag können also nicht auseinanderlaufen.
+- **Nichts wird übernommen, nur weil es da ist.** Es gibt keinen Abgleich beim
+  Start, der für neu aufgetauchte Ordner Token anlegt, und keine Markierungsdatei
+  zum Mitmachen. `add` tippt ein Mensch, einmal, pro Projekt — was von Hand
+  geklont wurde, bleibt unangetastet, und `remove` weist es ab statt zu raten.
+- **`remove` löscht keine Dateien.** Es widerruft das Token und entfernt den
+  Eintrag; das Arbeitsverzeichnis bleibt liegen. Danach scheitert derselbe
+  Lesezugriff mit **401**.
+
+**Woher das Eltern-Token kommt.** Aus der Variablen `PI_WEB_SB_TOKEN` — **leer
+lassen**: `mintApiToken` heißt, dass ServiceBay bei der Installation selbst
+eines anlegt, nur mit Leserecht und ohne Ablauf, und bei einer erneuten
+Installation dasselbe wiederverwendet. Kein Handgriff für den Betreiber. Ein
+selbst eingetragener Wert gewinnt.
+
+> Ausdrücklich **nicht** `SB_READ_TOKEN`: das widerruft und erneuert ServiceBay
+> bei jedem Ausrollen, und Kind-Token werden mit ihrem Elternteil ungültig
+> (servicebay#2049) — jeder Deploy hätte damit sämtliche Projekt-Token
+> abgeräumt, ohne dass irgendwo etwas danach aussieht.
+
+Der Wert erreicht nur den Init-Container `pi-web-sb-token`, der ihn nach
+`/data/servicebay/parent-token` (Modus 0600, Eigentümer `node`) schreibt und
+nebenbei die Modi der Projekt-Einträge wiederherstellt — `pi-web-data-perms`
+öffnet mit `chmod -R a+rwX /data` bei jedem Start sonst auch die. `sessiond` und
+`web` tragen die Variable nicht; in der Umgebung einer Sitzung steht nur
+`SERVICEBAY_API_URL`, und das ist kein Geheimnis. Wie beim Git-Token gilt: wer
+eine Sitzung hat, kann die Dateien unter `/data` lesen — der Zuschnitt ist
+deshalb das Recht selbst, `read` und sonst nichts.
+
+> Nach einem Upgrade sind `PI_WEB_SB_TOKEN` und `SERVICEBAY_API_URL` neue
+> Variablen; ServiceBay übernimmt für neue Variablen keine
+> Installations-Überschreibungen, der Assistent muss also einmal durchlaufen
+> werden (das Token-Feld dabei leer lassen).
+
+## Der Knopf „Repo klonen"
+
+Ein Repository kommt auf die Box, ohne dass jemand ein Terminal öffnet: in PI WEB
+im Projekt **Werkstatt** der Reiter **Repo klonen**, Adresse eintragen, klicken.
+Der Klon landet unter `/workspace/<name>` und ist danach ein **eigenes Projekt**
+in der Liste, in dem sich sofort eine Sitzung starten lässt (#1395).
+
+**Beim ersten Mal**, solange es noch gar kein Projekt gibt: die Befehlspalette
+öffnen und *„Werkstatt für geklonte Repositories anlegen"* ausführen. Das legt
+`/workspace` selbst als Projekt an — mehr ist einmalig nicht zu tun, danach ist
+der Reiter immer da.
+
+**Was der Knopf annimmt und was nicht.** Erlaubt sind genau die Formen, die auch
+claude-dev annimmt: `https://…`, `http://…`, `ssh://…` und
+`git@server:benutzer/projekt.git`. Alles andere — `file://`, ein Pfad auf der
+Box, ein Wort mit einem Bindestrich am Anfang — wird abgelehnt, mit einem Satz,
+der sagt, was stattdessen dort hingehört. Der Ordnername wird aus dem letzten
+Teil der Adresse abgeleitet (`.git` fällt weg) und muss dieselbe Namensregel
+erfüllen wie bei `pi-web-project`, damit der Token-Schritt danach nicht an einem
+Namen scheitert, den der Klon-Schritt noch durchgelassen hat.
+
+**Es wird nie etwas überschrieben.** Liegt unter `/workspace` schon ein Ordner
+dieses Namens, bricht der Knopf ab und sagt das — Git wird dafür gar nicht erst
+gestartet. Nichts wird umbenannt und nichts gelöscht.
+
+**Was ein Klick auslöst**, in dieser Reihenfolge: `git clone` mit den
+hinterlegten Zugangsdaten (Scheibe A), dann `pi-web-project add <name>` für das
+eigene Leserecht des Projekts (Scheibe C), dann `POST /api/projects` beim
+Wirt, damit der Klon in der Projektliste steht. Schlägt der Token-Schritt fehl,
+gilt der Klon trotzdem als erfolgreich: der Ordner ist da, und die Meldung sagt,
+wie sich das Leserecht nachholen lässt. Ein Fehlschlag beim Klonen selbst wird
+in Klartext übersetzt — abgelehnte Anmeldung, unbekannter Server, kein
+Repository unter der Adresse — mit Gits eigener Meldung darunter, aus der
+Zugangsdaten herausgestrichen sind.
+
+### Warum das ein Plugin ist und keine zweite Oberfläche
+
+PI WEB bringt seine Projektverwaltung mit; daneben eine eigene
+Konfigurationsseite zu stellen wie bei claude-dev war die ausdrückliche
+Entscheidung *dagegen* (mdopp, 2026-09-08). Upstream sieht für genau diesen Fall
+Plugins vor, und der eingebaute Git-Teil benutzt dieselben öffentlichen
+Verträge — wir hängen uns also nicht an, sondern benutzen die vorgesehene Tür.
+
+Der Vertrag bestimmt dabei den Zuschnitt: Ein Server-Plugin darf **nur** einen
+Workspace-Provider beitragen, und sein Rückkanal `backend.request` ist nur in
+einem Projekt erreichbar, das dieser Provider **exklusiv besitzt**. Deshalb ist
+`/workspace` selbst das Projekt „Werkstatt", in dem der Knopf sitzt — und
+deshalb beansprucht unser Provider ausdrücklich **nichts** darunter: die Klone
+gehören dem eingebauten Git-Plugin, mit Worktrees und Diff-Ansicht. Der Knopf
+fügt eine Tür hinzu und nimmt nichts weg. Kommandos laufen über das
+`execFile` des Wirts, das argumentbasiert ist und **keine Shell** benutzt — eine
+eingetippte Adresse kann also kein zweites Kommando werden.
+
+### Wie das Plugin installiert wird
+
+Es liegt im **Image** (`pi-web/plugins/solaris-clone`, kopiert nach
+`/opt/solaris/pi-web-plugins`), nicht im Asset-Baum des Templates: Es ist gegen
+die Plugin-API der in `pi-web/Dockerfile` angehefteten PI-WEB-Version
+geschrieben, die beiden gehören zusammen und werden zusammen angehoben.
+
+Der Init-Container `pi-web-plugins` kopiert es bei jedem Start nach
+`/data/pi-web/plugins/` — das ist die lokale Plugin-Quelle, die PI WEB von sich
+aus durchsucht. Ein dort gefundenes Plugin ist **standardmäßig aktiv**;
+*Settings → PI WEB plugins* braucht man nur zum **Ab**schalten, nicht zum
+Freischalten. Es ist also nichts zu klicken, damit der Reiter nach dem Ausrollen
+da ist.
+
+> **Der Server-Teil wird beim Start von `sessiond` aktiviert** — eine Änderung
+> daran braucht also einen Neustart des Sitzungs-Dienstes, und PI WEB weist eine
+> Anfrage an eine veraltete Fassung mit *„reload after the session daemon
+> restarts"* ab. Beim Ausrollen über ServiceBay passiert das von selbst, weil der
+> Pod ohnehin neu startet. Nur wer die Dateien unter `/data` von Hand ändert,
+> muss `sessiond` selbst neu starten; für die Browser-Hälfte allein genügt ein
+> Neuladen der Seite.
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -152,3 +346,24 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   until somebody takes the lease from the model tile.
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
+- In einer Sitzung im Projektordner: `pi-web-project add <Projekt>` meldet eine
+  Token-Kennung, `pi-web-project get /api/services` beantwortet die Dienstliste,
+  und nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit
+  **401** — das Arbeitsverzeichnis liegt danach noch da. `ls -l
+  /data/servicebay/projects/` zeigt `-rw------- node`.
+- `ls /data/pi-web/plugins/solaris-clone` zeigt das Plugin, und unter
+  *Settings → PI WEB plugins* steht „solaris-clone" als aktiv — ohne dass jemand
+  es eingeschaltet hat.
+- Befehlspalette → *„Werkstatt für geklonte Repositories anlegen"*: `/workspace`
+  taucht als Projekt auf und hat den Reiter **Repo klonen**.
+- Dort eine öffentliche Repo-Adresse eintragen und klicken: der Klon liegt unter
+  `/workspace/<name>`, steht nach dem Aktualisieren als eigenes Projekt in der
+  Liste, und `pi-web-project list` nennt für ihn eine Token-Kennung.
+- Derselbe Klick ein zweites Mal meldet, dass der Ordner schon existiert — und
+  `ls -la /workspace/<name>` zeigt denselben Stand wie vorher.
+- Eine abgelehnte Adresse (`file:///etc/passwd`) meldet einen Satz auf Deutsch,
+  und im Log von `sessiond` steht kein `git`-Aufruf dazu.
+- In einer Sitzung: `git clone https://github.com/<privates Repo>.git` läuft ohne
+  Rückfrage durch, `git -C /workspace/<name> fetch` ebenso. `ls -l
+  /data/pi-web/git-credentials` zeigt `-rw------- node`, und
+  `grep -r <Token-Präfix> ~/.bash_history` sowie `ps auxww` finden nichts.

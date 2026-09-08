@@ -1,0 +1,18 @@
+{
+  "name": "@solaris/pi-web-clone-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repo klonen — ein Klon-Knopf als PI-WEB-Plugin (solarisbay#1395).",
+  "piWeb": {
+    "plugins": [
+      {
+        "id": "solaris-clone",
+        "browserRoot": "browser",
+        "module": "browser/pi-web-plugin.js",
+        "serverModule": "server-plugin.js",
+        "machineSpecific": true
+      }
+    ]
+  }
+}
