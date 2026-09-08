@@ -49,6 +49,14 @@ COPY --from=package /usr/local/bin /usr/local/bin
 # delegated read-only ServiceBay token per project (#1395).
 COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project
 
+# The "Repo klonen" plugin (#1395 slice B). It rides in the image rather than in
+# the template's asset tree because it is written against the plugin API of the
+# PI_WEB_VERSION pinned above — the two move together or not at all. An init
+# container copies it to $PI_WEB_DATA_DIR/plugins, which is the local plugin
+# root PI WEB scans; a plugin found there is enabled unless the config says
+# otherwise, so there is nothing to switch on in Settings.
+COPY plugins /opt/solaris/pi-web-plugins
+
 # Everything durable lives under /data, which the pod mounts from the host:
 # the PI WEB state (project registry, session archives, the sessiond socket)
 # and the Pi agent directory that carries auth, settings and models.json —

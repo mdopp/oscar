@@ -136,9 +136,10 @@ now always "yes".
 ## Git-Zugang für private Repositories
 
 Eine PI-WEB-Sitzung ist eine Shell in einem Ordner unter `/workspace`. „Add a
-project" zeigt auf einen Ordner, **der schon existiert** — geklont wird im
-Terminal, und dafür braucht der Container Zugangsdaten, sonst bleibt ein
-`git clone` eines privaten Repositories an der Anmeldung hängen (#1395).
+project" zeigt auf einen Ordner, **der schon existiert** — geklont wird über den
+Knopf „Repo klonen" (siehe unten) oder im Terminal, und beides braucht
+Zugangsdaten im Container, sonst bleibt ein `git clone` eines privaten
+Repositories an der Anmeldung hängen (#1395).
 
 **Was der Betreiber einträgt** — im ServiceBay-Assistenten, einmal:
 
@@ -251,6 +252,81 @@ deshalb das Recht selbst, `read` und sonst nichts.
 > Installations-Überschreibungen, der Assistent muss also einmal durchlaufen
 > werden (das Token-Feld dabei leer lassen).
 
+## Der Knopf „Repo klonen"
+
+Ein Repository kommt auf die Box, ohne dass jemand ein Terminal öffnet: in PI WEB
+im Projekt **Werkstatt** der Reiter **Repo klonen**, Adresse eintragen, klicken.
+Der Klon landet unter `/workspace/<name>` und ist danach ein **eigenes Projekt**
+in der Liste, in dem sich sofort eine Sitzung starten lässt (#1395).
+
+**Beim ersten Mal**, solange es noch gar kein Projekt gibt: die Befehlspalette
+öffnen und *„Werkstatt für geklonte Repositories anlegen"* ausführen. Das legt
+`/workspace` selbst als Projekt an — mehr ist einmalig nicht zu tun, danach ist
+der Reiter immer da.
+
+**Was der Knopf annimmt und was nicht.** Erlaubt sind genau die Formen, die auch
+claude-dev annimmt: `https://…`, `http://…`, `ssh://…` und
+`git@server:benutzer/projekt.git`. Alles andere — `file://`, ein Pfad auf der
+Box, ein Wort mit einem Bindestrich am Anfang — wird abgelehnt, mit einem Satz,
+der sagt, was stattdessen dort hingehört. Der Ordnername wird aus dem letzten
+Teil der Adresse abgeleitet (`.git` fällt weg) und muss dieselbe Namensregel
+erfüllen wie bei `pi-web-project`, damit der Token-Schritt danach nicht an einem
+Namen scheitert, den der Klon-Schritt noch durchgelassen hat.
+
+**Es wird nie etwas überschrieben.** Liegt unter `/workspace` schon ein Ordner
+dieses Namens, bricht der Knopf ab und sagt das — Git wird dafür gar nicht erst
+gestartet. Nichts wird umbenannt und nichts gelöscht.
+
+**Was ein Klick auslöst**, in dieser Reihenfolge: `git clone` mit den
+hinterlegten Zugangsdaten (Scheibe A), dann `pi-web-project add <name>` für das
+eigene Leserecht des Projekts (Scheibe C), dann `POST /api/projects` beim
+Wirt, damit der Klon in der Projektliste steht. Schlägt der Token-Schritt fehl,
+gilt der Klon trotzdem als erfolgreich: der Ordner ist da, und die Meldung sagt,
+wie sich das Leserecht nachholen lässt. Ein Fehlschlag beim Klonen selbst wird
+in Klartext übersetzt — abgelehnte Anmeldung, unbekannter Server, kein
+Repository unter der Adresse — mit Gits eigener Meldung darunter, aus der
+Zugangsdaten herausgestrichen sind.
+
+### Warum das ein Plugin ist und keine zweite Oberfläche
+
+PI WEB bringt seine Projektverwaltung mit; daneben eine eigene
+Konfigurationsseite zu stellen wie bei claude-dev war die ausdrückliche
+Entscheidung *dagegen* (mdopp, 2026-09-08). Upstream sieht für genau diesen Fall
+Plugins vor, und der eingebaute Git-Teil benutzt dieselben öffentlichen
+Verträge — wir hängen uns also nicht an, sondern benutzen die vorgesehene Tür.
+
+Der Vertrag bestimmt dabei den Zuschnitt: Ein Server-Plugin darf **nur** einen
+Workspace-Provider beitragen, und sein Rückkanal `backend.request` ist nur in
+einem Projekt erreichbar, das dieser Provider **exklusiv besitzt**. Deshalb ist
+`/workspace` selbst das Projekt „Werkstatt", in dem der Knopf sitzt — und
+deshalb beansprucht unser Provider ausdrücklich **nichts** darunter: die Klone
+gehören dem eingebauten Git-Plugin, mit Worktrees und Diff-Ansicht. Der Knopf
+fügt eine Tür hinzu und nimmt nichts weg. Kommandos laufen über das
+`execFile` des Wirts, das argumentbasiert ist und **keine Shell** benutzt — eine
+eingetippte Adresse kann also kein zweites Kommando werden.
+
+### Wie das Plugin installiert wird
+
+Es liegt im **Image** (`pi-web/plugins/solaris-clone`, kopiert nach
+`/opt/solaris/pi-web-plugins`), nicht im Asset-Baum des Templates: Es ist gegen
+die Plugin-API der in `pi-web/Dockerfile` angehefteten PI-WEB-Version
+geschrieben, die beiden gehören zusammen und werden zusammen angehoben.
+
+Der Init-Container `pi-web-plugins` kopiert es bei jedem Start nach
+`/data/pi-web/plugins/` — das ist die lokale Plugin-Quelle, die PI WEB von sich
+aus durchsucht. Ein dort gefundenes Plugin ist **standardmäßig aktiv**;
+*Settings → PI WEB plugins* braucht man nur zum **Ab**schalten, nicht zum
+Freischalten. Es ist also nichts zu klicken, damit der Reiter nach dem Ausrollen
+da ist.
+
+> **Der Server-Teil wird beim Start von `sessiond` aktiviert** — eine Änderung
+> daran braucht also einen Neustart des Sitzungs-Dienstes, und PI WEB weist eine
+> Anfrage an eine veraltete Fassung mit *„reload after the session daemon
+> restarts"* ab. Beim Ausrollen über ServiceBay passiert das von selbst, weil der
+> Pod ohnehin neu startet. Nur wer die Dateien unter `/data` von Hand ändert,
+> muss `sessiond` selbst neu starten; für die Browser-Hälfte allein genügt ein
+> Neuladen der Seite.
+
 ## Not in the `solarisbay` stack
 
 The stack is the household assistant — the model server plus the Solaris
@@ -275,6 +351,18 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   und nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit
   **401** — das Arbeitsverzeichnis liegt danach noch da. `ls -l
   /data/servicebay/projects/` zeigt `-rw------- node`.
+- `ls /data/pi-web/plugins/solaris-clone` zeigt das Plugin, und unter
+  *Settings → PI WEB plugins* steht „solaris-clone" als aktiv — ohne dass jemand
+  es eingeschaltet hat.
+- Befehlspalette → *„Werkstatt für geklonte Repositories anlegen"*: `/workspace`
+  taucht als Projekt auf und hat den Reiter **Repo klonen**.
+- Dort eine öffentliche Repo-Adresse eintragen und klicken: der Klon liegt unter
+  `/workspace/<name>`, steht nach dem Aktualisieren als eigenes Projekt in der
+  Liste, und `pi-web-project list` nennt für ihn eine Token-Kennung.
+- Derselbe Klick ein zweites Mal meldet, dass der Ordner schon existiert — und
+  `ls -la /workspace/<name>` zeigt denselben Stand wie vorher.
+- Eine abgelehnte Adresse (`file:///etc/passwd`) meldet einen Satz auf Deutsch,
+  und im Log von `sessiond` steht kein `git`-Aufruf dazu.
 - In einer Sitzung: `git clone https://github.com/<privates Repo>.git` läuft ohne
   Rückfrage durch, `git -C /workspace/<name> fetch` ebenso. `ls -l
   /data/pi-web/git-credentials` zeigt `-rw------- node`, und

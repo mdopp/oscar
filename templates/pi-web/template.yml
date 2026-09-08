@@ -143,6 +143,39 @@ spec:
     - mountPath: /data
       name: pi-web-data
 
+  # plugins — install the "Repo klonen" plugin (#1395 slice B) into the local
+  # plugin root PI WEB scans, `$PI_WEB_DATA_DIR/plugins`. A plugin found there
+  # is enabled unless the config disables it, so this copy IS the installation:
+  # nothing has to be switched on under Settings → PI WEB plugins.
+  #
+  # It has to be a copy into /data rather than a mount from the image, because
+  # the plugin root is scanned inside the volume PI WEB owns. `rm -rf` first is
+  # deliberate and safe: the target is the directory this image put there, so a
+  # file dropped from the plugin between versions does not linger and keep being
+  # served. (That is the opposite of the repo's tombstone rule, which is about
+  # ServiceBay's asset-transport — this path never goes through it.)
+  #
+  # The server half of a plugin is activated when `sessiond` starts, which is
+  # why this runs as an init container: by the time sessiond comes up, the files
+  # are already in place.
+  - name: pi-web-plugins
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      dest=/data/pi-web/plugins
+      mkdir -p "$dest"
+      for plugin in /opt/solaris/pi-web-plugins/*/; do
+        name=$(basename "$plugin")
+        rm -rf "$dest/$name"
+        cp -a "${plugin%/}" "$dest/"
+      done
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
