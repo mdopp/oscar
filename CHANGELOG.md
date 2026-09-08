@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.61.0](https://github.com/mdopp/solarisbay/compare/v0.60.2...v0.61.0) (2026-09-08)
+
+
+### Features
+
+* **chat:** serve the model profiles as tool rows and hold the window for the tile ([14d32fc](https://github.com/mdopp/solarisbay/commit/14d32fc786d261f45774179bf295a8f2aca2fe41)), closes [#1374](https://github.com/mdopp/solarisbay/issues/1374)
+* **skill:** add the Modell tile as a declarative kind tool plugin ([40791e9](https://github.com/mdopp/solarisbay/commit/40791e93954c9172d5ec01b517dd6e1354172a38)), closes [#1374](https://github.com/mdopp/solarisbay/issues/1374)
+
 ## [0.60.2](https://github.com/mdopp/solarisbay/compare/v0.60.1...v0.60.2) (2026-09-08)
 
 
