@@ -361,16 +361,25 @@ spec:
   # variable when an existing service is upgraded (servicebay#2913), so a plain
   # `install_template pi-web` rendered the tag empty, the hostPath became
   # `/agent-cli`, and the pod crash-looped on a read-only root while the install
-  # job still reported `done`. `DATA_DIR` is a platform variable and always set.
+  # job still reported `done`.
+  #
+  # Also not `{{DATA_DIR}}` (#1403's own fix-forward tried that in #1404 and
+  # still crash-looped-free but empty-mounted): `DATA_DIR` is scoped *per
+  # service* — box-verified against #1404 as `/mnt/data/stacks/pi-web` for this
+  # pod, not the flat `/mnt/data` the macro's name suggests. The checkout is
+  # ServiceBay's own delivery target, one copy shared by every consumer
+  # regardless of which service asks for it, so it is not a service-scoped
+  # path to begin with and DATA_DIR is the wrong tool for it. Hard-coded to the
+  # literal location ServiceBay itself writes to.
   - name: agent-kit-cli
     hostPath:
-      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/agent-cli
+      path: /mnt/data/servicebay/agent-kit/checkout/agent-cli
       type: DirectoryOrCreate
   - name: agent-kit-docs
     hostPath:
-      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/agent-docs
+      path: /mnt/data/servicebay/agent-kit/checkout/agent-docs
       type: DirectoryOrCreate
   - name: agent-kit-assists
     hostPath:
-      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/assists
+      path: /mnt/data/servicebay/agent-kit/checkout/assists
       type: DirectoryOrCreate

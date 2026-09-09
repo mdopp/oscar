@@ -271,16 +271,20 @@ in die Formen, die Pi wirklich liest (#1398 Scheibe A).
 Unterverzeichnisse und nicht die Wurzel: dort liegen auch ServiceBays eigene
 Repository-Dateien, und dessen `CLAUDE.md` in einem Container, der an einem
 *anderen* Projekt arbeitet, wäre eine zweite Anweisungsquelle, der das Modell
-folgt. Der Pfad steht **fest** im Pod-Spec — `<DATA_DIR>/servicebay/agent-kit/
+folgt. Der Pfad steht **fest** im Pod-Spec — `/mnt/data/servicebay/agent-kit/
 checkout/{agent-cli,agent-docs,assists}` — und ist bewusst keine eigene
 Installationsvariable: ServiceBay setzt den Standardwert einer *neu
 hinzugekommenen* Variable beim Upgrade eines bestehenden Dienstes nicht ein
 (servicebay#2913), der Mount-Pfad wäre dann leer gerendert und der Pod liefe in
 eine Neustart-Schleife, während der Installationsauftrag `done` meldet (#1403).
-`DATA_DIR` ist eine Plattformvariable und immer gesetzt. Fährt die Box ein
-ServiceBay, das noch nichts ausliefert, startet PI WEB trotzdem — der Mount ist
-dann leer, der Init-Container schreibt genau eine Zeile ins Log und endet mit 0,
-und `servicebay` sagt es beim Aufruf in einem Satz.
+Auch nicht `{{DATA_DIR}}` (ein erster Versuch in #1404): die Variable ist **pro
+Dienst** skaliert — box-verifiziert als `/mnt/data/stacks/pi-web` für diesen
+Pod, nicht das flache `/mnt/data`, das der Name nahelegt —, während dieser
+Checkout ServiceBays eigenes Auslieferungsziel ist, dieselbe Kopie für jeden
+Abnehmer gleich welchen Dienstes. Fährt die Box ein ServiceBay, das noch nichts
+ausliefert, startet PI WEB trotzdem — der Mount ist dann leer, der
+Init-Container schreibt genau eine Zeile ins Log und endet mit 0, und
+`servicebay` sagt es beim Aufruf in einem Satz.
 
 **Der Befehl `servicebay`.** Das CLI selbst ist ServiceBays; auf `$PATH` liegt
 nur ein Aufruf davon, der zwei Dinge weiß, die das CLI nicht wissen kann: wo es
