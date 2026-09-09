@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.67.0](https://github.com/mdopp/solarisbay/compare/v0.66.0...v0.67.0) (2026-09-09)
+
+
+### Features
+
+* **template:** hand pi the ServiceBay agent kit as skills, CLI and AGENTS.md ([1106024](https://github.com/mdopp/solarisbay/commit/11060246346355dbe46fd090220554736b2c6ca6)), closes [#1398](https://github.com/mdopp/solarisbay/issues/1398)
+
+
+### Bug Fixes
+
+* **template:** hard-code pi-web agent-kit hostPath instead of DATA_DIR ([#1406](https://github.com/mdopp/solarisbay/issues/1406)) ([81b6262](https://github.com/mdopp/solarisbay/commit/81b62627ebc02c6ea0c998a21877770a8263396e))
+* **template:** mount the agent kit by its fixed path so a plain upgrade cannot break pi-web ([2afc008](https://github.com/mdopp/solarisbay/commit/2afc0083a7e168713ceda7350ee293702d220079)), closes [#1403](https://github.com/mdopp/solarisbay/issues/1403)
+
 ## [0.66.0](https://github.com/mdopp/solarisbay/compare/v0.65.0...v0.66.0) (2026-09-08)
 
 
