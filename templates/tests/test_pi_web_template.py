@@ -489,12 +489,18 @@ def test_the_agent_kit_path_survives_a_plain_upgrade(template_text, variables, p
     service is upgraded (servicebay#2913), so a plain `install_template pi-web`
     rendered the tag empty, the hostPath became `/agent-cli`, and the pod
     crash-looped on a read-only root — while the install job reported `done`.
-    A bare Mustache hostPath is only safe for a platform variable; an override,
-    if one ever comes back, has to go through the post-deploy instead."""
+    A bare Mustache hostPath is only safe for a platform variable — and not
+    even every platform variable: `{{DATA_DIR}}` itself is scoped per service
+    (box-verified against #1404 as `/mnt/data/stacks/pi-web` for this pod, not
+    the flat `/mnt/data` its name suggests), while this checkout is
+    ServiceBay's own shared delivery target, one copy for every consumer
+    regardless of which service asks for it. Hard-coded to the literal
+    location ServiceBay itself writes to; an override, if one ever comes back,
+    has to go through the post-deploy instead."""
     assert "PI_WEB_AGENT_KIT_DIR" not in variables
     assert "PI_WEB_AGENT_KIT_DIR" not in template_text
 
-    base = "{{DATA_DIR}}/servicebay/agent-kit/checkout"
+    base = "/mnt/data/servicebay/agent-kit/checkout"
     for leaf in ("agent-cli", "agent-docs", "assists"):
         assert f"path: {base}/{leaf}" in template_text
 
@@ -508,7 +514,7 @@ def test_the_agent_kit_path_survives_a_plain_upgrade(template_text, variables, p
         # An older ServiceBay has delivered nothing; `Directory` would fail the
         # whole pod over that, `DirectoryOrCreate` only costs the skills.
         assert host["type"] == "DirectoryOrCreate"
-        assert host["path"].startswith("/mnt/data/stacks/servicebay/agent-kit/")
+        assert host["path"].startswith("/mnt/data/servicebay/agent-kit/")
 
 
 def test_the_readme_says_where_qwen_comes_from(variables):

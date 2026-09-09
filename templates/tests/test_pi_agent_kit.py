@@ -35,9 +35,12 @@ KIT = ROOT / "pi-web" / "pi_agent_kit.py"
 WRAPPER = ROOT / "pi-web" / "pi_servicebay.py"
 
 MOUNT_ROOT = "/opt/servicebay"
-# What ServiceBay delivers to on the box, written out in the pod spec rather
-# than taken from a template variable of ours (#1403). `/mnt/data` is what the
-# `DATA_DIR` platform variable renders to in the `pod` fixture below.
+# What ServiceBay delivers to on the box, written out in the pod spec as a
+# literal — not a template variable (#1403) and not `{{DATA_DIR}}` (#1404):
+# that macro is scoped per service (box-verified as `/mnt/data/stacks/pi-web`
+# for this pod, not the flat `/mnt/data` its name suggests), while this
+# checkout is ServiceBay's own shared delivery target, one copy for every
+# consumer regardless of which service asks for it.
 CHECKOUT = "/mnt/data/servicebay/agent-kit/checkout"
 KIT_MOUNTS = {
     f"{MOUNT_ROOT}/agent-cli": "agent-kit-cli",
@@ -155,16 +158,19 @@ def test_the_kit_path_is_fixed_and_never_an_installer_variable(variables):
     of an installed service rendered it **empty** — ServiceBay does not apply the
     default of a newly added variable to an existing service (servicebay#2913).
     The hostPath became `/agent-cli`, the pod crash-looped on a read-only root,
-    and the install job still said `done`. Only platform variables are safe in a
-    bare hostPath."""
+    and the install job still said `done`."""
     assert "PI_WEB_AGENT_KIT_DIR" not in variables
     template = (PI_WEB / "template.yml").read_text(encoding="utf-8")
     assert "PI_WEB_AGENT_KIT_DIR" not in template
+    # Not `{{DATA_DIR}}` either (#1404 tried that): box-verified against #1404
+    # as scoped per service (`/mnt/data/stacks/pi-web`, not flat `/mnt/data`),
+    # while this checkout is ServiceBay's own shared delivery target, the same
+    # copy for every consumer regardless of which service asks for it. (Other
+    # pi-web volumes legitimately keep `{{DATA_DIR}}` — this checks only the
+    # checkout's own three lines.)
     for mount_path in KIT_MOUNTS:
         leaf = mount_path.rsplit("/", 1)[-1]
-        assert (
-            f"path: {{{{DATA_DIR}}}}/servicebay/agent-kit/checkout/{leaf}" in template
-        )
+        assert f"path: {CHECKOUT}/{leaf}" in template
 
 
 # ── assists as Pi skills ────────────────────────────────────────────────────
