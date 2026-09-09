@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.67.1](https://github.com/mdopp/solarisbay/compare/v0.67.0...v0.67.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **wakeword-trainer:** stop cleanly on SIGTERM so a lease stop leaves the unit inactive ([7448db7](https://github.com/mdopp/solarisbay/commit/7448db7015bb551c14b00739c5f7df2f87926920)), closes [#1407](https://github.com/mdopp/solarisbay/issues/1407)
+
 ## [0.67.0](https://github.com/mdopp/solarisbay/compare/v0.66.0...v0.67.0) (2026-09-09)
 
 
