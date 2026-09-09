@@ -252,31 +252,100 @@ def test_a_refused_revoke_keeps_the_entry(helper, box):
 # ── reading the box with the project's own token ────────────────────────────
 
 
-def test_get_reads_with_the_projects_own_token_and_only_reads(helper, box):
-    entry_file(box).write_text(
-        json.dumps({"token": CHILD, "url": box["api"]}), encoding="utf-8"
+def added(box, name="solarisbay", token=CHILD):
+    """The pair `add` writes: the JSON record and the bare token file."""
+    entry_file(box, name).write_text(
+        json.dumps({"token": token, "url": box["api"]}), encoding="utf-8"
     )
-    http = FakeHttp(GET=[(200, {"services": []})])
-    status, body = helper.read_box(box, "solarisbay", "/api/services", http)
-    assert status == 200 and body == {"services": []}
-    assert http.calls[0]["method"] == "GET"
-    assert http.calls[0]["token"] == CHILD
-    assert http.calls[0]["url"].endswith("/api/services")
+    (pathlib.Path(box["entry_dir"]) / f"{name}.token").write_text(
+        token + "\n", encoding="utf-8"
+    )
+
+
+class FakeExec:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def __call__(self, file, argv, env):
+        self.calls.append((file, argv, env))
+
+
+def test_get_runs_the_servicebay_cli_as_this_project(helper, box):
+    """#1398: the routes are ServiceBay's CLI's business now. What stays here is
+    which token the call runs with — named, never carried."""
+    added(box)
+    run = FakeExec()
+    helper.read_box(box, "solarisbay", ["services", "--json"], run)
+    file, argv, env = run.calls[0]
+    assert file == "servicebay"
+    assert argv == ["servicebay", "services", "--json"]
+    assert env["PI_WEB_PROJECT"] == "solarisbay"
 
 
 def test_a_project_without_an_entry_cannot_read_the_box(helper, box):
     with pytest.raises(helper.Refused) as refusal:
-        helper.read_box(box, "solarisbay", "/api/services", FakeHttp())
+        helper.read_box(box, "solarisbay", ["services"], FakeExec())
     assert refusal.value.code == 2
+
+
+def test_a_project_whose_token_file_is_missing_is_refused_not_run(helper, box):
+    """Without the file the CLI reads, `servicebay` would fall back to the pod's
+    own token — a read that silently stopped being this project's."""
+    entry_file(box).write_text(json.dumps({"token": CHILD}), encoding="utf-8")
+    run = FakeExec()
+    with pytest.raises(helper.Refused):
+        helper.read_box(box, "solarisbay", ["services"], run)
+    assert run.calls == []
 
 
 def test_the_parent_token_is_never_used_for_a_read(helper, box):
     """The delegated child is what a session holds; a read that fell back to
     the parent would make per-project revocation meaningless."""
-    entry_file(box).write_text(json.dumps({"token": CHILD}), encoding="utf-8")
-    http = FakeHttp(GET=[(200, {})])
-    helper.read_box(box, "solarisbay", "/api/services", http)
-    assert http.calls[0]["token"] != PARENT
+    added(box)
+    run = FakeExec()
+    helper.read_box(box, "solarisbay", ["services"], run)
+    _, argv, env = run.calls[0]
+    assert PARENT not in " ".join(argv)
+    assert PARENT not in "".join(env.values())
+    assert "SERVICEBAY_MCP_TOKEN" not in env
+
+
+def test_the_token_file_is_written_and_taken_away_with_the_entry(helper, box):
+    """ServiceBay's CLI takes a token *file* and has no --token flag, so `add`
+    writes one beside the entry — and `remove` must not leave it behind."""
+    http = FakeHttp(POST=[(200, {"secret": CHILD})], DELETE=[(200, {})])
+    helper.add_project(box, "solarisbay", http)
+    token_file = pathlib.Path(box["entry_dir"]) / "solarisbay.token"
+    assert token_file.read_text(encoding="utf-8").strip() == CHILD
+    assert token_file.stat().st_mode & 0o777 == 0o600
+
+    helper.remove_project(box, "solarisbay", http)
+    assert not token_file.exists()
+
+
+# ── the per-project context file ────────────────────────────────────────────
+
+
+def test_add_leaves_a_pointer_to_the_global_agents_md(helper, box):
+    http = FakeHttp(POST=[(200, {"secret": CHILD})])
+    result = helper.add_project(box, "solarisbay", http)
+    written = pathlib.Path(result["agents_md"])
+    assert written == pathlib.Path(box["workspace"]) / "solarisbay" / "AGENTS.md"
+    assert "servicebay" in written.read_text(encoding="utf-8")
+
+
+def test_a_project_that_brought_its_own_context_file_keeps_it(helper, box):
+    """Pi takes the first context filename it finds in a directory, so writing
+    ours would shadow the project's own conventions."""
+    for existing in ("AGENTS.md", "CLAUDE.md"):
+        project = pathlib.Path(box["workspace"]) / "solarisbay"
+        for stale in project.glob("*.md"):
+            stale.unlink()
+        (project / existing).write_text("# theirs\n", encoding="utf-8")
+        http = FakeHttp(POST=[(200, {"secret": CHILD})], DELETE=[(200, {})])
+        result = helper.add_project(box, "solarisbay", http)
+        assert result["agents_md"] == ""
+        assert (project / existing).read_text(encoding="utf-8") == "# theirs\n"
 
 
 # ── the token never leaves ──────────────────────────────────────────────────

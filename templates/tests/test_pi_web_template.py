@@ -709,9 +709,11 @@ def test_the_parent_token_file_is_written_private(sb_init_script):
 
 
 def test_the_project_entries_get_their_mode_back_on_every_start(sb_init_script):
-    """Each entry holds that project's own token and is written at runtime; the
-    perms init's recursive `a+rwX` reopens them all on the next start."""
-    assert "-name '*.json' -exec chmod 600" in sb_init_script
+    """Each entry and its bare token file hold that project's own token and are
+    written at runtime; the perms init's recursive `a+rwX` reopens them all on
+    the next start. Every file under `projects/`, not the `.json` alone — the
+    CLI reads a bare token file beside it (#1398)."""
+    assert '"$dir/projects" -type f -exec chmod 600' in sb_init_script
 
 
 def test_the_parent_token_never_reaches_argv_or_a_log(sb_init_script, template_text):

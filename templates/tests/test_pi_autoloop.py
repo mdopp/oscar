@@ -372,7 +372,15 @@ def test_the_autoloop_runs_as_its_own_container_on_the_shared_volumes(
     assert autoloop_container["args"] == ["pi-web-autoloop"]
     assert "command" not in autoloop_container  # tini stays the entrypoint
     mounts = {m["mountPath"] for m in autoloop_container["volumeMounts"]}
-    assert mounts == {"/data", "/workspace"}
+    assert {"/data", "/workspace"} <= mounts
+    # The loop runs `pi`, so it loads the same global AGENTS.md as a browser
+    # session — and that file names the kit's path. Everything else it mounts is
+    # the read-only kit.
+    assert all(
+        m["mountPath"].startswith("/opt/servicebay/") and m.get("readOnly") is True
+        for m in autoloop_container["volumeMounts"]
+        if m["mountPath"] not in {"/data", "/workspace"}
+    )
 
 
 def test_the_autoloop_takes_no_gpu_lease(loop):
