@@ -355,15 +355,22 @@ spec:
   # not delivered the kit yet, and a missing hostPath with `Directory` fails the
   # whole pod. An empty mount instead degrades to "the CLI is not there", which
   # `servicebay` says in one sentence naming the reason.
+  #
+  # The path is written out rather than taken from an installer variable of our
+  # own (#1403): ServiceBay does not apply the default of a *newly added*
+  # variable when an existing service is upgraded (servicebay#2913), so a plain
+  # `install_template pi-web` rendered the tag empty, the hostPath became
+  # `/agent-cli`, and the pod crash-looped on a read-only root while the install
+  # job still reported `done`. `DATA_DIR` is a platform variable and always set.
   - name: agent-kit-cli
     hostPath:
-      path: {{PI_WEB_AGENT_KIT_DIR}}/agent-cli
+      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/agent-cli
       type: DirectoryOrCreate
   - name: agent-kit-docs
     hostPath:
-      path: {{PI_WEB_AGENT_KIT_DIR}}/agent-docs
+      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/agent-docs
       type: DirectoryOrCreate
   - name: agent-kit-assists
     hostPath:
-      path: {{PI_WEB_AGENT_KIT_DIR}}/assists
+      path: {{DATA_DIR}}/servicebay/agent-kit/checkout/assists
       type: DirectoryOrCreate

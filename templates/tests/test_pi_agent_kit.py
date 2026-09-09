@@ -35,6 +35,10 @@ KIT = ROOT / "pi-web" / "pi_agent_kit.py"
 WRAPPER = ROOT / "pi-web" / "pi_servicebay.py"
 
 MOUNT_ROOT = "/opt/servicebay"
+# What ServiceBay delivers to on the box, written out in the pod spec rather
+# than taken from a template variable of ours (#1403). `/mnt/data` is what the
+# `DATA_DIR` platform variable renders to in the `pod` fixture below.
+CHECKOUT = "/mnt/data/servicebay/agent-kit/checkout"
 KIT_MOUNTS = {
     f"{MOUNT_ROOT}/agent-cli": "agent-kit-cli",
     f"{MOUNT_ROOT}/agent-docs": "agent-kit-docs",
@@ -103,13 +107,12 @@ def containers(pod: dict, name: str) -> dict:
 # ── the mount ───────────────────────────────────────────────────────────────
 
 
-def test_the_kit_is_mounted_by_subdirectory_and_never_by_its_root(pod, variables):
-    base = variables["PI_WEB_AGENT_KIT_DIR"]["default"]
+def test_the_kit_is_mounted_by_subdirectory_and_never_by_its_root(pod):
     volumes = {v["name"]: v for v in pod["spec"]["volumes"]}
     for mount_path, volume in KIT_MOUNTS.items():
-        expected = f"{base}/{mount_path.rsplit('/', 1)[-1]}"
+        expected = f"{CHECKOUT}/{mount_path.rsplit('/', 1)[-1]}"
         assert volumes[volume]["hostPath"]["path"] == expected
-    assert base not in {v["hostPath"]["path"] for v in volumes.values()}
+    assert CHECKOUT not in {v["hostPath"]["path"] for v in volumes.values()}
 
 
 def test_every_container_that_runs_an_agent_sees_the_kit_read_only(pod):
@@ -147,11 +150,21 @@ def test_a_box_without_the_kit_still_starts_pi_web(pod):
         assert volumes[volume]["hostPath"]["type"] == "DirectoryOrCreate"
 
 
-def test_the_kit_directory_is_a_variable_with_a_description(variables):
-    spec = variables["PI_WEB_AGENT_KIT_DIR"]
-    assert spec["default"].startswith("/")
-    assert "{{" not in spec["default"]  # variable defaults are not rendered
-    assert len(spec["description"]) > 80
+def test_the_kit_path_is_fixed_and_never_an_installer_variable(variables):
+    """#1403: it was `PI_WEB_AGENT_KIT_DIR` for one release, and a plain upgrade
+    of an installed service rendered it **empty** — ServiceBay does not apply the
+    default of a newly added variable to an existing service (servicebay#2913).
+    The hostPath became `/agent-cli`, the pod crash-looped on a read-only root,
+    and the install job still said `done`. Only platform variables are safe in a
+    bare hostPath."""
+    assert "PI_WEB_AGENT_KIT_DIR" not in variables
+    template = (PI_WEB / "template.yml").read_text(encoding="utf-8")
+    assert "PI_WEB_AGENT_KIT_DIR" not in template
+    for mount_path in KIT_MOUNTS:
+        leaf = mount_path.rsplit("/", 1)[-1]
+        assert (
+            f"path: {{{{DATA_DIR}}}}/servicebay/agent-kit/checkout/{leaf}" in template
+        )
 
 
 # ── assists as Pi skills ────────────────────────────────────────────────────
@@ -256,6 +269,22 @@ def test_the_prelude_says_the_three_things_only_this_box_knows(kit):
 def test_the_handbook_is_never_shortened_into_the_prelude(kit):
     shipped = "# Working on a ServiceBay box\n\nEvery word of it.\n"
     assert "Every word of it." in kit.render_agents_md(shipped)
+
+
+def test_an_unmounted_kit_logs_one_line_and_does_not_fail_the_pod(
+    kit, tmp_path, capsys
+):
+    """The init container's exit code is the pod's life. A box whose ServiceBay
+    delivers no kit yet must cost the skills, not `pi.<domain>` (#1403)."""
+    assert (
+        kit.main(
+            ["--kit", str(tmp_path / "nothing"), "--agent-dir", str(tmp_path / "agent")]
+        )
+        == 0
+    )
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1
+    assert "no agent kit mounted at" in err[0]
 
 
 def test_a_missing_handbook_still_leaves_the_box_prelude(kit, tmp_path):
