@@ -13,9 +13,13 @@ script in an image, not an installed package.
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
+import signal
 import sqlite3
 import sys
+import threading
+import time
 
 import pytest
 
@@ -141,6 +145,69 @@ def test_every_op_is_a_no_op_without_the_db(trainer, tmp_path):
     assert trainer.fail_orphaned_runs(missing) == 0
     trainer.finish_run(missing, 1, ok=True, result="x")
     assert not pathlib.Path(missing).exists()
+
+
+@pytest.fixture
+def stoppable(trainer):
+    """Let a test drive trainer.main() through a real SIGTERM and put the
+    process's own handlers back afterwards."""
+    saved = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+    sent = threading.Event()
+
+    def send_when(ready):
+        def run():
+            deadline = time.monotonic() + 10
+            while not ready() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            sent.set()
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    try:
+        yield send_when
+    finally:
+        signal.signal(signal.SIGTERM, saved[0])
+        signal.signal(signal.SIGINT, saved[1])
+        trainer._stopping = False
+        assert sent.is_set(), "the stop signal was never sent"
+
+
+def test_sigterm_while_idle_exits_promptly(trainer, db, monkeypatch, stoppable):
+    # The GPU lease stops this unit by design; podman SIGKILLs after 10s, and
+    # systemd calls that exit 137 a failed unit (#1407).
+    monkeypatch.setattr(trainer, "DB_PATH", db)
+    monkeypatch.setattr(trainer, "POLL_SECONDS", 30)
+    stoppable(lambda: signal.getsignal(signal.SIGTERM) is trainer._on_stop)
+
+    started = time.monotonic()
+    trainer.main()
+    assert time.monotonic() - started < 10
+
+
+def test_sigterm_during_a_run_fails_the_row_and_exits(
+    trainer, db, monkeypatch, stoppable
+):
+    run_id = _enqueue(db, "alex")
+    monkeypatch.setattr(trainer, "DB_PATH", db)
+    monkeypatch.setattr(trainer, "POLL_SECONDS", 1)
+    monkeypatch.setattr(trainer, "provision_work", lambda work: None)
+    monkeypatch.setattr(
+        trainer,
+        "train",
+        lambda work: trainer._run(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        ),
+    )
+    stoppable(lambda: trainer._child is not None)
+
+    started = time.monotonic()
+    trainer.main()
+    assert time.monotonic() - started < 10
+
+    status, _, finished, result, _ = _row(db, run_id)
+    assert (status, finished) == ("failed", 1)
+    assert result == "Trainer wurde angehalten"
 
 
 def test_voice_urls_match_the_training_script_defaults(trainer):

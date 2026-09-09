@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -69,6 +70,35 @@ STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
 log = logging.getLogger("wakeword-trainer")
+
+# The container runs this script as PID 1, and a PID 1 without an explicit
+# handler ignores SIGTERM: podman then waits 10s and SIGKILLs, which systemd
+# reports as exit 137 / `failed` on every planned stop by the GPU lease (#1407).
+_stopping = False
+_child: subprocess.Popen | None = None
+
+
+class _Stopped(Exception):
+    """A stop signal arrived while a run was in flight."""
+
+
+def _on_stop(signum, frame) -> None:
+    global _stopping
+    _stopping = True
+    child = _child
+    if child is not None and child.poll() is None:
+        child.terminate()
+
+
+def _sleep(seconds: float) -> None:
+    """Idle wait that a stop signal cuts short — PEP 475 makes a plain
+    `time.sleep` resume after the handler, which would outlast podman's 10s."""
+    deadline = time.monotonic() + seconds
+    while not _stopping:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(1.0, left))
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -165,8 +195,19 @@ def fail_orphaned_runs(db_path: str) -> int:
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> None:
+    global _child
     log.info("+ %s", " ".join(cmd))
-    subprocess.run(cmd, cwd=cwd, check=True)
+    if _stopping:
+        raise _Stopped()
+    _child = subprocess.Popen(cmd, cwd=cwd)
+    try:
+        code = _child.wait()
+    finally:
+        _child = None
+    if _stopping:
+        raise _Stopped()
+    if code:
+        raise subprocess.CalledProcessError(code, cmd)
 
 
 def download_voices(dest: Path) -> None:
@@ -250,22 +291,30 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
     work = Path(WORK_DIR)
     orphaned = fail_orphaned_runs(DB_PATH)
     if orphaned:
         log.warning("failed %d run(s) orphaned by a restart", orphaned)
     log.info("polling %s every %ss", DB_PATH, POLL_SECONDS)
 
-    while True:
+    while not _stopping:
         claimed = claim_queued_run(DB_PATH)
         if claimed is None:
-            time.sleep(POLL_SECONDS)
+            _sleep(POLL_SECONDS)
             continue
         run_id, uid = claimed
         log.info("claimed run %d for %s", run_id, uid)
         try:
             provision_work(work)
             model = train(work)
+        except _Stopped:
+            # Leaving the row `running` would make the resident wait for a
+            # trainer that is no longer there until the next start reaps it.
+            log.info("stopped during run %d", run_id)
+            finish_run(DB_PATH, run_id, ok=False, result="Trainer wurde angehalten")
+            break
         except Exception as err:
             # A broken run must be one failed row, never a dead companion: the
             # container is the box's only trainer, so exiting here would take
@@ -273,7 +322,7 @@ def main() -> None:
             reason = f"{type(err).__name__}: {err}"[:500]
             log.error("run %d failed: %s", run_id, reason)
             finish_run(DB_PATH, run_id, ok=False, result=reason)
-            time.sleep(POLL_SECONDS)
+            _sleep(POLL_SECONDS)
             continue
         manifest = model.with_suffix(".json")
         log.info("run %d done: %s", run_id, model)
@@ -284,6 +333,8 @@ def main() -> None:
             result=f"Modell gebaut: {model.name} + {manifest.name}",
             model_path=str(model),
         )
+
+    log.info("stopped")
 
 
 if __name__ == "__main__":
