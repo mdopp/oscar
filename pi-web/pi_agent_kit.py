@@ -237,6 +237,20 @@ def main(argv: list[str] | None = None) -> int:
     skills = generate_skills(
         os.path.join(kit, "assists"), os.path.join(agent_dir, "skills")
     )
+    agents = install_agents_md(os.path.join(kit, "agent-docs"), agent_dir)
+
+    # Nothing at all under the mount is the ordinary state of a box whose
+    # ServiceBay predates the agent-kit delivery. It costs the skills, not the
+    # pod: one line naming the cause, then exit 0 — a non-zero init container
+    # would put pi-web in a crash loop over a missing directory (#1403).
+    if skills["catalog"] == "missing" and not agents["shipped"]:
+        print(
+            f"pi-web-agent-kit: no agent kit mounted at {kit} — PI WEB starts "
+            "without the ServiceBay skills and with the box prelude alone",
+            file=sys.stderr,
+        )
+        return 0
+
     if skills["catalog"] == "missing":
         print(
             f"pi-web-agent-kit: no assists under {kit}/assists — leaving the "
@@ -249,7 +263,6 @@ def main(argv: list[str] | None = None) -> int:
             f"({skills['written']} rewritten, {len(skills['pruned'])} pruned)"
         )
 
-    agents = install_agents_md(os.path.join(kit, "agent-docs"), agent_dir)
     if not agents["shipped"]:
         print(
             f"pi-web-agent-kit: no AGENTS.md under {kit}/agent-docs — wrote the "

@@ -39,11 +39,6 @@
     "default": "http://host.containers.internal:5888",
     "description": "ServiceBay-Kontrollebene, gegen die `pi-web-project` Token ableitet und liest. `host.containers.internal`, weil dieser Pod eine eigene Netzwerk-Namensraum hat (ADR 0007) — `127.0.0.1` wäre der Pod selbst. Kein Geheimnis, deshalb steht die Variable in der Umgebung von `sessiond`; dasselbe Ziel und derselbe Standardwert wie bei claude-dev auf dieser Box. Nie die Domain `servicebay.<publicDomain>`: die ist Authelia-gesichert und für einen Menschen mit Browser gedacht."
   },
-  "PI_WEB_AGENT_KIT_DIR": {
-    "type": "text",
-    "default": "/mnt/data/servicebay/agent-kit/checkout",
-    "description": "Verzeichnis, in das ServiceBay sein Agenten-Paket ausliefert — den Assist-Katalog, das Agenten-CLI und die `AGENTS.md`. Der Pod hängt drei Unterverzeichnisse daraus **nur lesend** ein (`agent-cli`, `agent-docs`, `assists`); daraus entstehen beim Start die Pi-Skills und die globale `AGENTS.md`. Der Standard ist ServiceBays eigenes Datenverzeichnis, nicht das dieser Anwendung: ServiceBay holt das Paket bei jedem Start und stündlich frisch aus seinem Repository, so dass eine geänderte Architekturentscheidung ohne neue Version hier ankommt. Nur ändern, wenn ServiceBay auf dieser Box woanders liegt. Ist das Verzeichnis leer, weil die Box noch ein älteres ServiceBay fährt, startet PI WEB trotzdem — es fehlen dann nur die Skills und der Befehl `servicebay` sagt beim Aufruf, dass das Paket nicht eingehängt ist."
-  },
   "PI_WEB_GIT_TOKEN": {
     "type": "secret",
     "noAutoGenerate": true,

@@ -483,6 +483,34 @@ def test_the_start_on_boot_knob_is_gone(variables):
     assert "PI_WEB_LEASE_TTL_SECONDS" not in variables
 
 
+def test_the_agent_kit_path_survives_a_plain_upgrade(template_text, variables, pod):
+    """#1403: the kit path was `PI_WEB_AGENT_KIT_DIR` for one release. ServiceBay
+    does not apply the default of a *newly added* variable when an existing
+    service is upgraded (servicebay#2913), so a plain `install_template pi-web`
+    rendered the tag empty, the hostPath became `/agent-cli`, and the pod
+    crash-looped on a read-only root — while the install job reported `done`.
+    A bare Mustache hostPath is only safe for a platform variable; an override,
+    if one ever comes back, has to go through the post-deploy instead."""
+    assert "PI_WEB_AGENT_KIT_DIR" not in variables
+    assert "PI_WEB_AGENT_KIT_DIR" not in template_text
+
+    base = "{{DATA_DIR}}/servicebay/agent-kit/checkout"
+    for leaf in ("agent-cli", "agent-docs", "assists"):
+        assert f"path: {base}/{leaf}" in template_text
+
+    kit = {
+        v["name"]: v["hostPath"]
+        for v in pod["spec"]["volumes"]
+        if v["name"].startswith("agent-kit-")
+    }
+    assert len(kit) == 3
+    for host in kit.values():
+        # An older ServiceBay has delivered nothing; `Directory` would fail the
+        # whole pod over that, `DirectoryOrCreate` only costs the skills.
+        assert host["type"] == "DirectoryOrCreate"
+        assert host["path"].startswith("/mnt/data/stacks/servicebay/agent-kit/")
+
+
 def test_the_readme_says_where_qwen_comes_from(variables):
     """The operator-facing sentence: nothing in the template asks for Qwen, so
     the README has to say who does."""
