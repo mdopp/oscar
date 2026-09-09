@@ -49,6 +49,14 @@ COPY --from=package /usr/local/bin /usr/local/bin
 # delegated read-only ServiceBay token per project (#1395).
 COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project
 
+# The ServiceBay agent kit (servicebay#2903) is mounted read-only at
+# /opt/servicebay: `servicebay` puts its CLI on PATH with the right token file,
+# `pi-web-agent-kit` turns its assists into Pi skills and its AGENTS.md into
+# Pi's global context file. Neither ships a copy of anything from the kit — the
+# kit is delivered from mdopp/servicebay and refreshed on the box hourly.
+COPY --chmod=0755 pi_servicebay.py /usr/local/bin/servicebay
+COPY --chmod=0755 pi_agent_kit.py /usr/local/bin/pi-web-agent-kit
+
 # The Pi autoloop (#1398 slice B): a third process in the pod that works issues
 # labelled `pi:ready` headlessly. Same reason as above for the language — it is
 # stdlib Python, so the repo's ruff + pytest gates cover it.

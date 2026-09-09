@@ -114,8 +114,9 @@ spec:
   # the value in sessiond's environment where every session would read it.
   #
   # The `chmod` on the entries is not belt-and-braces: each project's entry file
-  # holds that project's own token, they are written at runtime, and the perms
-  # init's recursive `a+rwX` would reopen every one of them on the next start.
+  # and its bare token file hold that project's own token, they are written at
+  # runtime, and the perms init's recursive `a+rwX` would reopen every one of
+  # them on the next start.
   - name: pi-web-sb-token
     image: ghcr.io/mdopp/solaris-pi-web:latest
     env:
@@ -138,7 +139,7 @@ spec:
         rm -f "$file"
       fi
       unset PI_WEB_SB_TOKEN
-      find "$dir/projects" -type f -name '*.json' -exec chmod 600 {} +
+      find "$dir/projects" -type f -exec chmod 600 {} +
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
@@ -176,6 +177,33 @@ spec:
     - mountPath: /data
       name: pi-web-data
 
+  # agent-kit — ServiceBay delivers the assist catalog, its agent CLI and one
+  # AGENTS.md to the box and this pod mounts all three read-only under
+  # /opt/servicebay (#1398 slice A / servicebay#2903). Pi does not read them
+  # where they lie: it loads skills from `$PI_CODING_AGENT_DIR/skills` as
+  # Agent-Skills packages and its global context file from
+  # `$PI_CODING_AGENT_DIR/AGENTS.md`. This step generates both from the mount.
+  #
+  # It runs on every start rather than once, because that is how a catalog
+  # update reaches the sessions: ServiceBay refreshes the checkout hourly, and
+  # the next start regenerates from whatever it now holds. Writing an unchanged
+  # file is skipped, so a start with nothing new touches nothing.
+  - name: pi-web-agent-kit
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args: ["pi-web-agent-kit"]
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+    - mountPath: /opt/servicebay/agent-cli
+      name: agent-kit-cli
+      readOnly: true
+    - mountPath: /opt/servicebay/agent-docs
+      name: agent-kit-docs
+      readOnly: true
+    - mountPath: /opt/servicebay/assists
+      name: agent-kit-assists
+      readOnly: true
+
   containers:
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
@@ -192,11 +220,25 @@ spec:
     # travel this way — it stays in the 0600 file the init above writes.
     - name: SERVICEBAY_API_URL
       value: "{{SERVICEBAY_API_URL}}"
+    # Where the read-only agent kit is. The shipped AGENTS.md tells the model to
+    # reach the catalog and the CLI through this variable rather than a
+    # hard-coded path, so it has to be set wherever a session's shell runs.
+    - name: SERVICEBAY_AGENT_KIT
+      value: "/opt/servicebay"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
     - mountPath: /workspace
       name: pi-web-workspace
+    - mountPath: /opt/servicebay/agent-cli
+      name: agent-kit-cli
+      readOnly: true
+    - mountPath: /opt/servicebay/agent-docs
+      name: agent-kit-docs
+      readOnly: true
+    - mountPath: /opt/servicebay/assists
+      name: agent-kit-assists
+      readOnly: true
 
   # web — the browser-facing HTTP/WebSocket surface. NPM proxies
   # {{PI_WEB_SUBDOMAIN}}.{{PUBLIC_DOMAIN}} down to the host port below behind
@@ -220,6 +262,8 @@ spec:
     # footgun-subdomain-needs-public-domain).
     - name: PI_WEB_ALLOWED_HOSTS
       value: "{{PI_WEB_SUBDOMAIN}}.{{PUBLIC_DOMAIN}}"
+    - name: SERVICEBAY_AGENT_KIT
+      value: "/opt/servicebay"
     ports:
     - containerPort: 8504
       hostPort: {{PI_WEB_PORT}}
@@ -228,6 +272,15 @@ spec:
       name: pi-web-data
     - mountPath: /workspace
       name: pi-web-workspace
+    - mountPath: /opt/servicebay/agent-cli
+      name: agent-kit-cli
+      readOnly: true
+    - mountPath: /opt/servicebay/agent-docs
+      name: agent-kit-docs
+      readOnly: true
+    - mountPath: /opt/servicebay/assists
+      name: agent-kit-assists
+      readOnly: true
 
   # autoloop — Pi works tickets labelled {{PI_AUTOLOOP_LABEL}} headlessly
   # (#1398 slice B). Its own container rather than a thread inside sessiond:
@@ -257,11 +310,26 @@ spec:
     # The loop holds no lease (#1392): Qwen comes from the Solaris model tile.
     - name: LLAMA_PORT
       value: "{{LLAMA_PORT}}"
+    # The loop runs `pi` headlessly, so it loads the same global AGENTS.md and
+    # the same generated skills as a browser session — and that file points at
+    # this path. Without the mount here the context file would name a directory
+    # that only exists in the other two containers.
+    - name: SERVICEBAY_AGENT_KIT
+      value: "/opt/servicebay"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
     - mountPath: /workspace
       name: pi-web-workspace
+    - mountPath: /opt/servicebay/agent-cli
+      name: agent-kit-cli
+      readOnly: true
+    - mountPath: /opt/servicebay/agent-docs
+      name: agent-kit-docs
+      readOnly: true
+    - mountPath: /opt/servicebay/assists
+      name: agent-kit-assists
+      readOnly: true
 
   volumes:
   # PI WEB + Pi agent state: the project and machine registries, session
@@ -276,4 +344,26 @@ spec:
   - name: pi-web-workspace
     hostPath:
       path: {{DATA_DIR}}/pi-web/workspace
+      type: DirectoryOrCreate
+  # The ServiceBay agent kit, read-only. Three subdirectories of the delivered
+  # checkout rather than the checkout root: the root also carries ServiceBay's
+  # own repository files (its README, its CLAUDE.md, its package manifests), and
+  # mounting those into a coding agent's container would put another project's
+  # instructions in front of the one it is working on.
+  #
+  # `DirectoryOrCreate`, not `Directory`, on purpose: an older ServiceBay has
+  # not delivered the kit yet, and a missing hostPath with `Directory` fails the
+  # whole pod. An empty mount instead degrades to "the CLI is not there", which
+  # `servicebay` says in one sentence naming the reason.
+  - name: agent-kit-cli
+    hostPath:
+      path: {{PI_WEB_AGENT_KIT_DIR}}/agent-cli
+      type: DirectoryOrCreate
+  - name: agent-kit-docs
+    hostPath:
+      path: {{PI_WEB_AGENT_KIT_DIR}}/agent-docs
+      type: DirectoryOrCreate
+  - name: agent-kit-assists
+    hostPath:
+      path: {{PI_WEB_AGENT_KIT_DIR}}/assists
       type: DirectoryOrCreate

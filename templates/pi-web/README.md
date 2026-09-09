@@ -15,7 +15,7 @@ Authelia and wires it to the box's own model server.
 | Network | isolated netns, `hostPort` 8504 |
 | Route | `pi.<publicDomain>`, internal exposure, Authelia forward-auth `one_factor` |
 | Model | llama-server on this box, via the Pi agent's `models.json` |
-| Volumes | `{{DATA_DIR}}/pi-web/data` → `/data`, `{{DATA_DIR}}/pi-web/workspace` → `/workspace` |
+| Volumes | `{{DATA_DIR}}/pi-web/data` → `/data`, `{{DATA_DIR}}/pi-web/workspace` → `/workspace`, ServiceBays Agenten-Paket → `/opt/servicebay` (nur lesend) |
 
 ### Why the image is ours
 
@@ -208,10 +208,14 @@ Token gehören könnte. An ihre Stelle tritt ein kleines Kommando im Container:
 
 ```
 pi-web-project add <Projekt>        # Token anlegen
-pi-web-project get /api/services    # damit lesen
+pi-web-project get services         # damit lesen (ruft `servicebay` auf)
 pi-web-project list                 # welche Projekte eins haben
 pi-web-project remove <Projekt>     # Token widerrufen
 ```
+
+`get` spricht seit #1398 keine ServiceBay-Route mehr selbst, sondern ruft das
+mitgelieferte Agenten-CLI auf (siehe den nächsten Abschnitt); geblieben ist hier
+nur die Frage, **mit wessen Token** gelesen wird.
 
 **Die drei Regeln**, weil sie das Verhalten erklären, das sonst überrascht:
 
@@ -251,6 +255,65 @@ deshalb das Recht selbst, `read` und sonst nichts.
 > Variablen; ServiceBay übernimmt für neue Variablen keine
 > Installations-Überschreibungen, der Assistent muss also einmal durchlaufen
 > werden (das Token-Feld dabei leer lassen).
+
+## Wissen und Fähigkeiten im Container
+
+Ein Coding-Agent, der diese Box nicht kennt, erfindet ihre Regeln neu. ServiceBay
+pflegt deshalb ein **Agenten-Paket** und liefert es auf die Box aus — den
+Assist-Katalog (Architekturentscheidungen, Rezepte, Leitfäden, Fußangeln), ein
+abhängigkeitsfreies Agenten-CLI und eine `AGENTS.md`
+(servicebay#2906–#2909). Dieses Template hängt es nur noch ein und übersetzt es
+in die Formen, die Pi wirklich liest (#1398 Scheibe A).
+
+**Der Mount.** Drei Unterverzeichnisse des ausgelieferten Checkouts —
+`agent-cli`, `agent-docs`, `assists` — landen **nur lesend** unter
+`/opt/servicebay` in `sessiond`, `web` und `autoloop`. Bewusst die
+Unterverzeichnisse und nicht die Wurzel: dort liegen auch ServiceBays eigene
+Repository-Dateien, und dessen `CLAUDE.md` in einem Container, der an einem
+*anderen* Projekt arbeitet, wäre eine zweite Anweisungsquelle, der das Modell
+folgt. Der Pfad steht in `PI_WEB_AGENT_KIT_DIR`; Standard ist ServiceBays eigenes
+Datenverzeichnis. Fährt die Box ein ServiceBay, das noch nichts ausliefert,
+startet PI WEB trotzdem — der Mount ist dann leer, und `servicebay` sagt das beim
+Aufruf in einem Satz.
+
+**Der Befehl `servicebay`.** Das CLI selbst ist ServiceBays; auf `$PATH` liegt
+nur ein Aufruf davon, der zwei Dinge weiß, die das CLI nicht wissen kann: wo es
+liegt, und **mit wessen Token** es läuft. Arbeitet die Sitzung in einem Projekt,
+das `pi-web-project add` bekommen hat, ist es dessen eigenes Token; sonst das des
+Pods. Übergeben wird immer nur der *Pfad* der Token-Datei
+(`SERVICEBAY_MCP_TOKEN_FILE`) — das CLI hat aus gutem Grund keinen
+`--token`-Schalter, denn `/proc/<pid>/cmdline` ist für alle lesbar.
+
+```
+servicebay services            # Dienstliste
+servicebay logs solaris        # Unit- und Podman-Logs
+servicebay assists --query backup
+servicebay assist adr-0007-container-network-isolation-and-carveouts
+```
+
+**Assists als Pi-Skills.** Pi lädt Skills nach dem Agent-Skills-Standard: ein
+Verzeichnis je Skill mit einer `SKILL.md`, deren Kopf `name` und `description`
+nennt. Ein Assist hat stattdessen `title`/`whenToUse`/`kind`/`tags` — derselbe
+Inhalt in anderer Form, also wird er **erzeugt** und nicht verlinkt. Der
+Init-Container `pi-web-agent-kit` schreibt bei **jedem Start**
+`/data/pi-agent/skills/servicebay/<id>/SKILL.md` aus dem Mount: `description` ist
+Titel und `whenToUse` zusammen, denn genau die Zeile entscheidet, ob Pi den Skill
+öffnet. Unveränderte Dateien werden nicht angefasst, zurückgezogene Assists
+verschwinden — und ein **leerer** Mount lässt die vorhandenen Skills stehen,
+statt aus ServiceBays Auslieferungsfehler hier einen zweiten, stillen zu machen.
+So wirkt eine geänderte Architekturentscheidung ohne neue Version: ServiceBay
+frischt den Checkout stündlich auf, der nächste Start übernimmt ihn.
+
+**Die `AGENTS.md`, zweimal.** Global schreibt derselbe Init-Container
+`/data/pi-agent/AGENTS.md` — ein kurzer Vorspann dieser Box (wo `/workspace`
+liegt, dass `servicebay` auf dem `$PATH` steht, dass die Gates dem Projekt
+gehören) und darunter unverändert die ausgelieferte Datei. Kein Symlink, weil Pi
+keine Einbindung kennt: Vorspann und Handbuch müssen **eine** Datei sein. Je
+Projekt legt `pi-web-project add` — und damit auch der Knopf „Repo klonen" —
+einen fünfzeiligen Zeiger auf die globale Datei ab, **nur** wenn das Projekt
+keine eigene `AGENTS.md`/`CLAUDE.md` mitbringt. Eine vorhandene wird nie
+überschrieben: Pi nimmt den ersten Treffer im Verzeichnis, unsere Datei stünde
+sonst vor den Konventionen des Projekts.
 
 ## Der Knopf „Repo klonen"
 
@@ -400,10 +463,24 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 - From another LAN device, `curl -m 3 http://<box>:8504/` and
   `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
 - In einer Sitzung im Projektordner: `pi-web-project add <Projekt>` meldet eine
-  Token-Kennung, `pi-web-project get /api/services` beantwortet die Dienstliste,
-  und nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit
-  **401** — das Arbeitsverzeichnis liegt danach noch da. `ls -l
+  Token-Kennung, `pi-web-project get services` beantwortet die Dienstliste, und
+  nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit **401** —
+  das Arbeitsverzeichnis liegt danach noch da. `ls -l
   /data/servicebay/projects/` zeigt `-rw------- node`.
+- Agenten-Paket (setzt ServiceBay ≥ 5.34.0 auf der Box voraus): `ls
+  /opt/servicebay/{agent-cli,agent-docs,assists}` ist gefüllt, und ein Schreiben
+  dorthin scheitert mit „Read-only file system".
+- `servicebay services --json` liefert im Projektordner die Dienstliste und
+  `servicebay assist adr-0007-container-network-isolation-and-carveouts` den
+  Text der Entscheidung. `ps auxww | grep servicebay` zeigt kein Token.
+- `ls /data/pi-agent/skills/servicebay | wc -l` nennt so viele Skills wie
+  `ls /opt/servicebay/assists/*.md | wc -l`, und `head -4
+  /data/pi-agent/AGENTS.md` zeigt den Vorspann dieser Box.
+- Der Startkopf einer neuen Sitzung nennt die geladene `AGENTS.md` und die
+  Skills; `/skill:adr-0007-container-network-isolation-and-carveouts` öffnet den
+  Text in der Sitzung.
+- Ein frisch geklontes Projekt hat eine `AGENTS.md` mit dem Zeiger; ein Klon
+  eines Repositories, das eine eigene mitbringt, hat unverändert dessen Fassung.
 - `ls /data/pi-web/plugins/solaris-clone` zeigt das Plugin, und unter
   *Settings → PI WEB plugins* steht „solaris-clone" als aktiv — ohne dass jemand
   es eingeschaltet hat.

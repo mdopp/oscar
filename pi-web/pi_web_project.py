@@ -7,7 +7,8 @@ entry carrying its own `sb_` token (servicebay#2680); **Pi has no MCP at all** �
 upstream says so in as many words ("It intentionally does not include built-in
 MCP … build CLI tools with READMEs") — so there is no MCP config file here to put
 a token in. This CLI is the file and the call: `add` mints the project's own
-read-only child token, `get` is the read.
+read-only child token, `get` runs ServiceBay's own agent CLI with it (#1398 —
+the routes are maintained there now, not here).
 
 Three rules carry the design, so they are written down rather than inferred:
 
@@ -55,6 +56,26 @@ DEFAULT_PARENT_TOKEN_FILE = "/data/servicebay/parent-token"
 DEFAULT_API = "http://host.containers.internal:5888"
 
 DELEGATE_PATH = "/api/system/api-tokens/delegate"
+
+# Pi reads the first of these it finds in a directory and stops, so a pointer
+# file is only ever dropped where the project brought none of them.
+CONTEXT_FILES = (
+    "AGENTS.override.md",
+    "AGENTS.md",
+    "AGENTS.MD",
+    "CLAUDE.md",
+    "CLAUDE.MD",
+)
+
+PROJECT_AGENTS_MD = """# {name}
+
+Box-wide knowledge — the `servicebay` CLI, the assist catalog, how a change
+reaches the box — is in the global `AGENTS.md`, which Pi loads alongside this
+file. This one is for **this project's** own conventions: how it is built,
+tested and released.
+
+Nothing overwrites this file once it exists. Replace it with the real thing.
+"""
 
 # `sb_<8-hex-id>_<secret>`. Only the id is ever pulled out of it.
 SB_TOKEN = re.compile(r"^sb_([0-9a-f]{8})_")
@@ -206,6 +227,46 @@ def write_entry(entry_dir: str, name: str, entry: dict) -> str:
     return path
 
 
+def token_file_path(entry_dir: str, name: str) -> str:
+    return os.path.join(entry_dir, f"{name}.token")
+
+
+def write_token_file(entry_dir: str, name: str, secret: str) -> str:
+    """The same token again, bare, because that is how the CLI takes it.
+
+    ServiceBay's agent CLI reads `SERVICEBAY_MCP_TOKEN_FILE` — a file holding
+    the token and nothing else — and has no `--token` flag at all, so the entry
+    beside this file, being JSON, cannot serve. One secret in two files under
+    the same 0700 directory, written and deleted together with the entry.
+    """
+    path = token_file_path(entry_dir, name)
+    os.makedirs(entry_dir, mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(secret)
+        f.write("\n")
+    # Same reason as write_entry: O_CREAT's mode does not apply to a file that
+    # already existed, and the pod's perms init reopens /data on every start.
+    os.chmod(path, 0o600)
+    return path
+
+
+def ensure_project_agents_md(path: str, name: str) -> str:
+    """Give a fresh checkout a context file pointing at the global one.
+
+    Written only when the project brought none of Pi's context filenames — a
+    project's own `AGENTS.md`/`CLAUDE.md` governs its conventions and this must
+    never stand in front of it. Returns the path written, or `""`.
+    """
+    for candidate in CONTEXT_FILES:
+        if os.path.exists(os.path.join(path, candidate)):
+            return ""
+    target = os.path.join(path, "AGENTS.md")
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(PROJECT_AGENTS_MD.format(name=name))
+    return target
+
+
 def read_parent_token(path: str) -> str:
     try:
         with open(path, encoding="utf-8") as f:
@@ -289,6 +350,7 @@ def add_project(cfg: dict, target: str, http=http_json) -> dict:
             name,
             {"project": name, "path": path, "url": cfg["api"], "token": secret},
         )
+        write_token_file(cfg["entry_dir"], name, secret)
     except OSError as e:
         # The token exists but nothing records it — take it back rather than
         # leave a credential nobody can find again.
@@ -300,11 +362,17 @@ def add_project(cfg: dict, target: str, http=http_json) -> dict:
             f'the entry for "{name}" could not be written, so its token was '
             f"revoked again: {e}"
         ) from e
+    try:
+        pointer = ensure_project_agents_md(path, name)
+    except OSError as e:
+        pointer = ""
+        notes.append(f"no AGENTS.md could be written into {path}: {e}")
     return {
         "project": name,
         "path": path,
         "entry": written,
         "token_id": token_id(secret),
+        "agents_md": pointer,
         "notes": notes,
     }
 
@@ -328,6 +396,10 @@ def remove_project(cfg: dict, target: str, http=http_json) -> dict:
     parent = read_parent_token(cfg["parent_token_file"])
     state = revoke_token(cfg["api"], parent, child_id, http)
     os.remove(entry_path(cfg["entry_dir"], name))
+    try:
+        os.remove(token_file_path(cfg["entry_dir"], name))
+    except FileNotFoundError:
+        pass
     return {
         "project": name,
         "path": path,
@@ -362,8 +434,16 @@ def list_projects(cfg: dict) -> list[dict]:
     return rows
 
 
-def read_box(cfg: dict, target: str, api_path: str, http=http_json):
-    """One read against ServiceBay with the project's own token. GET only."""
+def read_box(cfg: dict, target: str, argv: list[str], exec_=os.execvpe) -> None:
+    """Read the box as this project — by running ServiceBay's own agent CLI.
+
+    This used to speak ServiceBay's routes itself, which made it the second
+    hand-maintained client of them (servicebay#2903/#2910): a route rename aged
+    it silently. ServiceBay now ships and delivers that client, so the only part
+    left here is *whose* token it runs with. `servicebay` picks the token file up
+    from `PI_WEB_PROJECT`; the entry is checked first so a project without one
+    is refused rather than quietly read with the pod's token.
+    """
     name, _ = resolve_project(cfg["workspace"], target)
     entry = read_entry(cfg["entry_dir"], name)
     if entry is None:
@@ -371,10 +451,15 @@ def read_box(cfg: dict, target: str, api_path: str, http=http_json):
             f'"{name}" has no ServiceBay token — run `pi-web-project add {name}`',
             code=2,
         )
-    if not api_path.startswith("/"):
-        raise Refused("an API path starts with a slash, e.g. /api/services")
-    base = str(entry.get("url") or cfg["api"]).rstrip("/")
-    return http(f"{base}{api_path}", "GET", entry.get("token", ""), None)
+    if not os.path.exists(token_file_path(cfg["entry_dir"], name)):
+        raise Refused(
+            f'"{name}" was added before it had a token file — run '
+            f"`pi-web-project add {name}` once more to write it"
+        )
+    env = dict(os.environ)
+    env["PI_WEB_PROJECT"] = name
+    env.pop("SERVICEBAY_MCP_TOKEN", None)
+    exec_("servicebay", ["servicebay", *argv], env)
 
 
 # ── the command line ────────────────────────────────────────────────────────
@@ -394,12 +479,19 @@ def build_parser() -> argparse.ArgumentParser:
     remove = sub.add_parser("remove", help="revoke it again; deletes no files")
     remove.add_argument("project", help="project folder name or path")
     sub.add_parser("list", help="which projects have a token of ours")
-    get = sub.add_parser("get", help="read the box with this project's token")
-    get.add_argument("path", help="ServiceBay API path, e.g. /api/services")
+    get = sub.add_parser(
+        "get",
+        help="run ServiceBay's agent CLI with this project's token",
+    )
     get.add_argument(
         "--project",
         default="",
         help="project to read as (default: the current folder)",
+    )
+    get.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="the `servicebay` verb and its arguments, e.g. services --json",
     )
     return parser
 
@@ -416,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{result['project']}: ServiceBay token {result['token_id']} "
                 f"(read-only), recorded in {result['entry']}"
             )
+            if result["agents_md"]:
+                print(f"{result['project']}: wrote {result['agents_md']}")
         elif args.verb == "remove":
             result = remove_project(cfg, args.project)
             print(
@@ -427,11 +521,7 @@ def main(argv: list[str] | None = None) -> int:
                 mark = row["token_id"] or "— not added here"
                 print(f"{row['project']}\t{mark}")
         else:
-            status, body = read_box(cfg, args.project or os.getcwd(), args.path)
-            if status != 200:
-                print(f"ServiceBay answered {_reason(status, body)}", file=sys.stderr)
-                return 1
-            print(json.dumps(body, indent=2, ensure_ascii=False))
+            read_box(cfg, args.project or os.getcwd(), args.args)
     except Refused as e:
         print(str(e), file=sys.stderr)
         if e.detail:
